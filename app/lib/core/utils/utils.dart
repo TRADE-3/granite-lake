@@ -29,7 +29,10 @@ class AppUtils {
           'http://172.26.0.3:8080',
         ]);
       }
-      if (Platform.isIOS || Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
+      if (Platform.isIOS ||
+          Platform.isMacOS ||
+          Platform.isLinux ||
+          Platform.isWindows) {
         candidates.addAll(const [
           'http://127.0.0.1:8080',
           'http://localhost:8080',
@@ -41,7 +44,10 @@ class AppUtils {
 
     final unique = <String>[];
     for (final raw in candidates) {
-      final cleaned = raw.trim().replaceAll(RegExp(r'["}\s\u2060\uFEFF]+$'), '');
+      final cleaned = raw.trim().replaceAll(
+        RegExp(r'["}\s\u2060\uFEFF]+$'),
+        '',
+      );
       if (cleaned.isEmpty || unique.contains(cleaned)) {
         continue;
       }
@@ -50,7 +56,8 @@ class AppUtils {
     return unique;
   }
 
-  static String get otpBackendTargetsSummary => otpBackendBaseUrlCandidates.join(', ');
+  static String get otpBackendTargetsSummary =>
+      otpBackendBaseUrlCandidates.join(', ');
 
   static Future<String> resolveOtpBackendBaseUrl({
     Duration timeout = const Duration(seconds: 3),

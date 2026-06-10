@@ -43,7 +43,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final controller = GraniteLakeScope.of(context);
     final captures = controller.captureHistory;
     final projectTitlesById = {
-      for (final project in controller.projects) project.projectId: project.title,
+      for (final project in controller.projects)
+        project.projectId: project.title,
     };
     final availableProjects = <String>{
       'All',

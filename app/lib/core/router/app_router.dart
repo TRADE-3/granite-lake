@@ -42,7 +42,8 @@ GoRouter createAppRouter(GraniteLakeController controller) {
       }
 
       if (!controller.hasIdentity) {
-        return location == AppRoutes.welcome || location == AppRoutes.identitySetup
+        return location == AppRoutes.welcome ||
+                location == AppRoutes.identitySetup
             ? null
             : AppRoutes.identitySetup;
       }
@@ -84,7 +85,7 @@ GoRouter createAppRouter(GraniteLakeController controller) {
       GoRoute(
         path: AppRoutes.localDataInit,
         pageBuilder: (context, state) =>
-        const NoTransitionPage(child: LocalDataInitScreen()),
+            const NoTransitionPage(child: LocalDataInitScreen()),
       ),
       GoRoute(
         path: AppRoutes.welcome,

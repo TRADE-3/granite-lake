@@ -36,7 +36,9 @@ class _IdentitySetupScreenState extends State<IdentitySetupScreen> {
                 return SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
                   child: ConstrainedBox(
-                    constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                    constraints: BoxConstraints(
+                      minHeight: constraints.maxHeight,
+                    ),
                     child: IntrinsicHeight(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -172,7 +174,8 @@ class _IdentitySetupScreenState extends State<IdentitySetupScreen> {
                                       _errorMessage = null;
                                     });
 
-                                    final result = await controller.createIdentity();
+                                    final result = await controller
+                                        .createIdentity();
                                     if (!context.mounted) {
                                       return;
                                     }
@@ -193,8 +196,8 @@ class _IdentitySetupScreenState extends State<IdentitySetupScreen> {
                               _isGenerating
                                   ? 'SETTING UP WALLET'
                                   : identity == null
-                                      ? 'CREATE WALLET'
-                                      : 'CONTINUE',
+                                  ? 'CREATE WALLET'
+                                  : 'CONTINUE',
                               style: AppTextStyles.buttonText,
                             ),
                             style: ElevatedButton.styleFrom(
@@ -241,7 +244,6 @@ class _IdentitySetupScreenState extends State<IdentitySetupScreen> {
     );
   }
 }
-
 
 class _FramePanel extends StatelessWidget {
   const _FramePanel({required this.child});

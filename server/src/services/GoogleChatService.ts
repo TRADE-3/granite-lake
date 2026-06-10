@@ -3,16 +3,9 @@ import type { AppEnv } from "../config/env.js";
 export class GoogleChatService {
   constructor(private readonly appEnv: AppEnv) {}
 
-  async sendOtp(params: {
-    userEmail: string;
-    userId: string;
-    otp: string;
-    expiresAt: string;
-  }): Promise<void> {
+  async sendOtp(params: { userEmail: string; userId: string; otp: string; expiresAt: string }): Promise<void> {
     if (!this.appEnv.GOOGLE_CHAT_WEBHOOK_URL) {
-      throw new Error(
-        "Google Chat configuration is incomplete. Set GOOGLE_CHAT_WEBHOOK_URL.",
-      );
+      throw new Error("Google Chat configuration is incomplete. Set GOOGLE_CHAT_WEBHOOK_URL.");
     }
 
     const response = await fetch(this.appEnv.GOOGLE_CHAT_WEBHOOK_URL, {

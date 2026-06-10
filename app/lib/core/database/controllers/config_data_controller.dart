@@ -23,8 +23,8 @@ class ConfigDataController {
     );
   }
 
-  Future<PhotoAttestationContractConfig?> loadPhotoAttestationContractConfig()
-  async {
+  Future<PhotoAttestationContractConfig?>
+  loadPhotoAttestationContractConfig() async {
     final raw = await _configDao.readValue(
       GraniteLakeDatabaseService.photoAttestationContractConfigKey,
     );
@@ -57,9 +57,7 @@ class ConfigDataController {
     );
   }
 
-  Future<void> savePhotoAttestationClaim(
-    PhotoAttestationClaimRecord claim,
-  ) {
+  Future<void> savePhotoAttestationClaim(PhotoAttestationClaimRecord claim) {
     return _configDao.writeValue(
       GraniteLakeDatabaseService.photoAttestationClaimConfigKey,
       jsonEncode(claim.toJson()),
@@ -73,8 +71,8 @@ class ConfigDataController {
     );
   }
 
-  Future<PhotoAttestationContractConfig> syncPhotoAttestationContractConfig()
-  async {
+  Future<PhotoAttestationContractConfig>
+  syncPhotoAttestationContractConfig() async {
     final defaultConfig = PhotoAttestationContractConfig(
       rpcUrl: AppConstants.defaultSuiRpcUrl,
       packageId: AppConstants.defaultPhotoAttestationPackageId,

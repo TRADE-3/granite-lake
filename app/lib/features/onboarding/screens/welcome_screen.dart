@@ -27,10 +27,18 @@ class WelcomeScreen extends StatelessWidget {
             child: LayoutBuilder(
               builder: (context, constraints) {
                 return SingleChildScrollView(
-                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                  padding: EdgeInsets.fromLTRB(24, 20, 24, 20 + viewInsets.bottom),
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.onDrag,
+                  padding: EdgeInsets.fromLTRB(
+                    24,
+                    20,
+                    24,
+                    20 + viewInsets.bottom,
+                  ),
                   child: ConstrainedBox(
-                    constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                    constraints: BoxConstraints(
+                      minHeight: constraints.maxHeight,
+                    ),
                     child: IntrinsicHeight(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -91,7 +99,9 @@ class WelcomeScreen extends StatelessWidget {
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
                                 color: AppColors.surface.withAlpha(90),
-                                border: Border.all(color: AppColors.statusError.withAlpha(180)),
+                                border: Border.all(
+                                  color: AppColors.statusError.withAlpha(180),
+                                ),
                               ),
                               child: Text(
                                 resetNotice,

@@ -29,7 +29,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           backgroundColor: AppColors.surfaceElevated,
           title: Text(
             'Biometrics Changed',
-            style: AppTextStyles.labelLarge.copyWith(color: AppColors.textPrimary),
+            style: AppTextStyles.labelLarge.copyWith(
+              color: AppColors.textPrimary,
+            ),
           ),
           content: Text(
             '$message\n\nReset ${AppConstants.appTitle} and restart onboarding on this device?',
@@ -43,14 +45,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
               onPressed: () => Navigator.of(context).pop(false),
               child: Text(
                 'NO',
-                style: AppTextStyles.buttonText.copyWith(color: AppColors.textMuted),
+                style: AppTextStyles.buttonText.copyWith(
+                  color: AppColors.textMuted,
+                ),
               ),
             ),
             TextButton(
               onPressed: () => Navigator.of(context).pop(true),
               child: Text(
                 'YES',
-                style: AppTextStyles.buttonText.copyWith(color: AppColors.statusError),
+                style: AppTextStyles.buttonText.copyWith(
+                  color: AppColors.statusError,
+                ),
               ),
             ),
           ],
@@ -102,11 +108,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ? null
                     : IconButton(
                         onPressed: () {
-                          Clipboard.setData(ClipboardData(text: identity.walletAddress));
+                          Clipboard.setData(
+                            ClipboardData(text: identity.walletAddress),
+                          );
                           ScaffoldMessenger.of(context)
                             ..hideCurrentSnackBar()
                             ..showSnackBar(
-                              const SnackBar(content: Text('Sui wallet address copied')),
+                              const SnackBar(
+                                content: Text('Sui wallet address copied'),
+                              ),
                             );
                         },
                         icon: const Icon(Icons.copy_rounded, size: 18),
@@ -131,7 +141,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 _MetricCard(
                   title: 'LAST CAPTURE',
                   primaryValue: controller.lastCapture!.shortHash,
-                  secondaryValue: controller.lastCapture!.capturedAt.toLocal().toString(),
+                  secondaryValue: controller.lastCapture!.capturedAt
+                      .toLocal()
+                      .toString(),
                   isActive: true,
                 ),
               if (controller.lastCapture != null) const SizedBox(height: 16),
@@ -140,7 +152,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   padding: const EdgeInsets.only(bottom: 12),
                   child: Text(
                     _errorMessage!,
-                    style: AppTextStyles.bodySmall.copyWith(color: AppColors.statusError),
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: AppColors.statusError,
+                    ),
                   ),
                 ),
               const Spacer(),
@@ -168,7 +182,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           if (result.code == 'biometric_reset_required') {
                             setState(() => _isStartingSession = false);
                             final shouldReset = await _showBiometricResetDialog(
-                              result.message ?? 'Biometrics changed on this device. Re-bind required.',
+                              result.message ??
+                                  'Biometrics changed on this device. Re-bind required.',
                             );
                             if (!context.mounted) {
                               return;
@@ -194,13 +209,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           setState(() => _isStartingSession = false);
                           context.go(AppRoutes.capture);
                         },
-                  icon: Icon(activeSession ? Icons.camera_alt_rounded : Icons.lock_open_rounded),
+                  icon: Icon(
+                    activeSession
+                        ? Icons.camera_alt_rounded
+                        : Icons.lock_open_rounded,
+                  ),
                   label: Text(
                     _isStartingSession
                         ? 'STARTING SESSION'
                         : activeSession
-                            ? 'OPEN CAMERA'
-                            : 'START SECURE SESSION',
+                        ? 'OPEN CAMERA'
+                        : 'START SECURE SESSION',
                     style: AppTextStyles.buttonText,
                   ),
                 ),
@@ -209,7 +228,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton(
-                  onPressed: !activeSession || _isStartingSession || _isEndingSession
+                  onPressed:
+                      !activeSession || _isStartingSession || _isEndingSession
                       ? null
                       : () async {
                           setState(() {
@@ -225,7 +245,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: Text(
                     _isEndingSession ? 'ENDING SESSION' : 'END SESSION',
                     style: AppTextStyles.buttonText.copyWith(
-                      color: activeSession ? AppColors.textPrimary : AppColors.textMuted,
+                      color: activeSession
+                          ? AppColors.textPrimary
+                          : AppColors.textMuted,
                     ),
                   ),
                 ),
@@ -300,7 +322,9 @@ class _MetricCard extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             secondaryValue,
-            style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary),
+            style: AppTextStyles.bodySmall.copyWith(
+              color: AppColors.textSecondary,
+            ),
           ),
         ],
       ),

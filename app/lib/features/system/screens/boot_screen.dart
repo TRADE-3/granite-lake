@@ -39,7 +39,8 @@ class BootScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  controller.initializationError ?? 'Loading secure identity, session state, and capture services.',
+                  controller.initializationError ??
+                      'Loading secure identity, session state, and capture services.',
                   textAlign: TextAlign.center,
                   style: AppTextStyles.bodyMedium.copyWith(
                     color: AppColors.textSecondary,
@@ -50,10 +51,7 @@ class BootScreen extends StatelessWidget {
                   const SizedBox(height: 24),
                   ElevatedButton(
                     onPressed: controller.initialize,
-                    child: Text(
-                      'RETRY BOOT',
-                      style: AppTextStyles.buttonText,
-                    ),
+                    child: Text('RETRY BOOT', style: AppTextStyles.buttonText),
                   ),
                 ],
               ],

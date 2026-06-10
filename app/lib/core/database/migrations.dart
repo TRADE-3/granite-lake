@@ -142,5 +142,4 @@ class Migrations {
       'UPDATE ${GraniteLakeDatabaseService.capturesTable} SET submitted_at = captured_at WHERE submitted_at IS NULL',
     );
   }
-
 }

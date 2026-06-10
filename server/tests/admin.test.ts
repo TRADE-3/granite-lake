@@ -11,8 +11,7 @@ process.env.SUI_PACKAGE_ID = "0xpackage";
 process.env.SUI_REGISTRY_ID = "0xregistry";
 
 vi.mock("../src/db/repositories.js", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("../src/db/repositories.js")>();
+  const actual = await importOriginal<typeof import("../src/db/repositories.js")>();
 
   return {
     ...actual,

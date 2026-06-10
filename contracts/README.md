@@ -48,7 +48,6 @@ emit PhotoAttested event
 
 # Core Design Principles
 
-
 ## 1. Event-Only Photo Attestation
 
 Photo attestations are NOT stored in on-chain maps.
@@ -283,4 +282,5 @@ Verification inputs:
 domain
 admin_wallet
 ```
+
 ---

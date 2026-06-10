@@ -523,7 +523,8 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                 _DetailCell(
                                   label: 'CHAIN_TIMESTAMP',
                                   value:
-                                      verification?.chainTimestamp?.toIso8601String() ??
+                                      verification?.chainTimestamp
+                                          ?.toIso8601String() ??
                                       'Chain timestamp unavailable',
                                 ),
                                 _DetailCell(

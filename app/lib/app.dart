@@ -52,7 +52,8 @@ class GraniteLakeScope extends InheritedNotifier<GraniteLakeController> {
   }) : super(notifier: controller);
 
   static GraniteLakeController of(BuildContext context) {
-    final scope = context.dependOnInheritedWidgetOfExactType<GraniteLakeScope>();
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<GraniteLakeScope>();
     assert(scope != null, 'GraniteLakeScope not found in widget tree.');
     return scope!.notifier!;
   }

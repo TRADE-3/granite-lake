@@ -104,7 +104,7 @@ export async function createOtpSession(input: {
       session.txDigest,
       session.userCapId,
       session.error,
-    ],
+    ]
   );
 
   try {
@@ -115,15 +115,9 @@ export async function createOtpSession(input: {
       expiresAt: session.expiresAt,
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Failed to send OTP message to Google Chat.";
+    const message = error instanceof Error ? error.message : "Failed to send OTP message to Google Chat.";
 
-    await pool.query(`update otp_sessions set error = $2 where user_id = $1`, [
-      session.userId,
-      message,
-    ]);
+    await pool.query(`update otp_sessions set error = $2 where user_id = $1`, [session.userId, message]);
 
     throw error;
   }
@@ -131,9 +125,7 @@ export async function createOtpSession(input: {
   return session;
 }
 
-export async function findOtpSession(
-  userId: string,
-): Promise<OtpSessionRecord | null> {
+export async function findOtpSession(userId: string): Promise<OtpSessionRecord | null> {
   const result = await pool.query<OtpSessionRecord>(
     `
       select
@@ -151,7 +143,7 @@ export async function findOtpSession(
       from otp_sessions
       where user_id = $1
     `,
-    [userId],
+    [userId]
   );
 
   return result.rows[0] ? withConfiguredOtpFields(result.rows[0]) : null;
@@ -175,7 +167,7 @@ export async function listUsers(): Promise<UserRecord[]> {
         disabled_at as "disabledAt"
       from users
       order by updated_at desc
-    `,
+    `
   );
 
   return result.rows.map(withConfiguredUserFields);
@@ -216,7 +208,7 @@ export async function disableUser(userId: string): Promise<UserRecord | null> {
         last_verified_at as "lastVerifiedAt",
         disabled_at as "disabledAt"
     `,
-    [userId, disableUserTxDigest],
+    [userId, disableUserTxDigest]
   );
 
   return result.rows[0] ? withConfiguredUserFields(result.rows[0]) : null;
@@ -257,7 +249,7 @@ export async function enableUser(userId: string): Promise<UserRecord | null> {
         last_verified_at as "lastVerifiedAt",
         disabled_at as "disabledAt"
     `,
-    [userId, enableUserTxDigest],
+    [userId, enableUserTxDigest]
   );
 
   return result.rows[0] ? withConfiguredUserFields(result.rows[0]) : null;
@@ -280,10 +272,9 @@ export async function completeOtpSession(input: {
   }
 
   if (Date.now() > Date.parse(session.expiresAt)) {
-    await pool.query(
-      `update otp_sessions set status = 'expired', error = 'OTP expired.' where user_id = $1`,
-      [input.userId],
-    );
+    await pool.query(`update otp_sessions set status = 'expired', error = 'OTP expired.' where user_id = $1`, [
+      input.userId,
+    ]);
 
     throw new Error("OTP expired.");
   }
@@ -326,13 +317,7 @@ export async function completeOtpSession(input: {
         user_cap_id as "userCapId",
         error
     `,
-    [
-      input.userId,
-      normalizeWallet(input.userWallet),
-      verifiedAt,
-      addUserResult.txDigest,
-      addUserResult.userCapId,
-    ],
+    [input.userId, normalizeWallet(input.userWallet), verifiedAt, addUserResult.txDigest, addUserResult.userCapId]
   );
 
   const completedSession = withConfiguredOtpFields(updated.rows[0]);
@@ -363,9 +348,7 @@ function configuredAdminWallet(): string {
 
 function assertConfiguredDomain(domain: string): void {
   if (normalizeDomain(domain) !== configuredDomain()) {
-    throw new Error(
-      `This container is configured for ${configuredDomain()}, not ${domain}.`,
-    );
+    throw new Error(`This container is configured for ${configuredDomain()}, not ${domain}.`);
   }
 }
 
@@ -379,9 +362,7 @@ function assertConfiguredEmailDomain(email: string): void {
   }
 }
 
-function withConfiguredOtpFields(
-  session: Omit<OtpSessionRecord, "domain" | "adminWallet">,
-): OtpSessionRecord {
+function withConfiguredOtpFields(session: Omit<OtpSessionRecord, "domain" | "adminWallet">): OtpSessionRecord {
   return {
     ...session,
     domain: configuredDomain(),
@@ -389,9 +370,7 @@ function withConfiguredOtpFields(
   };
 }
 
-function withConfiguredUserFields(
-  user: Omit<UserRecord, "domain" | "adminWallet">,
-): UserRecord {
+function withConfiguredUserFields(user: Omit<UserRecord, "domain" | "adminWallet">): UserRecord {
   return {
     ...user,
     domain: configuredDomain(),
@@ -418,7 +397,7 @@ async function findUser(userId: string): Promise<UserRecord | null> {
       from users
       where user_id = $1
     `,
-    [userId],
+    [userId]
   );
 
   return result.rows[0] ? withConfiguredUserFields(result.rows[0]) : null;
@@ -443,16 +422,13 @@ async function findUserByEmail(userEmail: string): Promise<UserRecord | null> {
       from users
       where user_email = $1
     `,
-    [normalizeEmail(userEmail)],
+    [normalizeEmail(userEmail)]
   );
 
   return result.rows[0] ? withConfiguredUserFields(result.rows[0]) : null;
 }
 
-async function upsertActiveUserFromSession(
-  session: OtpSessionRecord,
-  addUserResult: AddUserResult,
-): Promise<void> {
+async function upsertActiveUserFromSession(session: OtpSessionRecord, addUserResult: AddUserResult): Promise<void> {
   if (!session.userWallet || !session.verifiedAt) {
     return;
   }
@@ -489,7 +465,7 @@ async function upsertActiveUserFromSession(
       addUserResult.userCapId,
       addUserResult.txDigest,
       session.verifiedAt,
-    ],
+    ]
   );
 }
 

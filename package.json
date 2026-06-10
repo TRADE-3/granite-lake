@@ -1,0 +1,32 @@
+{
+  "name": "granite-lake-root",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "husky",
+    "build": "npm run build:server",
+    "build:server": "npm --prefix server run build",
+    "test": "npm run test:server",
+    "test:server": "npm --prefix server run test",
+    "check:app": "npm run format:app:check && npm run lint:app",
+    "check:server": "npm run format:prettier:check && npm run lint:server",
+    "lint": "npm run lint:server && npm run lint:app",
+    "lint:server": "eslint eslint.config.js \"server/{src,tests}/**/*.ts\"",
+    "lint:server:fix": "npm run lint:server -- --fix",
+    "lint:app": "flutter analyze app",
+    "format": "npm run format:prettier && npm run format:app",
+    "format:check": "npm run format:prettier:check && npm run format:app:check",
+    "format:prettier": "prettier --ignore-path .prettierignore --write \"**/*.{js,ts,json,md,yml,yaml}\"",
+    "format:prettier:check": "prettier --ignore-path .prettierignore --check \"**/*.{js,ts,json,md,yml,yaml}\"",
+    "format:app": "dart format app/lib",
+    "format:app:check": "dart format --output=none --set-exit-if-changed app/lib"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "eslint": "^9.35.0",
+    "globals": "^16.4.0",
+    "husky": "^9.1.7",
+    "prettier": "^3.6.2",
+    "typescript-eslint": "^8.43.0"
+  }
+}

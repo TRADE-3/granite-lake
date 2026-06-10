@@ -395,21 +395,21 @@ class PhotoAttestationService {
         );
       }
 
-      final backendUserCapObjectId = _readStringPayloadField(
-        payload,
-        const [
-          'userCapId',
-          'user_cap_id',
-          'userCapObjectId',
-          'user_cap_object_id',
-          'objectId',
-          'object_id',
-        ],
-      );
-      final claimTxDigest = _readStringPayloadField(
-        payload,
-        const ['txDigest', 'tx_digest', 'claimTxDigest', 'claim_tx_digest', 'digest'],
-      );
+      final backendUserCapObjectId = _readStringPayloadField(payload, const [
+        'userCapId',
+        'user_cap_id',
+        'userCapObjectId',
+        'user_cap_object_id',
+        'objectId',
+        'object_id',
+      ]);
+      final claimTxDigest = _readStringPayloadField(payload, const [
+        'txDigest',
+        'tx_digest',
+        'claimTxDigest',
+        'claim_tx_digest',
+        'digest',
+      ]);
       final userCapObjectId = await _resolveOwnedUserCapObjectId(
         config: config,
         walletAddress: identity.walletAddress,
@@ -716,7 +716,9 @@ class PhotoAttestationService {
       ownedCaps = response.data
           .map((item) => item.data)
           .whereType<SuiApiObjectData>()
-          .where((item) => item.type?.toLowerCase() == expectedType.toLowerCase())
+          .where(
+            (item) => item.type?.toLowerCase() == expectedType.toLowerCase(),
+          )
           .toList(growable: false);
 
       if (ownedCaps.isNotEmpty) {
@@ -796,7 +798,10 @@ class PhotoAttestationService {
     }
   }
 
-  String _readStringPayloadField(Map<String, dynamic> payload, List<String> keys) {
+  String _readStringPayloadField(
+    Map<String, dynamic> payload,
+    List<String> keys,
+  ) {
     for (final key in keys) {
       final value = payload[key];
       if (value is String && value.trim().isNotEmpty) {

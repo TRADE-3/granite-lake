@@ -1,0 +1,14 @@
+#!/bin/sh
+# Pre-commit hook: block commits with formatting or lint failures.
+
+set -e
+
+printf "Running pre-commit checks...\n"
+
+printf "\n[server] Check\n"
+npm run check:server
+
+printf "\n[app] Check\n"
+npm run check:app
+
+printf "\nPre-commit checks passed.\n"

@@ -1,9 +1,6 @@
 import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
-import {
-  SuiJsonRpcClient,
-  type SuiObjectChange,
-} from "@mysten/sui/jsonRpc";
+import { SuiJsonRpcClient, type SuiObjectChange } from "@mysten/sui/jsonRpc";
 import { Transaction } from "@mysten/sui/transactions";
 import type { AppEnv } from "../config/env.js";
 
@@ -22,10 +19,7 @@ export class SuiService {
     });
   }
 
-  async addUser(params: {
-    domain: string;
-    userWallet: string;
-  }): Promise<AddUserResult> {
+  async addUser(params: { domain: string; userWallet: string }): Promise<AddUserResult> {
     const result = await this.executeDomainAdminCall({
       functionName: "add_user",
       domain: params.domain,
@@ -33,10 +27,7 @@ export class SuiService {
       showObjectChanges: true,
     });
 
-    const userCapId = findCreatedObjectId(
-      result.objectChanges ?? [],
-      "::photo_attestation::UserCap",
-    );
+    const userCapId = findCreatedObjectId(result.objectChanges ?? [], "::photo_attestation::UserCap");
 
     if (!userCapId) {
       throw new Error("Sui add_user transaction did not create a UserCap.");
@@ -48,10 +39,7 @@ export class SuiService {
     };
   }
 
-  async disableUser(params: {
-    domain: string;
-    userWallet: string;
-  }): Promise<string> {
+  async disableUser(params: { domain: string; userWallet: string }): Promise<string> {
     const result = await this.executeDomainAdminCall({
       functionName: "disable_user",
       domain: params.domain,
@@ -62,10 +50,7 @@ export class SuiService {
     return result.digest;
   }
 
-  async enableUser(params: {
-    domain: string;
-    userWallet: string;
-  }): Promise<string> {
+  async enableUser(params: { domain: string; userWallet: string }): Promise<string> {
     const result = await this.executeDomainAdminCall({
       functionName: "enable_user",
       domain: params.domain,
@@ -89,9 +74,7 @@ export class SuiService {
     const expectedAddress = this.appEnv.ADMIN_WALLET.trim().toLowerCase();
 
     if (signerAddress !== expectedAddress) {
-      throw new Error(
-        `Sui signer ${signerAddress} does not match ADMIN_WALLET ${expectedAddress}.`,
-      );
+      throw new Error(`Sui signer ${signerAddress} does not match ADMIN_WALLET ${expectedAddress}.`);
     }
 
     const tx = new Transaction();
@@ -124,14 +107,8 @@ export class SuiService {
   }
 
   private assertConfigured(): void {
-    if (
-      !this.appEnv.SUI_PRIVATE_KEY ||
-      !this.appEnv.SUI_PACKAGE_ID ||
-      !this.appEnv.SUI_REGISTRY_ID
-    ) {
-      throw new Error(
-        "Sui configuration is incomplete. Set SUI_PRIVATE_KEY, SUI_PACKAGE_ID, and SUI_REGISTRY_ID.",
-      );
+    if (!this.appEnv.SUI_PRIVATE_KEY || !this.appEnv.SUI_PACKAGE_ID || !this.appEnv.SUI_REGISTRY_ID) {
+      throw new Error("Sui configuration is incomplete. Set SUI_PRIVATE_KEY, SUI_PACKAGE_ID, and SUI_REGISTRY_ID.");
     }
   }
 }
@@ -140,22 +117,14 @@ function toEd25519Keypair(privateKey: string): Ed25519Keypair {
   const decoded = decodeSuiPrivateKey(privateKey.trim());
 
   if (decoded.scheme !== "ED25519") {
-    throw new Error(
-      `Unsupported Sui private key scheme: ${decoded.scheme}. Expected ED25519.`,
-    );
+    throw new Error(`Unsupported Sui private key scheme: ${decoded.scheme}. Expected ED25519.`);
   }
 
   return Ed25519Keypair.fromSecretKey(decoded.secretKey);
 }
 
-function findCreatedObjectId(
-  changes: SuiObjectChange[],
-  objectTypeSuffix: string,
-): string | null {
-  const created = changes.find(
-    (change) =>
-      change.type === "created" && change.objectType.endsWith(objectTypeSuffix),
-  );
+function findCreatedObjectId(changes: SuiObjectChange[], objectTypeSuffix: string): string | null {
+  const created = changes.find((change) => change.type === "created" && change.objectType.endsWith(objectTypeSuffix));
 
   return created?.type === "created" ? created.objectId : null;
 }

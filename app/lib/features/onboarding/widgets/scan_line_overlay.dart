@@ -44,10 +44,7 @@ class _ScanLineOverlayState extends State<ScanLineOverlay>
                 right: 0,
                 child: Opacity(
                   opacity: 0.2,
-                  child: Container(
-                    height: 1,
-                    color: AppColors.primary,
-                  ),
+                  child: Container(height: 1, color: AppColors.primary),
                 ),
               ),
             ],

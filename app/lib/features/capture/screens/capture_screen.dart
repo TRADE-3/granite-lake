@@ -19,7 +19,10 @@ import '../../../core/theme/app_text_styles.dart';
 enum _CaptureFlow { live, review, submitting, success }
 
 class _LocationSnapshot {
-  const _LocationSnapshot({required this.gpsLabel, required this.altitudeLabel});
+  const _LocationSnapshot({
+    required this.gpsLabel,
+    required this.altitudeLabel,
+  });
 
   final String gpsLabel;
   final String altitudeLabel;
@@ -474,10 +477,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
     final currentLocation = await _refreshLocation();
     if (currentLocation == null ||
-        !_matchesFormattedGps(
-          currentLocation.gpsLabel,
-          metadata.gpsLabel,
-        ) ||
+        !_matchesFormattedGps(currentLocation.gpsLabel, metadata.gpsLabel) ||
         !_matchesFormattedAltitude(
           currentLocation.altitudeLabel,
           metadata.altitudeLabel,
@@ -1543,15 +1543,17 @@ class _CaptureScreenState extends State<CaptureScreen> {
                   const SizedBox(height: 12),
                   _CopyFieldCard(
                     label: 'SUBMITTED TIMESTAMP (UTC)',
-                    value: (metadata.submittedAtUtc ?? record.effectiveSubmittedAt)
-                        .toIso8601String(),
+                    value:
+                        (metadata.submittedAtUtc ?? record.effectiveSubmittedAt)
+                            .toIso8601String(),
                     actionIcon: Icons.copy_rounded,
                     onTap: () async {
                       final messenger = ScaffoldMessenger.of(context);
                       await Clipboard.setData(
                         ClipboardData(
                           text:
-                              (metadata.submittedAtUtc ?? record.effectiveSubmittedAt)
+                              (metadata.submittedAtUtc ??
+                                      record.effectiveSubmittedAt)
                                   .toIso8601String(),
                         ),
                       );

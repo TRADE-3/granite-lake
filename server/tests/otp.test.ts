@@ -143,9 +143,7 @@ describe("otp routes", () => {
   });
 
   it("rejects an OTP request for an already registered email", async () => {
-    createOtpSession.mockRejectedValueOnce(
-      new Error("User email alice@acme.com is already registered."),
-    );
+    createOtpSession.mockRejectedValueOnce(new Error("User email alice@acme.com is already registered."));
 
     const app = await buildApp();
 
@@ -179,8 +177,7 @@ describe("otp routes", () => {
         userId: "user-id-1",
         otp: "123456",
         domain: "acme.com",
-        userWallet:
-          "0x1111111111111111111111111111111111111111111111111111111111111111",
+        userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
       },
     });
 

@@ -31,19 +31,29 @@ class TopHudOverlay extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(flowId, style: AppTextStyles.hudLabel.copyWith(color: AppColors.textMuted)),
+                Text(
+                  flowId,
+                  style: AppTextStyles.hudLabel.copyWith(
+                    color: AppColors.textMuted,
+                  ),
+                ),
                 const SizedBox(height: 3),
-                _HudTagRow(label: 'STATUS', value: status, valueColor: AppColors.statusActive),
+                _HudTagRow(
+                  label: 'STATUS',
+                  value: status,
+                  valueColor: AppColors.statusActive,
+                ),
                 const SizedBox(height: 2),
-                _HudTagRow(label: 'ENCRYPT', value: encryptAlgo, valueColor: AppColors.textSecondary),
+                _HudTagRow(
+                  label: 'ENCRYPT',
+                  value: encryptAlgo,
+                  valueColor: AppColors.textSecondary,
+                ),
               ],
             ),
           ),
           if (trailing != null)
-            Align(
-              alignment: Alignment.topCenter,
-              child: trailing!,
-            ),
+            Align(alignment: Alignment.topCenter, child: trailing!),
         ],
       ),
     );

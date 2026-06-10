@@ -37,7 +37,9 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                 return SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
                   child: ConstrainedBox(
-                    constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                    constraints: BoxConstraints(
+                      minHeight: constraints.maxHeight,
+                    ),
                     child: IntrinsicHeight(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -119,7 +121,8 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                                       _errorMessage = null;
                                     });
 
-                                    final result = await controller.bindBiometrics();
+                                    final result = await controller
+                                        .bindBiometrics();
                                     if (!context.mounted) {
                                       return;
                                     }
@@ -143,8 +146,8 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                               _isBinding
                                   ? 'SETTING UP PROTECTION'
                                   : binding == null
-                                      ? 'TURN ON BIOMETRICS'
-                                      : 'CONTINUE',
+                                  ? 'TURN ON BIOMETRICS'
+                                  : 'CONTINUE',
                               style: AppTextStyles.buttonText,
                             ),
                           ),
@@ -163,7 +166,10 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
 
                           Container(
                             width: double.infinity,
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 12,
+                            ),
                             decoration: BoxDecoration(
                               color: AppColors.surface.withAlpha(70),
                               border: Border.all(color: AppColors.border),
@@ -200,7 +206,9 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                               Expanded(
                                 child: _FooterMetric(
                                   label: 'AUTH LEVEL',
-                                  value: binding == null ? 'NOT READY' : 'READY',
+                                  value: binding == null
+                                      ? 'NOT READY'
+                                      : 'READY',
                                   valueColor: AppColors.textPrimary,
                                 ),
                               ),
@@ -208,7 +216,9 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                               Expanded(
                                 child: _FooterMetric(
                                   label: 'COMPLIANCE',
-                                  value: binding == null ? 'DEVICE ONLY' : 'BIOMETRIC LOCK',
+                                  value: binding == null
+                                      ? 'DEVICE ONLY'
+                                      : 'BIOMETRIC LOCK',
                                   valueColor: AppColors.secondary,
                                   alignEnd: true,
                                 ),
@@ -260,11 +270,7 @@ class _BiometricPanel extends StatelessWidget {
         children: [
           Row(
             children: [
-              Container(
-                width: 16,
-                height: 1,
-                color: AppColors.borderActive,
-              ),
+              Container(width: 16, height: 1, color: AppColors.borderActive),
               const Spacer(),
               Text(
                 'ENCRYPTED_PATH: ACTIVE',
@@ -329,11 +335,7 @@ class _BiometricPanel extends StatelessWidget {
                 ),
               ),
               const Spacer(),
-              Container(
-                width: 16,
-                height: 1,
-                color: AppColors.primary,
-              ),
+              Container(width: 16, height: 1, color: AppColors.primary),
             ],
           ),
           const SizedBox(height: 4),
@@ -356,10 +358,7 @@ class _BiometricPanel extends StatelessWidget {
 }
 
 class _FingerprintScannerBox extends StatefulWidget {
-  const _FingerprintScannerBox({
-    this.isBinding,
-    this.isBound,
-  });
+  const _FingerprintScannerBox({this.isBinding, this.isBound});
 
   final bool? isBinding;
   final bool? isBound;
@@ -529,9 +528,7 @@ class _FingerprintScannerBoxState extends State<_FingerprintScannerBox>
                   widget.resolvedIsBound
                       ? 'ENCRYPTED_PATH: BOUND'
                       : 'ENCRYPTED_PATH: ACTIVE',
-                  style: AppTextStyles.labelSmall.copyWith(
-                    color: glowColor,
-                  ),
+                  style: AppTextStyles.labelSmall.copyWith(color: glowColor),
                 ),
               ),
             ],
@@ -575,7 +572,9 @@ class _FooterMetric extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Column(
-      crossAxisAlignment: alignEnd ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      crossAxisAlignment: alignEnd
+          ? CrossAxisAlignment.end
+          : CrossAxisAlignment.start,
       children: [
         Text(
           label,

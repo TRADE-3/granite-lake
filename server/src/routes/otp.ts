@@ -1,11 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { env } from "../config/env.js";
-import {
-  completeOtpSession,
-  createOtpSession,
-  findOtpSession,
-} from "../db/repositories.js";
+import { completeOtpSession, createOtpSession, findOtpSession } from "../db/repositories.js";
 
 const otpRequestSchema = z.object({
   domain: z.string().min(1),
@@ -21,15 +17,12 @@ const otpVerifySchema = z.object({
 
 export const otpRoutes: FastifyPluginAsync = async (app) => {
   app.post("/otp/request", async (request, reply) => {
-    const parsedBody = otpRequestSchema.safeParse(
-      parseJsonStringBody(request.body),
-    );
+    const parsedBody = otpRequestSchema.safeParse(parseJsonStringBody(request.body));
 
     if (!parsedBody.success) {
       return reply.status(400).send({
         error: "invalid_request",
-        message:
-          "Request body must be a JSON object with domain and user_email.",
+        message: "Request body must be a JSON object with domain and user_email.",
       });
     }
 
@@ -51,10 +44,7 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
         ttlMs: env.OTP_TTL_MS,
       });
     } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes("is already registered")
-      ) {
+      if (error instanceof Error && error.message.includes("is already registered")) {
         return reply.status(409).send({
           error: "user_email_exists",
           message: error.message,
@@ -103,15 +93,12 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post("/otp/verify", async (request, reply) => {
-    const parsedBody = otpVerifySchema.safeParse(
-      parseJsonStringBody(request.body),
-    );
+    const parsedBody = otpVerifySchema.safeParse(parseJsonStringBody(request.body));
 
     if (!parsedBody.success) {
       return reply.status(400).send({
         error: "invalid_request",
-        message:
-          "Request body must be a JSON object with userId, otp, domain, and userWallet.",
+        message: "Request body must be a JSON object with userId, otp, domain, and userWallet.",
       });
     }
 

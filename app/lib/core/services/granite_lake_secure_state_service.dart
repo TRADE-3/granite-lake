@@ -25,7 +25,7 @@ class _BiometricGateException implements Exception {
   final String message;
 
   bool get requiresRebind =>
-    code == 'biometric_changed' || code == 'gate_missing';
+      code == 'biometric_changed' || code == 'gate_missing';
 }
 
 class _ProtectedIdentityKeyBundle {
@@ -122,7 +122,10 @@ class GraniteLakeSecureStateService {
       identity = IdentityRecord.fromJson(identityMap);
       if (!identityMap.containsKey('walletAddress') ||
           !identityMap.containsKey('publicKeyHex')) {
-        await _storage.write(key: _identityKey, value: jsonEncode(identity.toJson()));
+        await _storage.write(
+          key: _identityKey,
+          value: jsonEncode(identity.toJson()),
+        );
       }
     }
 
@@ -155,7 +158,8 @@ class GraniteLakeSecureStateService {
       }
     }
 
-    if (biometricBinding != null && (identity?.hasExportablePrivateKey ?? false)) {
+    if (biometricBinding != null &&
+        (identity?.hasExportablePrivateKey ?? false)) {
       await clearBiometricBindingAndSession(biometricBinding: biometricBinding);
       biometricBinding = null;
       biometricGatePayload = null;
@@ -177,7 +181,8 @@ class GraniteLakeSecureStateService {
     );
   }
 
-  Future<SecureOperationResult<DeviceRegistrationRecord?>> completeRegistration({
+  Future<SecureOperationResult<DeviceRegistrationRecord?>>
+  completeRegistration({
     required String registrationCode,
     required Future<List<int>> Function(String registrationCode, List<int> salt)
     deriveRegistrationVerifier,
@@ -216,7 +221,10 @@ class GraniteLakeSecureStateService {
         createdAt: DateTime.now().toUtc(),
       );
 
-      await _storage.write(key: _identityKey, value: jsonEncode(identity.toJson()));
+      await _storage.write(
+        key: _identityKey,
+        value: jsonEncode(identity.toJson()),
+      );
       return SecureOperationResult<IdentityRecord>.success(identity);
     } catch (error) {
       return SecureOperationResult<IdentityRecord>.failure(
@@ -271,7 +279,10 @@ class GraniteLakeSecureStateService {
       );
       final protectedIdentity = identity.withoutPrivateKey();
 
-      await _storage.write(key: _biometricKey, value: jsonEncode(binding.toJson()));
+      await _storage.write(
+        key: _biometricKey,
+        value: jsonEncode(binding.toJson()),
+      );
       await _storage.write(
         key: _biometricGatePayloadKey,
         value: jsonEncode(gateBinding.payload.toJson()),
@@ -295,7 +306,9 @@ class GraniteLakeSecureStateService {
         ),
       );
     } on _BiometricGateException catch (error) {
-      return SecureOperationResult<BiometricBindingState>.failure(error.message);
+      return SecureOperationResult<BiometricBindingState>.failure(
+        error.message,
+      );
     } catch (error) {
       return SecureOperationResult<BiometricBindingState>.failure(
         'Biometric binding failed: $error',
@@ -350,7 +363,10 @@ class GraniteLakeSecureStateService {
         ),
       );
 
-      await _storage.write(key: _sessionKey, value: jsonEncode(session.toJson()));
+      await _storage.write(
+        key: _sessionKey,
+        value: jsonEncode(session.toJson()),
+      );
 
       return SecureOperationResult<SessionStartState>.success(
         SessionStartState(
