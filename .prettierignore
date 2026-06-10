@@ -1,0 +1,16 @@
+**/node_modules
+**/dist
+**/coverage
+**/.DS_Store
+app/.dart_tool
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/build
+app/ios
+app/linux
+app/macos
+app/windows
+app/web
+app/**/*.dart
+contracts/**/build
+server/.env

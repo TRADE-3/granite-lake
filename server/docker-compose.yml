@@ -1,0 +1,90 @@
+name: ${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build: .
+    container_name: ${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake_migrate
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["npm", "run", "db:migrate"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      CLIENT_ID: ${CLIENT_ID:-domain_demo}
+      DOMAIN: ${DOMAIN:-domain.com}
+      ADMIN_WALLET: ${ADMIN_WALLET:-0xadmin}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-replace-with-a-long-random-admin-key}
+      OTP_TTL_MS: ${OTP_TTL_MS:-300000}
+      GOOGLE_CHAT_WEBHOOK_URL: ${GOOGLE_CHAT_WEBHOOK_URL:-}
+      SUI_NETWORK: ${SUI_NETWORK:-testnet}
+      SUI_RPC_URL: ${SUI_RPC_URL:-https://fullnode.testnet.sui.io:443}
+      SUI_PRIVATE_KEY: ${SUI_PRIVATE_KEY:-}
+      SUI_PACKAGE_ID: ${SUI_PACKAGE_ID:-}
+      SUI_MODULE: ${SUI_MODULE:-photo_attestation}
+      SUI_REGISTRY_ID: ${SUI_REGISTRY_ID:-}
+      SUI_GAS_BUDGET: ${SUI_GAS_BUDGET:-10000000}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake}
+
+  api:
+    build: .
+    container_name: ${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake_api
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${PORT:-8080}
+      HOST: ${HOST:-0.0.0.0}
+      CLIENT_ID: ${CLIENT_ID:-domain_demo}
+      DOMAIN: ${DOMAIN:-domain.com}
+      ADMIN_WALLET: ${ADMIN_WALLET:-0xadmin}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-replace-with-a-long-random-admin-key}
+      OTP_TTL_MS: ${OTP_TTL_MS:-300000}
+      GOOGLE_CHAT_WEBHOOK_URL: ${GOOGLE_CHAT_WEBHOOK_URL:-}
+      SUI_NETWORK: ${SUI_NETWORK:-testnet}
+      SUI_RPC_URL: ${SUI_RPC_URL:-https://fullnode.testnet.sui.io:443}
+      SUI_PRIVATE_KEY: ${SUI_PRIVATE_KEY:-}
+      SUI_PACKAGE_ID: ${SUI_PACKAGE_ID:-}
+      SUI_MODULE: ${SUI_MODULE:-photo_attestation}
+      SUI_REGISTRY_ID: ${SUI_REGISTRY_ID:-}
+      SUI_GAS_BUDGET: ${SUI_GAS_BUDGET:-10000000}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake}
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8080}:8080"
+
+volumes:
+  postgres_data:
+    name: ${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake_db_data
+
+networks:
+  default:
+    name: ${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake_network

@@ -1,0 +1,20 @@
+#!/bin/sh
+# Pre-push hook: block pushes with failing builds, tests, lint, or formatting.
+
+set -e
+
+printf "Running pre-push checks...\n"
+
+printf "\n[server] Check\n"
+npm run check:server
+
+printf "\n[app] Check\n"
+npm run check:app
+
+printf "\n[server] Build\n"
+npm run build:server
+
+printf "\n[server] Test\n"
+npm run test:server
+
+printf "\nPre-push checks passed.\n"
