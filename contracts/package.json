@@ -1,0 +1,14 @@
+{
+  "name": "granite-lake-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "granite-lake": "./cli/granite-lake.js"
+  },
+  "scripts": {
+    "build:move": "sui move build",
+    "cli": "node ./cli/granite-lake.js",
+    "server": "node ./server/minimal-backend.js"
+  }
+}

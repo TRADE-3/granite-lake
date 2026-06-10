@@ -18,3 +18,5 @@ coverage
 *.zip
 *.tar
 *.rar
+.coverage*
+Pub.*.toml
