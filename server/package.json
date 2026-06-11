@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/src/server.js",
     "test": "vitest run",
-    "db:migrate": "node dist/src/db/migrate.js"
+    "db:migrate": "node dist/src/db/migrate.js",
+    "vault:local:write": "bash scripts/write-local-vault-secrets.sh"
   },
   "dependencies": {
     "@mysten/sui": "^2.17.0",

@@ -24,7 +24,6 @@ The current onboarding and capture flow is:
    - company domain
    - employee / user id
    - OTP
-   - nonce
 4. Protect the wallet with biometrics
 5. Start a secure session
 6. Capture a photo
@@ -70,14 +69,16 @@ The app integrates with the published Move module:
 
 The app currently uses these contract entry points:
 
-- `claim_user_with_otp`
 - `attest_photo`
 
-Claim flow:
+OTP and UserCap claim flow:
 
-- the app hashes `"$otp:$nonce"` with SHA-256
-- it submits `domain`, `userId`, and `hashed_otp`
-- after success, it extracts the claimed `UserCap` object id from object changes
+- the app calls the backend `POST /otp/request` endpoint with the company domain and user email
+- the backend delivers the OTP through its configured delivery channel
+- the app calls `POST /otp/verify` with `userId`, `otp`, `domain`, and the device wallet address
+- the backend verifies the OTP, then signs the contract `add_user` transaction with the configured domain-admin wallet
+- after success, the backend returns the transaction digest and `UserCap` object id
+- the app stores the successful claim record in SQLite and verifies that the `UserCap` resolves for the device wallet
 
 Attestation flow:
 
@@ -512,9 +513,9 @@ Examples of friendly errors now handled:
 - timeout / connectivity issues
 - missing contract registry
 - missing `UserCap`
+- invalid OTP
+- OTP already used
 - contract aborts such as:
-  - invalid OTP or nonce
-  - OTP already used
   - user disabled
   - wallet mismatch
   - user not authorized to attest
@@ -531,7 +532,7 @@ Granite Lake currently still supports a registration verifier model in secure st
 This remains part of the secure state service, but the active onboarding flow for Sui contract integration is centered on:
 
 - wallet setup
-- employee/domain claim via OTP + nonce
+- employee/domain claim via backend OTP verification
 - biometric protection
 
 The successful claim record stored in SQLite contains:

@@ -3,6 +3,7 @@ import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { SuiJsonRpcClient, type SuiObjectChange } from "@mysten/sui/jsonRpc";
 import { Transaction } from "@mysten/sui/transactions";
 import type { AppEnv } from "../config/env.js";
+import { resolveSecretValue } from "./VaultService.js";
 
 export type AddUserResult = {
   txDigest: string;
@@ -67,9 +68,9 @@ export class SuiService {
     userWallet: string;
     showObjectChanges: boolean;
   }) {
-    this.assertConfigured();
+    const privateKey = await this.getPrivateKey();
 
-    const keypair = toEd25519Keypair(this.appEnv.SUI_PRIVATE_KEY);
+    const keypair = toEd25519Keypair(privateKey);
     const signerAddress = keypair.toSuiAddress().toLowerCase();
     const expectedAddress = this.appEnv.ADMIN_WALLET.trim().toLowerCase();
 
@@ -106,10 +107,18 @@ export class SuiService {
     return result;
   }
 
-  private assertConfigured(): void {
+  private async getPrivateKey(): Promise<string> {
     if (!this.appEnv.SUI_PRIVATE_KEY || !this.appEnv.SUI_PACKAGE_ID || !this.appEnv.SUI_REGISTRY_ID) {
       throw new Error("Sui configuration is incomplete. Set SUI_PRIVATE_KEY, SUI_PACKAGE_ID, and SUI_REGISTRY_ID.");
     }
+
+    const privateKey = await resolveSecretValue(this.appEnv, this.appEnv.SUI_PRIVATE_KEY);
+
+    if (!privateKey) {
+      throw new Error("Sui private key could not be resolved from configuration.");
+    }
+
+    return privateKey;
   }
 }
 
