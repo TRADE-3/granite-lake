@@ -1,6 +1,24 @@
 import "dotenv/config";
 import { z } from "zod";
 
+const booleanFromEnv = z.preprocess((value) => {
+  if (typeof value !== "string") return value;
+  if (value.toLowerCase() === "true") return true;
+  if (value.toLowerCase() === "false") return false;
+  return value;
+}, z.boolean());
+
+const blankStringToUndefined = (value: unknown) => {
+  if (value === "") return undefined;
+  return value;
+};
+
+const optionalUrlFromEnv = z.preprocess(blankStringToUndefined, z.string().url().optional());
+
+const optionalStringFromEnv = z.preprocess(blankStringToUndefined, z.string().optional());
+
+const vaultAuthMethodFromEnv = z.preprocess(blankStringToUndefined, z.enum(["token", "approle"]).default("token"));
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "staging", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(8080),
@@ -22,6 +40,15 @@ const envSchema = z.object({
   SUI_MODULE: z.string().default("photo_attestation"),
   SUI_REGISTRY_ID: z.string().default(""),
   SUI_GAS_BUDGET: z.coerce.number().int().positive().default(10_000_000),
+  VAULT_ENABLED: booleanFromEnv.default(false),
+  VAULT_ADDR: optionalUrlFromEnv,
+  VAULT_TOKEN: optionalStringFromEnv,
+  VAULT_NAMESPACE: optionalStringFromEnv,
+  VAULT_AUTH_METHOD: vaultAuthMethodFromEnv,
+  VAULT_ROLE_ID: optionalStringFromEnv,
+  VAULT_SECRET_ID: optionalStringFromEnv,
+  VAULT_KV_MOUNT: z.string().default("secret"),
+  VAULT_SECRET_PREFIX: optionalStringFromEnv,
   OTP_TTL_MS: z.coerce
     .number()
     .int()

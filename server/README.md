@@ -9,7 +9,7 @@ One container stack equals one domain.
 - `CLIENT_ID` is the Docker/Postgres naming slug. Use the domain label without `.com` or dots, for example `CLIENT_ID=acme`.
 - `DOMAIN` is the actual email/on-chain domain, for example `DOMAIN=acme.com`.
 - `ADMIN_WALLET` is the public wallet address for the domain admin.
-- `SUI_PRIVATE_KEY` must belong to `ADMIN_WALLET`.
+- `SUI_PRIVATE_KEY` must belong to `ADMIN_WALLET`. It can be a literal key or a Vault reference.
 
 Compose names are derived from:
 
@@ -25,7 +25,7 @@ Make sure these values all refer to the same on-chain domain setup:
 
 - `DOMAIN` is the domain already added to the Sui registry.
 - `ADMIN_WALLET` is the admin wallet recorded for that domain.
-- `SUI_PRIVATE_KEY` is the private key for `ADMIN_WALLET`.
+- `SUI_PRIVATE_KEY` is the private key for `ADMIN_WALLET`, either as a literal value or a Vault reference.
 - `SUI_PACKAGE_ID` and `SUI_REGISTRY_ID` point to the deployed Granite Lake package and registry that contain the domain.
 
 If the domain was not added first, OTP verification will fail when the server submits `add_user`.
@@ -42,7 +42,7 @@ ADMIN_WALLET=0x...
 ADMIN_API_KEY=<admin-api-key>
 GOOGLE_CHAT_WEBHOOK_URL=<google-chat-webhook-url>
 SUI_RPC_URL=https://fullnode.testnet.sui.io:443
-SUI_PRIVATE_KEY=<domain-admin-suiprivkey>
+SUI_PRIVATE_KEY=<domain-admin-suiprivkey-or-vault-ref>
 SUI_PACKAGE_ID=0x...
 SUI_REGISTRY_ID=0x...
 ```
@@ -56,6 +56,15 @@ OTP_TTL_MS=300000
 SUI_NETWORK=testnet
 SUI_MODULE=photo_attestation
 SUI_GAS_BUDGET=10000000
+VAULT_ENABLED=false
+VAULT_ADDR=
+VAULT_TOKEN=
+VAULT_NAMESPACE=
+VAULT_AUTH_METHOD=token
+VAULT_ROLE_ID=
+VAULT_SECRET_ID=
+VAULT_KV_MOUNT=secret
+VAULT_SECRET_PREFIX=
 ```
 
 `SUI_MODULE` is only the Move module name. Even though the source declares `module granite_lake::photo_attestation`, the transaction target is built as `<SUI_PACKAGE_ID>::<SUI_MODULE>::<function>`, so use `SUI_MODULE=photo_attestation`, not `granite_lake::photo_attestation`.
@@ -64,12 +73,83 @@ SUI_GAS_BUDGET=10000000
 
 OTP codes are currently posted to a Google Chat incoming webhook using `GOOGLE_CHAT_WEBHOOK_URL`. This is a temporary delivery path until the paid email service is available. The API still requires `user_email` so it can validate the user belongs to the configured domain and record the verified user identity.
 
+## HashiCorp Vault Secrets
+
+The API supports HashiCorp Vault KV v2 for `SUI_PRIVATE_KEY`. This is the only secret currently resolved from Vault in Granite Lake.
+
+Vault is optional. When `VAULT_ENABLED=false`, leave the Vault settings blank and set `SUI_PRIVATE_KEY` to the literal domain-admin Sui private key in `.env`:
+
+```env
+VAULT_ENABLED=false
+VAULT_ADDR=
+SUI_PRIVATE_KEY=<domain-admin-suiprivkey>
+```
+
+In this mode the API never contacts Vault. Empty Vault settings such as `VAULT_ADDR=`, `VAULT_TOKEN=`, `VAULT_ROLE_ID=`, `VAULT_SECRET_ID=`, and `VAULT_SECRET_PREFIX=` are treated as unset.
+
+Use a fixed static path per client container:
+
+```txt
+secret/<NODE_ENV>/<CLIENT_ID>/static#SUI_PRIVATE_KEY
+```
+
+For example:
+
+```env
+VAULT_ENABLED=true
+VAULT_ADDR=http://vault:8200
+VAULT_TOKEN=dev-root-token
+VAULT_AUTH_METHOD=token
+VAULT_KV_MOUNT=secret
+SUI_PRIVATE_KEY=vault://secret/development/domain_demo/static#SUI_PRIVATE_KEY
+```
+
+`VAULT_SECRET_PREFIX` defaults to `<NODE_ENV>/<CLIENT_ID>`. Override it only when a deployment needs a different prefix, for example `VAULT_SECRET_PREFIX=production/acme`.
+
+For production, use an external Vault or HCP Vault and prefer AppRole:
+
+```env
+VAULT_ENABLED=true
+VAULT_ADDR=https://vault.example.com:8200
+VAULT_AUTH_METHOD=approle
+VAULT_ROLE_ID=<vault-approle-role-id>
+VAULT_SECRET_ID=<vault-approle-secret-id>
+VAULT_KV_MOUNT=secret
+SUI_PRIVATE_KEY=vault://secret/production/acme/static#SUI_PRIVATE_KEY
+```
+
+Each per-client container should receive a Vault token/AppRole policy that can read only its own static path. Do not run Vault dev mode in production.
+
 ## Local Development
 
 ```bash
 npm install
 cp .env.example .env
 docker compose --env-file .env up --build -d
+```
+
+To run local Vault dev mode, enable Vault in `.env`:
+
+```env
+VAULT_ENABLED=true
+VAULT_ADDR=http://vault:8200
+VAULT_TOKEN=dev-root-token
+SUI_PRIVATE_KEY=vault://secret/development/domain_demo/static#SUI_PRIVATE_KEY
+```
+
+Then start the local override and seed the private key:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml --env-file .env up --build -d
+npm run vault:local:write
+```
+
+The helper writes only `SUI_PRIVATE_KEY` to `secret/<NODE_ENV>/<CLIENT_ID>/static` and does not print the secret value. You can also seed directly with the Vault CLI:
+
+```bash
+export VAULT_ADDR=http://127.0.0.1:8200
+export VAULT_TOKEN=dev-root-token
+vault kv put secret/development/domain_demo/static SUI_PRIVATE_KEY='<domain-admin-suiprivkey>'
 ```
 
 The app always derives `DATABASE_URL` from `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, and `POSTGRES_DB`. If running the API directly on your machine, set `POSTGRES_HOST=localhost`.
@@ -80,6 +160,7 @@ Run checks:
 npm run build
 npm test
 docker compose --env-file .env.example config
+docker compose -f docker-compose.yml -f docker-compose.local.yml --env-file .env.example config
 ```
 
 ## Authentication

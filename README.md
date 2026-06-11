@@ -42,7 +42,7 @@ This starts:
 - API at `http://localhost:8080`
 - Postgres for OTP sessions and registered users
 
-Before using OTP verification, make sure the configured domain and admin wallet already exist in the deployed Sui registry. See `server/README.md` for the required environment variables and deployment model.
+Before using OTP verification, make sure the configured domain and admin wallet already exist in the deployed Sui registry. The server can read `SUI_PRIVATE_KEY` directly from `.env`, or from HashiCorp Vault when Vault is enabled. See `server/README.md` for the required environment variables, Vault setup, and deployment model.
 
 ### 3) Start Flutter app
 
@@ -138,7 +138,7 @@ At a high level:
 
 1. Publish or use the configured Granite Lake Move package.
 2. Register a domain with its admin wallet in the shared registry.
-3. Configure the server with matching `DOMAIN`, `ADMIN_WALLET`, `SUI_PRIVATE_KEY`, `SUI_PACKAGE_ID`, and `SUI_REGISTRY_ID`.
+3. Configure the server with matching `DOMAIN`, `ADMIN_WALLET`, `SUI_PRIVATE_KEY`, `SUI_PACKAGE_ID`, and `SUI_REGISTRY_ID`. `SUI_PRIVATE_KEY` can be a literal env value when Vault is disabled, or a `vault://` reference when Vault is enabled.
 4. Run OTP registration from the app.
 5. Capture and attest photos from an enabled wallet.
 
