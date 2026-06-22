@@ -154,7 +154,6 @@ export default function App() {
         </div>
 
         <h1>Public Photo Verification Portal</h1>
-
       </section>
 
       <section className="workspace">

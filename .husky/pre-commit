@@ -11,4 +11,10 @@ npm run check:server
 printf "\n[app] Check\n"
 npm run check:app
 
+printf "\n[verification_api] Check\n"
+npm run check:verification_api
+
+printf "\n[verification_portal] Check\n"
+npm run check:verification_portal
+
 printf "\nPre-commit checks passed.\n"

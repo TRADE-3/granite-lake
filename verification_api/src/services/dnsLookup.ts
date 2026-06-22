@@ -57,7 +57,7 @@ function parseGraniteTxtRecord(lookupHost: string, rawRecord: string): GraniteDn
     .map((part) => {
       const [rawKey, ...rawValueParts] = part.split("=");
       if (!rawKey || rawValueParts.length === 0) {
-        throw new Error(`Malformed TXT token \"${part}\" for ${lookupHost}`);
+        throw new Error(`Malformed TXT token "${part}" for ${lookupHost}`);
       }
       return [rawKey.trim().toLowerCase(), rawValueParts.join("=").trim()] as const;
     });
@@ -71,7 +71,7 @@ function parseGraniteTxtRecord(lookupHost: string, rawRecord: string): GraniteDn
     throw new Error(`TXT record for ${lookupHost} must include chain_id, attester, and revoked.`);
   }
   if (!chainId.toLowerCase().startsWith(EXPECTED_CHAIN_NAMESPACE)) {
-    throw new Error(`chain_id must use Sui format like \"sui:testnet\". Received: ${chainId}`);
+    throw new Error(`chain_id must use Sui format like "sui:testnet". Received: ${chainId}`);
   }
   if (!/^0x[0-9a-f]+$/i.test(attester)) {
     throw new Error(`Attester must be a hex-encoded Sui address. Received: ${attester}`);

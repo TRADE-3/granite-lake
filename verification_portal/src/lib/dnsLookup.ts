@@ -529,7 +529,7 @@ function parseGraniteTxtRecord(lookupHost: string, rawRecord: string): GraniteDn
   }
 
   if (!chainId.toLowerCase().startsWith(EXPECTED_CHAIN_NAMESPACE)) {
-    throw new Error(`chain_id must use Sui format like \"sui:testnet\". Received: ${chainId}`);
+    throw new Error(`chain_id must use Sui format like "sui:testnet". Received: ${chainId}`);
   }
 
   if (!/^0x[0-9a-f]+$/i.test(attester)) {

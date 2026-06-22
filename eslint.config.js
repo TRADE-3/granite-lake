@@ -26,5 +26,17 @@ export default tseslint.config(
     rules: {
       "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
     },
+  },
+
+  {
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
+    files: ["verification_api/src/**/*.ts", "verification_portal/src/**/*.{ts,tsx}"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: globals.node,
+    },
+    rules: {
+      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
+    },
   }
 );
