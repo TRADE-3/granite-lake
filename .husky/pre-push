@@ -17,4 +17,10 @@ npm run build:server
 printf "\n[server] Test\n"
 npm run test:server
 
+printf "\n[verification_api] Build\n"
+npm --prefix verification_api run build
+
+printf "\n[verification_portal] Build\n"
+npm --prefix verification_portal run build
+
 printf "\nPre-push checks passed.\n"

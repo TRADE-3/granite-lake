@@ -9,12 +9,16 @@ Top-level folders and what they contain:
 - `app/`: Android-focused Flutter application for local wallet creation, biometric protection, photo capture, Sui attestation, and verification.
 - `server/`: Per-domain backend API (Fastify + Postgres) for OTP registration, domain user management, and Sui writes.
 - `contracts/`: Sui Move package for domain registration, user capabilities, enable/disable controls, and event-only photo attestation.
+- `verification_portal/`: Public photo verification portal (Vite + React + TypeScript) for querying attested photos from Sui.
+- `verification_api/`: HTTP API backend for photo verification against on-chain attestations with DNS TXT consensus lookup.
 
 Folder-specific documentation:
 
 - `app/README.md`
 - `server/README.md`
 - `contracts/README.md`
+- `verification_portal/README.md`
+- `verification_api/README.md`
 
 ## Local Development
 
@@ -54,10 +58,32 @@ flutter run
 
 The app targets Android. For an Android emulator, the bundled backend resolver tries common local endpoints including `http://10.0.2.2:8080`.
 
-### 4) Quick health check
+### 4) Start verification API (optional)
+
+```bash
+cd verification_api
+cp .env.example .env
+npm install
+npm run dev
+```
+
+The verification API runs at `http://localhost:8081` and provides a `/verify-photo` endpoint for photo verification.
+
+### 5) Start verification portal (optional)
+
+```bash
+cd verification_portal
+npm install
+npm run dev
+```
+
+The verification portal runs at the Vite dev server URL and provides a web UI for public photo verification.
+
+### 6) Quick health check
 
 ```bash
 curl http://localhost:8080/health
+curl http://localhost:8081/health  # if verification_api is running
 ```
 
 ## Contributing
@@ -94,6 +120,8 @@ Run server and app checks:
 ```bash
 npm run check:server
 npm run check:app
+npm run check:verification_api
+npm run check:verification_portal
 ```
 
 Or run the combined lint and format checks:
@@ -103,6 +131,8 @@ npm run lint
 npm run format:check
 ```
 
+These commands cover server, app, verification_api, and verification_portal.
+
 To auto-format supported files:
 
 ```bash
@@ -111,8 +141,8 @@ npm run format
 
 The Git hooks run these checks automatically:
 
-- `pre-commit`: server format/lint checks and Flutter format/analyze checks
-- `pre-push`: pre-commit checks plus server build and server tests
+- `pre-commit`: server/verification_api/verification_portal format/lint checks and Flutter format/analyze checks
+- `pre-push`: pre-commit checks plus server build, server tests, verification_api build, and verification_portal build
 
 ### Server Checks
 
@@ -129,6 +159,13 @@ npm run format:app:check
 ```
 
 `lint:app` runs `flutter analyze app`. Flutter tests can be added to the root scripts once the app has test files.
+
+### Verification Checks
+
+```bash
+npm run lint:verification_api
+npm run lint:verification_portal
+```
 
 ## Domain And Contract Setup
 
