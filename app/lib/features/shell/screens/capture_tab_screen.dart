@@ -274,16 +274,18 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
     final pulseController = _ensurePulseController();
 
     return DecoratedBox(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         gradient: RadialGradient(
-          center: Alignment(0, -0.2),
+          center: const Alignment(0, -0.2),
           radius: 1.0,
           colors: [
-            Color(0xFF1A2E1E),
+            controller.isDarkMode
+                ? const Color(0xFF1A2E1E)
+                : const Color(0xFFE8F2FF),
             AppColors.background,
             AppColors.background,
           ],
-          stops: [0.0, 0.55, 1.0],
+          stops: const [0.0, 0.55, 1.0],
         ),
       ),
       child: Stack(
@@ -566,7 +568,7 @@ class _CaptureHeader extends StatelessWidget {
               ),
             ),
           ),
-          const Icon(Icons.verified_rounded, color: AppColors.primary),
+          Icon(Icons.verified_rounded, color: AppColors.primary),
         ],
       ),
     );
@@ -666,7 +668,7 @@ class _SessionProtocolCard extends StatelessWidget {
           const SizedBox(height: 12),
           Row(
             children: [
-              const Icon(
+              Icon(
                 Icons.shield_outlined,
                 size: 16,
                 color: AppColors.statusActive,
