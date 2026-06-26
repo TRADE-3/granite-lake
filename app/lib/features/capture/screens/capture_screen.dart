@@ -475,25 +475,25 @@ class _CaptureScreenState extends State<CaptureScreen> {
     });
     final submissionRunId = ++_submissionRunId;
 
-    final currentLocation = await _refreshLocation();
-    if (currentLocation == null ||
-        !_matchesFormattedGps(currentLocation.gpsLabel, metadata.gpsLabel) ||
-        !_matchesFormattedAltitude(
-          currentLocation.altitudeLabel,
-          metadata.altitudeLabel,
-        )) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _isCapturing = false;
-        _flow = _CaptureFlow.review;
-        _submissionStep = 0;
-        _errorMessage =
-            'Submission failed. GPS or altitude changed since capture. Retake the photo and try again.';
-      });
-      return;
-    }
+    // final currentLocation = await _refreshLocation();
+    // if (currentLocation == null ||
+    //     !_matchesFormattedGps(currentLocation.gpsLabel, metadata.gpsLabel) ||
+    //     !_matchesFormattedAltitude(
+    //       currentLocation.altitudeLabel,
+    //       metadata.altitudeLabel,
+    //     )) {
+    //   if (!mounted) {
+    //     return;
+    //   }
+    //   setState(() {
+    //     _isCapturing = false;
+    //     _flow = _CaptureFlow.review;
+    //     _submissionStep = 0;
+    //     _errorMessage =
+    //         'Submission failed. GPS or altitude changed since capture. Retake the photo and try again.';
+    //   });
+    //   return;
+    // }
 
     final submittedAtUtc = await _fetchBackendUtcTimestamp();
     if (submittedAtUtc == null) {
@@ -1901,28 +1901,28 @@ class _CaptureScreenState extends State<CaptureScreen> {
     return position.isMocked;
   }
 
-  bool _matchesFormattedGps(String currentValue, String capturedValue) {
-    return _normalizeGpsComparisonValue(currentValue) ==
-        _normalizeGpsComparisonValue(capturedValue);
-  }
+  // bool _matchesFormattedGps(String currentValue, String capturedValue) {
+  //   return _normalizeGpsComparisonValue(currentValue) ==
+  //       _normalizeGpsComparisonValue(capturedValue);
+  // }
 
-  bool _matchesFormattedAltitude(String currentValue, String capturedValue) {
-    return _normalizeAltitudeComparisonValue(currentValue) ==
-        _normalizeAltitudeComparisonValue(capturedValue);
-  }
+  // bool _matchesFormattedAltitude(String currentValue, String capturedValue) {
+  //   return _normalizeAltitudeComparisonValue(currentValue) ==
+  //       _normalizeAltitudeComparisonValue(capturedValue);
+  // }
 
-  String _normalizeGpsComparisonValue(String value) {
-    final trimmed = value.trim();
-    final accuracyIndex = trimmed.indexOf(' (');
-    if (accuracyIndex == -1) {
-      return trimmed;
-    }
-    return trimmed.substring(0, accuracyIndex).trim();
-  }
+  // String _normalizeGpsComparisonValue(String value) {
+  //   final trimmed = value.trim();
+  //   final accuracyIndex = trimmed.indexOf(' (');
+  //   if (accuracyIndex == -1) {
+  //     return trimmed;
+  //   }
+  //   return trimmed.substring(0, accuracyIndex).trim();
+  // }
 
-  String _normalizeAltitudeComparisonValue(String value) {
-    return value.trim().toLowerCase();
-  }
+  // String _normalizeAltitudeComparisonValue(String value) {
+  //   return value.trim().toLowerCase();
+  // }
 
   String _formatTimestamp(DateTime timestampUtc) {
     final local = timestampUtc.toLocal();
