@@ -371,7 +371,7 @@ class _EmptyProjectsState extends StatelessWidget {
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: AppColors.border),
               ),
-              child: const Icon(
+              child: Icon(
                 Icons.folder_open_rounded,
                 color: AppColors.textSecondary,
                 size: 30,
@@ -423,19 +423,19 @@ InputDecoration _inputDecoration({
     fillColor: AppColors.surface,
     enabledBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(14),
-      borderSide: const BorderSide(color: AppColors.borderActive),
+      borderSide: BorderSide(color: AppColors.borderActive),
     ),
     focusedBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(14),
-      borderSide: const BorderSide(color: AppColors.primary),
+      borderSide: BorderSide(color: AppColors.primary),
     ),
     errorBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(14),
-      borderSide: const BorderSide(color: AppColors.statusError),
+      borderSide: BorderSide(color: AppColors.statusError),
     ),
     focusedErrorBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(14),
-      borderSide: const BorderSide(color: AppColors.statusError),
+      borderSide: BorderSide(color: AppColors.statusError),
     ),
   );
 }

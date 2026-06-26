@@ -11,11 +11,10 @@ void main() {
     DeviceOrientation.portraitDown,
   ]);
 
-  // Full immersive dark status bar.
+  // Use a neutral status bar default; themed app bars override per theme.
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
       statusBarBrightness: Brightness.dark,
     ),
   );

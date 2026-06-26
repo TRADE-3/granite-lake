@@ -475,25 +475,25 @@ class _CaptureScreenState extends State<CaptureScreen> {
     });
     final submissionRunId = ++_submissionRunId;
 
-    final currentLocation = await _refreshLocation();
-    if (currentLocation == null ||
-        !_matchesFormattedGps(currentLocation.gpsLabel, metadata.gpsLabel) ||
-        !_matchesFormattedAltitude(
-          currentLocation.altitudeLabel,
-          metadata.altitudeLabel,
-        )) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _isCapturing = false;
-        _flow = _CaptureFlow.review;
-        _submissionStep = 0;
-        _errorMessage =
-            'Submission failed. GPS or altitude changed since capture. Retake the photo and try again.';
-      });
-      return;
-    }
+    // final currentLocation = await _refreshLocation();
+    // if (currentLocation == null ||
+    //     !_matchesFormattedGps(currentLocation.gpsLabel, metadata.gpsLabel) ||
+    //     !_matchesFormattedAltitude(
+    //       currentLocation.altitudeLabel,
+    //       metadata.altitudeLabel,
+    //     )) {
+    //   if (!mounted) {
+    //     return;
+    //   }
+    //   setState(() {
+    //     _isCapturing = false;
+    //     _flow = _CaptureFlow.review;
+    //     _submissionStep = 0;
+    //     _errorMessage =
+    //         'Submission failed. GPS or altitude changed since capture. Retake the photo and try again.';
+    //   });
+    //   return;
+    // }
 
     final submittedAtUtc = await _fetchBackendUtcTimestamp();
     if (submittedAtUtc == null) {
@@ -799,7 +799,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                     initials: _resolveInitials(identity?.walletAddress),
                   ),
                   const SizedBox(width: 8),
-                  const Icon(
+                  Icon(
                     Icons.verified_rounded,
                     color: AppColors.statusActive,
                     size: 20,
@@ -1219,7 +1219,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                                     ),
                                   ),
                                   const Spacer(),
-                                  const Icon(
+                                  Icon(
                                     Icons.lock_rounded,
                                     size: 16,
                                     color: AppColors.textSecondary,
@@ -1305,7 +1305,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(
+                SizedBox(
                   width: 64,
                   height: 64,
                   child: CircularProgressIndicator(
@@ -1862,15 +1862,15 @@ class _CaptureScreenState extends State<CaptureScreen> {
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: AppColors.borderActive),
+        borderSide: BorderSide(color: AppColors.borderActive),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: AppColors.borderActive),
+        borderSide: BorderSide(color: AppColors.borderActive),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: AppColors.primary),
+        borderSide: BorderSide(color: AppColors.primary),
       ),
     );
   }
@@ -1901,28 +1901,28 @@ class _CaptureScreenState extends State<CaptureScreen> {
     return position.isMocked;
   }
 
-  bool _matchesFormattedGps(String currentValue, String capturedValue) {
-    return _normalizeGpsComparisonValue(currentValue) ==
-        _normalizeGpsComparisonValue(capturedValue);
-  }
+  // bool _matchesFormattedGps(String currentValue, String capturedValue) {
+  //   return _normalizeGpsComparisonValue(currentValue) ==
+  //       _normalizeGpsComparisonValue(capturedValue);
+  // }
 
-  bool _matchesFormattedAltitude(String currentValue, String capturedValue) {
-    return _normalizeAltitudeComparisonValue(currentValue) ==
-        _normalizeAltitudeComparisonValue(capturedValue);
-  }
+  // bool _matchesFormattedAltitude(String currentValue, String capturedValue) {
+  //   return _normalizeAltitudeComparisonValue(currentValue) ==
+  //       _normalizeAltitudeComparisonValue(capturedValue);
+  // }
 
-  String _normalizeGpsComparisonValue(String value) {
-    final trimmed = value.trim();
-    final accuracyIndex = trimmed.indexOf(' (');
-    if (accuracyIndex == -1) {
-      return trimmed;
-    }
-    return trimmed.substring(0, accuracyIndex).trim();
-  }
+  // String _normalizeGpsComparisonValue(String value) {
+  //   final trimmed = value.trim();
+  //   final accuracyIndex = trimmed.indexOf(' (');
+  //   if (accuracyIndex == -1) {
+  //     return trimmed;
+  //   }
+  //   return trimmed.substring(0, accuracyIndex).trim();
+  // }
 
-  String _normalizeAltitudeComparisonValue(String value) {
-    return value.trim().toLowerCase();
-  }
+  // String _normalizeAltitudeComparisonValue(String value) {
+  //   return value.trim().toLowerCase();
+  // }
 
   String _formatTimestamp(DateTime timestampUtc) {
     final local = timestampUtc.toLocal();
@@ -2135,6 +2135,8 @@ class _ShutterButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isEnabled = onTap != null;
+    final isDark = GraniteLakeScope.of(context).isDarkMode;
+    final ringColor = isDark ? Colors.white : AppColors.primary;
     return Opacity(
       opacity: isEnabled ? 1 : 0.45,
       child: GestureDetector(
@@ -2164,7 +2166,7 @@ class _ShutterButton extends StatelessWidget {
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   border: Border.all(
-                    color: isEnabled ? Colors.white : AppColors.textSecondary,
+                    color: isEnabled ? ringColor : AppColors.textSecondary,
                     width: 4,
                   ),
                 ),
@@ -2177,12 +2179,12 @@ class _ShutterButton extends StatelessWidget {
                       color: isBusy
                           ? AppColors.statusActive
                           : isEnabled
-                          ? Colors.white
+                          ? ringColor
                           : AppColors.textSecondary,
                       shape: BoxShape.circle,
                     ),
                     child: isBusy
-                        ? const Padding(
+                        ? Padding(
                             padding: EdgeInsets.all(14),
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
@@ -2347,7 +2349,7 @@ class _ReviewHeader extends StatelessWidget {
               ),
             ),
           ),
-          const Icon(Icons.verified_rounded, color: AppColors.primary),
+          Icon(Icons.verified_rounded, color: AppColors.primary),
         ],
       ),
     );
@@ -2390,7 +2392,7 @@ class _SubmissionStep extends StatelessWidget {
 
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 14),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: AppColors.border)),
       ),
       child: Row(

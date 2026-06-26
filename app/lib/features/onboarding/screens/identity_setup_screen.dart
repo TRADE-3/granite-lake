@@ -68,7 +68,9 @@ class _IdentitySetupScreenState extends State<IdentitySetupScreen> {
                                   child: AspectRatio(
                                     aspectRatio: 1,
                                     child: Image.asset(
-                                      AppConstants.walletCreateAsset,
+                                      controller.isDarkMode
+                                          ? AppConstants.walletCreateAsset
+                                          : 'assets/images/wallet_create_light.png',
                                       fit: BoxFit.cover,
                                     ),
                                   ),

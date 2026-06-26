@@ -6,6 +6,7 @@ import '../../../core/constants/app_constants.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/widgets/theme_toggle_button.dart';
 import '../widgets/hud_overlay.dart';
 import '../widgets/scan_line_overlay.dart';
 
@@ -20,6 +21,12 @@ class WelcomeScreen extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: AppColors.background,
+      appBar: AppBar(
+        actions: [
+          ThemeToggleButton(controller: controller),
+          const SizedBox(width: 8),
+        ],
+      ),
       body: Stack(
         children: [
           const Positioned.fill(child: ScanLineOverlay()),

@@ -34,11 +34,14 @@ class _GraniteLakeAppState extends State<GraniteLakeApp> {
   Widget build(BuildContext context) {
     return GraniteLakeScope(
       controller: _controller,
-      child: MaterialApp.router(
-        title: AppConstants.appTitle,
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.dark,
-        routerConfig: _router,
+      child: ListenableBuilder(
+        listenable: _controller,
+        builder: (context, _) => MaterialApp.router(
+          title: AppConstants.appTitle,
+          debugShowCheckedModeBanner: false,
+          theme: _controller.isDarkMode ? AppTheme.dark : AppTheme.light,
+          routerConfig: _router,
+        ),
       ),
     );
   }
