@@ -92,7 +92,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ? '${_formatRemainingSession(controller.remainingSessionDuration)} remaining before secure lock'
                       : '${AppConstants.captureSessionDurationMinutes}m inactivity timeout',
                 ),
-                const Divider(height: 1, color: AppColors.border),
+                Divider(height: 1, color: AppColors.border),
                 _ProtocolTile(
                   icon: Icons.lock_clock_outlined,
                   title: 'Auto-Lock',
@@ -107,6 +107,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 ),
               ],
+            ),
+          ),
+          const SizedBox(height: 22),
+          const _SectionLabel('Appearance'),
+          const SizedBox(height: 10),
+          _Panel(
+            child: _ThemePreferenceTile(
+              isDarkMode: controller.isDarkMode,
+              onToggle: controller.toggleTheme,
             ),
           ),
           const SizedBox(height: 22),
@@ -126,7 +135,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         borderRadius: BorderRadius.circular(12),
                         color: AppColors.statusActive.withAlpha(18),
                       ),
-                      child: const Icon(
+                      child: Icon(
                         Icons.smartphone_rounded,
                         color: AppColors.statusActive,
                       ),
@@ -161,7 +170,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ],
                 ),
                 const SizedBox(height: 16),
-                const Divider(height: 1, color: AppColors.border),
+                Divider(height: 1, color: AppColors.border),
                 const SizedBox(height: 16),
                 _DataBlock(
                   label: 'Public Key Fingerprint',
@@ -375,7 +384,7 @@ class _ProfileHeaderCard extends StatelessWidget {
               ],
             ),
           ),
-          const Divider(height: 1, color: AppColors.border),
+          Divider(height: 1, color: AppColors.border),
           Container(
             width: double.infinity,
             margin: const EdgeInsets.all(16),
@@ -425,7 +434,7 @@ class _ProfileHeaderCard extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 16),
-                const Divider(height: 1, color: AppColors.border),
+                Divider(height: 1, color: AppColors.border),
                 const SizedBox(height: 16),
                 _KeyValueGrid(
                   items: [
@@ -488,6 +497,61 @@ class _ProfileHeaderCard extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ThemePreferenceTile extends StatelessWidget {
+  const _ThemePreferenceTile({
+    required this.isDarkMode,
+    required this.onToggle,
+  });
+
+  final bool isDarkMode;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Icon(
+                isDarkMode ? Icons.dark_mode : Icons.light_mode,
+                color: AppColors.textPrimary,
+                size: 20,
+              ),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Theme',
+                    style: AppTextStyles.bodyMedium.copyWith(
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    isDarkMode ? 'Dark mode' : 'Light mode',
+                    style: AppTextStyles.labelLarge.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          Switch(
+            value: isDarkMode,
+            onChanged: (_) => onToggle(),
+            activeThumbColor: AppColors.primary,
           ),
         ],
       ),

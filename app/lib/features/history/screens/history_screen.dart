@@ -140,7 +140,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     hintStyle: AppTextStyles.bodyMedium.copyWith(
                       color: AppColors.textMuted,
                     ),
-                    prefixIcon: const Icon(
+                    prefixIcon: Icon(
                       Icons.search_rounded,
                       color: AppColors.textSecondary,
                     ),
@@ -151,7 +151,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                               _searchController.clear();
                               setState(() => _searchQuery = '');
                             },
-                            icon: const Icon(
+                            icon: Icon(
                               Icons.close_rounded,
                               color: AppColors.textSecondary,
                             ),
@@ -164,13 +164,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     ),
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(14),
-                      borderSide: const BorderSide(
-                        color: AppColors.borderActive,
-                      ),
+                      borderSide: BorderSide(color: AppColors.borderActive),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(14),
-                      borderSide: const BorderSide(color: AppColors.primary),
+                      borderSide: BorderSide(color: AppColors.primary),
                     ),
                   ),
                 ),
@@ -227,7 +225,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   padding: const EdgeInsets.only(bottom: 20),
                   itemCount: filteredCaptures.length,
                   separatorBuilder: (context, index) =>
-                      const Divider(height: 1, color: AppColors.border),
+                      Divider(height: 1, color: AppColors.border),
                   itemBuilder: (context, index) {
                     final capture = filteredCaptures[index];
                     return _HistoryRow(
@@ -471,7 +469,7 @@ class _MenuChip<T> extends StatelessWidget {
                     ),
                   ),
                   if (item == value)
-                    const Icon(Icons.check_rounded, color: AppColors.primary),
+                    Icon(Icons.check_rounded, color: AppColors.primary),
                 ],
               ),
             ),
@@ -722,7 +720,7 @@ class _MissingThumb extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       color: AppColors.surfaceElevated,
-      child: const Center(
+      child: Center(
         child: Icon(
           Icons.image_not_supported_outlined,
           color: AppColors.textMuted,

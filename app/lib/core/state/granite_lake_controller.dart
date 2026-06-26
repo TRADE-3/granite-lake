@@ -19,11 +19,16 @@ final RegExp _uuidPattern = RegExp(
 );
 
 class GraniteLakeController extends ChangeNotifier {
+  static GraniteLakeController? _current;
+
+  static GraniteLakeController? get current => _current;
+
   GraniteLakeController()
     : _storage = const FlutterSecureStorage(
         aOptions: AndroidOptions(encryptedSharedPreferences: true),
       ),
       _dataControllers = GraniteLakeDataControllers.create() {
+    _current = this;
     _secureStateService = GraniteLakeSecureStateService(storage: _storage);
     _captureWorkflowService = GraniteLakeCaptureWorkflowService();
     _photoAttestationService = PhotoAttestationService();
@@ -57,6 +62,7 @@ class GraniteLakeController extends ChangeNotifier {
   bool _requiresLocalDataInitialization = false;
   BigInt? _walletSuiBalanceMist;
   bool _isRefreshingWalletSuiBalance = false;
+  bool _isDarkMode = false;
 
   bool get isInitializing => _isInitializing;
   String? get initializationError => _initializationError;
@@ -80,6 +86,7 @@ class GraniteLakeController extends ChangeNotifier {
   bool get requiresLocalDataInitialization => _requiresLocalDataInitialization;
   BigInt? get walletSuiBalanceMist => _walletSuiBalanceMist;
   bool get isRefreshingWalletSuiBalance => _isRefreshingWalletSuiBalance;
+  bool get isDarkMode => _isDarkMode;
   double? get walletSuiBalanceSui => _walletSuiBalanceMist == null
       ? null
       : _walletSuiBalanceMist!.toDouble() / 1000000000;
@@ -139,6 +146,18 @@ class GraniteLakeController extends ChangeNotifier {
     } finally {
       _isInitializing = false;
       _syncSessionTicker();
+      notifyListeners();
+    }
+  }
+
+  void toggleTheme() {
+    _isDarkMode = !_isDarkMode;
+    notifyListeners();
+  }
+
+  void setDarkMode(bool isDark) {
+    if (_isDarkMode != isDark) {
+      _isDarkMode = isDark;
       notifyListeners();
     }
   }
@@ -634,6 +653,9 @@ class GraniteLakeController extends ChangeNotifier {
 
   @override
   void dispose() {
+    if (identical(_current, this)) {
+      _current = null;
+    }
     _sessionTicker?.cancel();
     unawaited(_dataControllers.dispose());
     super.dispose();
