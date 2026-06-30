@@ -11,14 +11,14 @@ import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 
-const _detailActionFill = Color(0xFFC2C8FF);
-const _detailActionText = Color(0xFF1F3E99);
-const _detailPanel = Color(0xFF201F22);
-const _detailPanelBorder = Color(0xFF46485B);
-const _detailTelemetryScrim = Color(0xCC0E0F13);
-const _detailHeaderBorder = Color(0xFF2E3040);
-const _detailMutedText = Color(0xFFA1A5B8);
-const _detailCorner = Color(0xFF81859A);
+Color get _detailActionFill => AppColors.actionFill;
+Color get _detailActionText => AppColors.actionText;
+Color get _detailPanel => AppColors.surface;
+Color get _detailPanelBorder => AppColors.border;
+Color get _detailTelemetryScrim => AppColors.scrim;
+Color get _detailHeaderBorder => AppColors.border;
+Color get _detailMutedText => AppColors.textSecondary;
+Color get _detailCorner => AppColors.borderActive;
 
 class CaptureDetailScreen extends StatefulWidget {
   const CaptureDetailScreen({super.key, required this.record});
@@ -151,7 +151,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
             Container(
               height: 64,
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 border: Border(bottom: BorderSide(color: _detailHeaderBorder)),
               ),
               child: Row(
@@ -178,14 +178,14 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                       vertical: 9,
                     ),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF151722),
-                      border: Border.all(color: const Color(0xFF39406A)),
+                      color: AppColors.surface,
+                      border: Border.all(color: AppColors.borderActive),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
                       'AUTHENTICATED',
                       style: AppTextStyles.labelSmall.copyWith(
-                        color: const Color(0xFF9DA7D8),
+                        color: AppColors.textSecondary,
                         letterSpacing: 1.1,
                       ),
                     ),
@@ -205,7 +205,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                         fit: StackFit.expand,
                         children: [
                           Container(
-                            color: const Color(0xFF101012),
+                            color: AppColors.surfaceElevated,
                             child: Stack(
                               fit: StackFit.expand,
                               children: [
@@ -243,7 +243,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                 horizontal: 18,
                                 vertical: 10,
                               ),
-                              decoration: const BoxDecoration(
+                              decoration: BoxDecoration(
                                 color: _detailTelemetryScrim,
                               ),
                               child: Wrap(
@@ -319,9 +319,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                             child: OutlinedButton.icon(
                               onPressed: _isSavingImage ? null : _downloadImage,
                               style: OutlinedButton.styleFrom(
-                                side: const BorderSide(
-                                  color: _detailPanelBorder,
-                                ),
+                                side: BorderSide(color: _detailPanelBorder),
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 18,
                                   vertical: 16,
@@ -788,7 +786,7 @@ class _DetailCell extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         border: showDivider
-            ? const Border(bottom: BorderSide(color: _detailPanelBorder))
+            ? Border(bottom: BorderSide(color: _detailPanelBorder))
             : null,
       ),
       padding: const EdgeInsets.fromLTRB(14, 18, 14, 18),
@@ -829,7 +827,7 @@ class _DetailCell extends StatelessWidget {
                       ..hideCurrentSnackBar()
                       ..showSnackBar(SnackBar(content: Text('$label copied')));
                   },
-                  child: const Padding(
+                  child: Padding(
                     padding: EdgeInsets.only(left: 8),
                     child: Icon(
                       Icons.content_copy_rounded,
