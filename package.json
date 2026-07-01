@@ -8,6 +8,7 @@
     "build:server": "npm --prefix server run build",
     "test": "npm run test:server",
     "test:server": "npm --prefix server run test",
+    "test:contracts": "npm --prefix contracts run test:move",
     "check:app": "npm run format:app:check && npm run lint:app",
     "check:server": "npm run format:prettier:check && npm run lint:server",
     "check:verification_api": "prettier --ignore-path .prettierignore --check \"verification_api/**/*.ts\" && npm run lint:verification_api",

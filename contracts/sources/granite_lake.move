@@ -217,4 +217,14 @@ module granite_lake::photo_attestation {
         assert!(table::contains(&domain_record.users, sender), E_USER_NOT_FOUND);
         assert!(*table::borrow(&domain_record.users, sender), E_USER_DISABLED);
     }
+
+    #[test_only]
+    public fun transfer_user_cap_for_testing(user_cap: UserCap, to: address) {
+        transfer::transfer(user_cap, to);
+    }
+
+    #[test_only]
+    public fun init_for_testing(ctx: &mut TxContext) {
+        init(ctx);
+    }
 }

@@ -142,7 +142,7 @@ npm run format
 The Git hooks run these checks automatically:
 
 - `pre-commit`: server/verification_api/verification_portal format/lint checks and Flutter format/analyze checks
-- `pre-push`: pre-commit checks plus server build, server tests, verification_api build, and verification_portal build
+- `pre-push`: pre-commit checks plus server build, server tests, contracts Move tests, verification_api build, and verification_portal build
 
 ### Server Checks
 
