@@ -284,3 +284,26 @@ admin_wallet
 ```
 
 ---
+
+# Test Coverage Note
+
+Move unit tests are in `contracts/tests/granite_lake_tests.move` and currently cover:
+
+- `add_domain` success and duplicate-domain failure
+- `add_user` success, admin-only enforcement, and duplicate-user failure
+- `enable_user` and `disable_user` flows
+- disabled-user attestation rejection
+- `attest_photo` caller ownership enforcement (only the `UserCap` owner)
+- event assertions for `DomainAdded`, `UserAdded`, `UserEnabled`, `UserDisabled`, and `PhotoAttested`
+
+Run tests with:
+
+```bash
+npm run test:move
+```
+
+Or from repository root:
+
+```bash
+npm run test:contracts
+```

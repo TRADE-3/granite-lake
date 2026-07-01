@@ -17,6 +17,9 @@ npm run build:server
 printf "\n[server] Test\n"
 npm run test:server
 
+printf "\n[contracts] Move tests\n"
+npm run test:contracts
+
 printf "\n[verification_api] Build\n"
 npm --prefix verification_api run build
 
