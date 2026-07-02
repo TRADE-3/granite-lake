@@ -203,6 +203,23 @@ code {
   background: #e7f4f5;
 }
 
+.verification-select {
+  width: 100%;
+  border: 1px solid #9bb5ba;
+  border-radius: 12px;
+  background: var(--panel-soft);
+  color: var(--text);
+  padding: 12px 14px;
+  font: inherit;
+  min-height: 52px;
+}
+
+.verification-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 15%, transparent);
+}
+
 :root[data-theme="dark"] .upload-zone.has-file {
   background: color-mix(in oklab, var(--accent) 15%, var(--panel-soft));
 }
