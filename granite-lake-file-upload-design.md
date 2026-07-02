@@ -176,7 +176,8 @@ Requirements:
 
 1. Does domain admin require routine access to file content, or hash verification only?
 2. Should supervisor be included in v1 file access policy, or deferred?
-3. Is v1 file type scope limited to PDF + image, or do we include docx from day one?
+3. Is v1 file type scope limited to PDF + image, or do we include docx from day one? A: We should support all abritrary file types
+4. Looking ahead, how would one query by wallet address, eg "get me all file hashes from wallet X" 
 
 ## 11. Rollout plan
 
