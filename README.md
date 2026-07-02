@@ -1,16 +1,16 @@
 # granite-lake
 
-Open source Granite Lake monorepo for field photo authenticity, domain-scoped user authorization, and Sui-based photo attestation.
+Open source Granite Lake monorepo for field photo and file authenticity, domain-scoped user authorization, and Sui-based attestation.
 
 ## Repository Structure
 
 Top-level folders and what they contain:
 
-- `app/`: Android-focused Flutter application for local wallet creation, biometric protection, photo capture, Sui attestation, and verification.
+- `app/`: Android-focused Flutter application for local wallet creation, biometric protection, photo capture, file upload, Sui attestation, and verification.
 - `server/`: Per-domain backend API (Fastify + Postgres) for OTP registration, domain user management, and Sui writes.
-- `contracts/`: Sui Move package for domain registration, user capabilities, enable/disable controls, and event-only photo attestation.
-- `verification_portal/`: Public photo verification portal (Vite + React + TypeScript) for querying attested photos from Sui.
-- `verification_api/`: HTTP API backend for photo verification against on-chain attestations with DNS TXT consensus lookup.
+- `contracts/`: Sui Move package for domain registration, user capabilities, enable/disable controls, and event-only photo and file attestation.
+- `verification_portal/`: Public verification portal (Vite + React + TypeScript) for querying attested photos or uploaded files from Sui.
+- `verification_api/`: HTTP API backend for photo and file verification against on-chain attestations with DNS TXT consensus lookup.
 
 Folder-specific documentation:
 
@@ -67,7 +67,7 @@ npm install
 npm run dev
 ```
 
-The verification API runs at `http://localhost:8081` and provides a `/verify-attestation` endpoint for photo verification.
+The verification API runs at `http://localhost:8081` and provides a `/verify-attestation` endpoint for photo and file verification.
 
 ### 5) Start verification portal (optional)
 
@@ -77,7 +77,7 @@ npm install
 npm run dev
 ```
 
-The verification portal runs at the Vite dev server URL and provides a web UI for public photo verification.
+The verification portal runs at the Vite dev server URL and provides a web UI for public photo or file verification.
 
 ### 6) Quick health check
 
@@ -183,4 +183,4 @@ See:
 
 - `contracts/README.md` for Move package behavior
 - `server/README.md` for API configuration and OTP routes
-- `app/README.md` for app storage, onboarding, and attestation flow
+- `app/README.md` for app storage, onboarding, and photo/file attestation flow

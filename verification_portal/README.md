@@ -1,13 +1,13 @@
 # Granite Lake Verification Portal
 
-Public photo verification portal for Granite Lake, modeled after Granite Ridge's hash-first verification flow.
+Public verification portal for Granite Lake, modeled after Granite Ridge's hash-first verification flow.
 
 ## What it does
 
-- Accepts a photo upload in the browser
-- Computes SHA-256 locally (no file upload)
-- Queries Sui `PhotoAttested` events via `suix_queryEvents`
-- Scans paginated results until a matching `photo_hash` is found or exhausted
+- Requires selecting whether the upload is a field photo or an uploaded file
+- Computes SHA-256 locally in the browser
+- Queries Sui `PhotoAttested` or `FileAttested` events via `suix_queryEvents`
+- Scans paginated results until a matching `photo_hash` or `file_hash` is found or exhausted
 - Displays public on-chain metadata when matched:
   - GPS
   - Altitude
@@ -34,6 +34,6 @@ Then open the URL printed by Vite.
 
 ## Notes
 
-- Current lookup strategy is event scan (`O(n)` by pages).
+- Current lookup strategy is event scan (`O(n)` by pages) across both photo and file attestation event types.
 - This is suitable for MVP and audit use.
 - If event volume grows substantially, move to a Postgres indexer for `photo_hash -> event`.

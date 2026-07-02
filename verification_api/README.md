@@ -1,10 +1,10 @@
 # Granite Lake Verification API
 
-HTTP API that verifies an uploaded asset against Granite Lake on-chain attestations.
+HTTP API that verifies an uploaded photo or file against Granite Lake on-chain attestations.
 
 ## What it does
 
-On `POST /verify-attestation` with a multipart file upload and `attest_type`, the API performs the same verification flow as the web portal:
+On `POST /verify-attestation` with a multipart file upload and required `attest_type`, the API performs the same verification flow as the web portal:
 
 - Computes SHA-256 of the uploaded file.
 - Scans Sui `PhotoAttested` events for a matching `photo_hash` when `attest_type=attest_photo`.

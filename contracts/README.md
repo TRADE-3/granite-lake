@@ -1,12 +1,12 @@
 # Granite Lake
 
-Granite Lake is a lightweight Sui-based photo attestation system.
+Granite Lake is a lightweight Sui-based photo and file attestation system.
 
 It allows:
 
 - a contract owner to register domains
 - a domain admin to authorize wallets and enable or disable them
-- enabled wallets to attest photos on-chain
+- enabled wallets to attest photos and uploaded files on-chain
 - public verification through Sui events
 
 The system is intentionally designed to:
@@ -42,20 +42,29 @@ attest_photo(user_cap, registry, hash, gps, altitude, project_id)
 Contract
     ↓
 emit PhotoAttested event
+
+User
+    ↓
+attest_file(user_cap, registry, hash, file_id, project_id)
+
+Contract
+    ↓
+emit FileAttested event
 ```
 
 ---
 
 # Core Design Principles
 
-## 1. Event-Only Photo Attestation
+## 1. Event-Only Attestation
 
-Photo attestations are NOT stored in on-chain maps.
+Photo and file attestations are NOT stored in on-chain maps.
 
 Instead:
 
 ```move
 event::emit(PhotoAttested { ... })
+event::emit(FileAttested { ... })
 ```
 
 This keeps attestation transactions extremely cheap.
@@ -77,6 +86,7 @@ Only wallets holding that capability can call:
 
 ```move
 attest_photo(...)
+attest_file(...)
 ```
 
 The capability also carries the user's domain so the contract can validate the sender against the correct domain record and enforce enabled or disabled state during attestation.
@@ -136,6 +146,7 @@ Required for:
 
 ```move
 attest_photo()
+attest_file()
 ```
 
 ---
@@ -183,7 +194,7 @@ Emitted when admin disables a user wallet.
 
 ## PhotoAttested
 
-Main attestation event.
+Main photo attestation event.
 
 ```move
 PhotoAttested {
@@ -195,7 +206,24 @@ PhotoAttested {
 }
 ```
 
-This is the primary verification source.
+This is the primary verification source for photo attestations.
+
+---
+
+## FileAttested
+
+Main file attestation event.
+
+```move
+FileAttested {
+    file_hash,
+    user_wallet,
+    file_id,
+    project_id
+}
+```
+
+This is the primary verification source for uploaded files.
 
 ---
 
@@ -231,8 +259,6 @@ Creates and transfers a `UserCap` directly to the user wallet.
 
 New users are enabled by default.
 
-No OTP flow exists.
-
 ---
 
 ## enable_user
@@ -266,44 +292,30 @@ attest_photo(
 )
 ```
 
-Validates wallet ownership, checks the wallet is still enabled for that domain, and emits `PhotoAttested`.
-
-No photo data is stored on-chain.
+Creates a photo attestation event.
 
 ---
 
-# Verification Model
+## attest_file
 
-Verification is done OFF-CHAIN through Sui events.
+User-only.
 
-Verification inputs:
-
-```text
-domain
-admin_wallet
+```move
+attest_file(
+    user_cap,
+    registry,
+    hash,
+    file_id,
+    project_id
+)
 ```
+
+Creates a file attestation event.
 
 ---
 
-# Test Coverage Note
+# Why Events Matter
 
-Move unit tests are in `contracts/tests/granite_lake_tests.move` and currently cover:
+The verification portal and verification API both rely on event scans.
 
-- `add_domain` success and duplicate-domain failure
-- `add_user` success, admin-only enforcement, and duplicate-user failure
-- `enable_user` and `disable_user` flows
-- disabled-user attestation rejection
-- `attest_photo` caller ownership enforcement (only the `UserCap` owner)
-- event assertions for `DomainAdded`, `UserAdded`, `UserEnabled`, `UserDisabled`, and `PhotoAttested`
-
-Run tests with:
-
-```bash
-npm run test:move
-```
-
-Or from repository root:
-
-```bash
-npm run test:contracts
-```
+That means the contract design intentionally keeps attestations event-only rather than storing per-asset objects or maps.
