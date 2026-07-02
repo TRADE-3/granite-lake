@@ -21,6 +21,7 @@ The response is intentionally detailed and includes scan metadata, attestation m
 
 - `GET /health`
 - `POST /verify-attestation`
+- `GET /wallet-attestations/:wallet`
 
 ## Environment
 
@@ -75,6 +76,37 @@ curl -X POST "http://localhost:8081/verify-attestation" \
   -F "attest_type=attest_file" \
   -F "file=@/absolute/path/to/document.pdf"
 ```
+
+## Wallet attestations
+
+`GET /wallet-attestations/:wallet` returns every attestation event owned by a wallet, including both photo and file attestations.
+
+Query parameters:
+
+- `attest_type=photo` or `attest_type=attest_photo` to filter photo attestations
+- `attest_type=file` or `attest_type=attest_file` to filter file attestations
+- omit `attest_type` to return both
+
+Example:
+
+```bash
+curl "http://localhost:8081/wallet-attestations/0x48da47049ce3ca6ffea81a74c74f20592ad6accc9a19f3ae3c1c7b57e986422c"
+```
+
+```bash
+curl "http://localhost:8081/wallet-attestations/0x48da47049ce3ca6ffea81a74c74f20592ad6accc9a19f3ae3c1c7b57e986422c?attest_type=file"
+```
+
+Response fields include:
+
+- `wallet`
+- `attestTypeFilter`
+- `pagesScanned`
+- `eventsScanned`
+- `photoCount`
+- `fileCount`
+- `events`
+- `durationMs`
 
 ## Response shape summary
 

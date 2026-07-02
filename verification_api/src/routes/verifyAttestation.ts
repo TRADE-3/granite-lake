@@ -11,7 +11,7 @@ import {
   SUI_RPC_URL,
 } from "../constants.js";
 import { lookupGraniteTxtConsensus } from "../services/dnsLookup.js";
-import { verifyAttestationHashDetailed } from "../services/photoVerification.js";
+import { verifyAttestationHashDetailed } from "../services/attestVerification.js";
 import { AttestType, VerificationResponse } from "../types.js";
 
 function normalizeAttestType(value: string): AttestType | null {

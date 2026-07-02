@@ -58,6 +58,14 @@ export type VerificationScanResult = {
   };
 };
 
+export type WalletAttestationsScanResult = {
+  pagesScanned: number;
+  eventsScanned: number;
+  photoCount: number;
+  fileCount: number;
+  events: AttestationRecord[];
+};
+
 function normalizeHex(value: string): string {
   return value.toLowerCase().replace(/^0x/, "");
 }
@@ -444,5 +452,120 @@ export async function verifyAttestationHashDetailed(
       latestEnabledTimestampMs: null,
       latestDisabledTimestampMs: null,
     },
+  };
+}
+
+/**
+ * Scans all PhotoAttested and/or FileAttested events on-chain and returns
+ * every event emitted by the given wallet address.
+ *
+ * @param walletAddress - The user_wallet address to filter events by.
+ * @param rpcUrl - Sui RPC endpoint.
+ * @param attestTypeFilter - Optional. Pass "attest_photo" or "attest_file" to
+ *   scan only that event type. Omit to scan both (default).
+ */
+export async function getAttestationsByWallet(
+  walletAddress: string,
+  rpcUrl = SUI_RPC_URL,
+  attestTypeFilter?: AttestType
+): Promise<WalletAttestationsScanResult> {
+  const targetWallet = walletAddress.toLowerCase();
+  const events: AttestationRecord[] = [];
+  let pagesScanned = 0;
+  let eventsScanned = 0;
+
+  const userCapInfo = await getUserCapInfo(walletAddress, rpcUrl);
+  const domain = userCapInfo.domain;
+  const domainAdminWallet = await getDomainAdminWallet(domain, rpcUrl);
+
+  const allowedPackageIds = new Set([
+    GRANITE_LAKE_PACKAGE_ID.toLowerCase(),
+    GRANITE_LAKE_ORIGINAL_PACKAGE_ID.toLowerCase(),
+  ]);
+
+  const allEventGroups: Array<{ types: string[]; attestType: AttestType; hashField: string }> = [
+    { types: PHOTO_ATTESTED_EVENT_TYPES, attestType: "attest_photo", hashField: "photo_hash" },
+    { types: FILE_ATTESTED_EVENT_TYPES, attestType: "attest_file", hashField: "file_hash" },
+  ];
+
+  const eventGroups = attestTypeFilter
+    ? allEventGroups.filter((group) => group.attestType === attestTypeFilter)
+    : allEventGroups;
+
+  for (const group of eventGroups) {
+    for (const eventType of group.types) {
+      let cursor: SuiEventCursor | null = null;
+
+      do {
+        const page: SuiEventPage = await suiRpcCall<SuiEventPage>(
+          "suix_queryEvents",
+          [{ MoveEventType: eventType }, cursor, 50, true],
+          rpcUrl
+        );
+
+        pagesScanned += 1;
+        eventsScanned += page.data?.length ?? 0;
+
+        for (const event of page.data ?? []) {
+          const packageId = event.packageId.toLowerCase();
+          if (!allowedPackageIds.has(packageId)) continue;
+
+          const parsed = event.parsedJson;
+          if (!parsed) continue;
+
+          const eventWallet = safeAddress(parsed.user_wallet).toLowerCase();
+          if (eventWallet !== targetWallet) continue;
+
+          const eventHash = decodePhotoHash(parsed[group.hashField]);
+          const gps = group.attestType === "attest_photo" ? decodeVector(parsed.gps) : null;
+          const altitude = group.attestType === "attest_photo" ? decodeVector(parsed.altitude) : null;
+          const fileId = group.attestType === "attest_file" ? decodeVector(parsed.file_id) : null;
+          const projectId = decodeVector(parsed.project_id);
+
+          const record: AttestationRecord = {
+            attestType: group.attestType,
+            txDigest: event.id.txDigest,
+            eventSeq: event.id.eventSeq,
+            packageId: event.packageId,
+            eventTimestampMs: event.timestampMs ?? null,
+            checkpointTimeIso: event.timestampMs ? new Date(Number(event.timestampMs)).toISOString() : null,
+            userCapObjectId: userCapInfo.userCapObjectId,
+            hashHex: eventHash,
+            ...(group.attestType === "attest_photo"
+              ? {
+                  photoHashHex: eventHash,
+                  gpsRawHex: gps?.hex ?? "",
+                  gpsDecoded: gps?.decoded ?? "",
+                  altitudeRawHex: altitude?.hex ?? "",
+                  altitudeDecoded: altitude?.decoded ?? "",
+                }
+              : {
+                  fileHashHex: eventHash,
+                  fileIdRawHex: fileId?.hex ?? "",
+                  fileIdDecoded: fileId?.decoded ?? "",
+                }),
+            projectIdRawHex: projectId.hex,
+            projectIdDecoded: projectId.decoded,
+            userWallet: safeAddress(parsed.user_wallet),
+            domain,
+            domainAdminWallet,
+          };
+
+          events.push(record);
+        }
+
+        cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
+      } while (cursor);
+    }
+  }
+
+  events.sort((a, b) => Number(b.eventTimestampMs ?? 0) - Number(a.eventTimestampMs ?? 0));
+
+  return {
+    pagesScanned,
+    eventsScanned,
+    photoCount: events.filter((e) => e.attestType === "attest_photo").length,
+    fileCount: events.filter((e) => e.attestType === "attest_file").length,
+    events,
   };
 }
