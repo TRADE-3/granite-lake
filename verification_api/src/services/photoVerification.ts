@@ -1,15 +1,16 @@
 import {
   DOMAIN_ADDED_EVENT_TYPE,
+  FILE_ATTESTED_EVENT_TYPES,
   GRANITE_LAKE_ORIGINAL_PACKAGE_ID,
   GRANITE_LAKE_PACKAGE_ID,
-  PHOTO_ATTESTED_EVENT_TYPE,
+  PHOTO_ATTESTED_EVENT_TYPES,
   SUI_RPC_URL,
   USER_CAP_TYPE,
   USER_CAP_TYPE_ORIGINAL,
   USER_DISABLED_EVENT_TYPE,
   USER_ENABLED_EVENT_TYPE,
 } from "../constants.js";
-import { AttestationRecord } from "../types.js";
+import { AttestationRecord, AttestType } from "../types.js";
 
 type SuiEventCursor = {
   txDigest: string;
@@ -48,6 +49,7 @@ type OwnedObjectsResult = {
 export type VerificationScanResult = {
   pagesScanned: number;
   eventsScanned: number;
+  eventType: string | null;
   record: AttestationRecord | null;
   statusAtAttestation: {
     value: boolean | null;
@@ -322,87 +324,120 @@ export async function verifyPhotoHashDetailed(
   photoHashHex: string,
   rpcUrl = SUI_RPC_URL
 ): Promise<VerificationScanResult> {
-  const targetHash = normalizeHex(photoHashHex);
-  let cursor: SuiEventCursor | null = null;
+  return verifyAttestationHashDetailed("attest_photo", photoHashHex, rpcUrl);
+}
+
+export async function verifyFileHashDetailed(
+  fileHashHex: string,
+  rpcUrl = SUI_RPC_URL
+): Promise<VerificationScanResult> {
+  return verifyAttestationHashDetailed("attest_file", fileHashHex, rpcUrl);
+}
+
+export async function verifyAttestationHashDetailed(
+  attestType: AttestType,
+  hashHex: string,
+  rpcUrl = SUI_RPC_URL
+): Promise<VerificationScanResult> {
+  const targetHash = normalizeHex(hashHex);
+  const eventTypes = attestType === "attest_photo" ? PHOTO_ATTESTED_EVENT_TYPES : FILE_ATTESTED_EVENT_TYPES;
+  const hashField = attestType === "attest_photo" ? "photo_hash" : "file_hash";
   let pagesScanned = 0;
   let eventsScanned = 0;
 
-  do {
-    const page: SuiEventPage = await suiRpcCall<SuiEventPage>(
-      "suix_queryEvents",
-      [{ MoveEventType: PHOTO_ATTESTED_EVENT_TYPE }, cursor, 50, true],
-      rpcUrl
-    );
+  for (const eventType of eventTypes) {
+    let cursor: SuiEventCursor | null = null;
 
-    pagesScanned += 1;
-    eventsScanned += page.data?.length ?? 0;
+    do {
+      const page: SuiEventPage = await suiRpcCall<SuiEventPage>(
+        "suix_queryEvents",
+        [{ MoveEventType: eventType }, cursor, 50, true],
+        rpcUrl
+      );
 
-    for (const event of page.data ?? []) {
-      const packageId = event.packageId.toLowerCase();
-      const allowedPackageIds = new Set([
-        GRANITE_LAKE_PACKAGE_ID.toLowerCase(),
-        GRANITE_LAKE_ORIGINAL_PACKAGE_ID.toLowerCase(),
-      ]);
-      if (!allowedPackageIds.has(packageId)) continue;
+      pagesScanned += 1;
+      eventsScanned += page.data?.length ?? 0;
 
-      const parsed = event.parsedJson;
-      if (!parsed) continue;
+      for (const event of page.data ?? []) {
+        const packageId = event.packageId.toLowerCase();
+        const allowedPackageIds = new Set([
+          GRANITE_LAKE_PACKAGE_ID.toLowerCase(),
+          GRANITE_LAKE_ORIGINAL_PACKAGE_ID.toLowerCase(),
+        ]);
+        if (!allowedPackageIds.has(packageId)) continue;
 
-      const eventPhotoHash = decodePhotoHash(parsed.photo_hash);
-      if (!eventPhotoHash || normalizeHex(eventPhotoHash) !== targetHash) {
-        continue;
+        const parsed = event.parsedJson;
+        if (!parsed) continue;
+
+        const eventHash = decodePhotoHash(parsed[hashField]);
+        if (!eventHash || normalizeHex(eventHash) !== targetHash) {
+          continue;
+        }
+
+        const userWallet = safeAddress(parsed.user_wallet);
+        if (!userWallet) continue;
+
+        const userCapInfo = await getUserCapInfo(userWallet, rpcUrl);
+        const domain = userCapInfo.domain;
+        const domainAdminWallet = await getDomainAdminWallet(domain, rpcUrl);
+        const statusAtAttestation = await getEnabledAtAttestation({
+          userWallet,
+          domain,
+          attestationTimestampMs: Number(event.timestampMs ?? 0),
+          rpcUrl,
+        });
+
+        const gps = attestType === "attest_photo" ? decodeVector(parsed.gps) : null;
+        const altitude = attestType === "attest_photo" ? decodeVector(parsed.altitude) : null;
+        const fileId = attestType === "attest_file" ? decodeVector(parsed.file_id) : null;
+        const projectId = decodeVector(parsed.project_id);
+
+        const record: AttestationRecord = {
+          attestType,
+          txDigest: event.id.txDigest,
+          eventSeq: event.id.eventSeq,
+          packageId: event.packageId,
+          eventTimestampMs: event.timestampMs ?? null,
+          checkpointTimeIso: event.timestampMs ? new Date(Number(event.timestampMs)).toISOString() : null,
+          userCapObjectId: userCapInfo.userCapObjectId,
+          hashHex: eventHash,
+          ...(attestType === "attest_photo"
+            ? {
+                photoHashHex: eventHash,
+                gpsRawHex: gps?.hex ?? "",
+                gpsDecoded: gps?.decoded ?? "",
+                altitudeRawHex: altitude?.hex ?? "",
+                altitudeDecoded: altitude?.decoded ?? "",
+              }
+            : {
+                fileHashHex: eventHash,
+                fileIdRawHex: fileId?.hex ?? "",
+                fileIdDecoded: fileId?.decoded ?? "",
+              }),
+          projectIdRawHex: projectId.hex,
+          projectIdDecoded: projectId.decoded,
+          userWallet,
+          domain,
+          domainAdminWallet,
+        };
+
+        return {
+          pagesScanned,
+          eventsScanned,
+          eventType,
+          record,
+          statusAtAttestation,
+        };
       }
 
-      const userWallet = safeAddress(parsed.user_wallet);
-      if (!userWallet) continue;
-
-      const userCapInfo = await getUserCapInfo(userWallet, rpcUrl);
-      const domain = userCapInfo.domain;
-      const domainAdminWallet = await getDomainAdminWallet(domain, rpcUrl);
-      const statusAtAttestation = await getEnabledAtAttestation({
-        userWallet,
-        domain,
-        attestationTimestampMs: Number(event.timestampMs ?? 0),
-        rpcUrl,
-      });
-
-      const gps = decodeVector(parsed.gps);
-      const altitude = decodeVector(parsed.altitude);
-      const projectId = decodeVector(parsed.project_id);
-
-      const record: AttestationRecord = {
-        txDigest: event.id.txDigest,
-        eventSeq: event.id.eventSeq,
-        packageId: event.packageId,
-        eventTimestampMs: event.timestampMs ?? null,
-        checkpointTimeIso: event.timestampMs ? new Date(Number(event.timestampMs)).toISOString() : null,
-        userCapObjectId: userCapInfo.userCapObjectId,
-        photoHashHex: eventPhotoHash,
-        gpsRawHex: gps.hex,
-        gpsDecoded: gps.decoded,
-        altitudeRawHex: altitude.hex,
-        altitudeDecoded: altitude.decoded,
-        projectIdRawHex: projectId.hex,
-        projectIdDecoded: projectId.decoded,
-        userWallet,
-        domain,
-        domainAdminWallet,
-      };
-
-      return {
-        pagesScanned,
-        eventsScanned,
-        record,
-        statusAtAttestation,
-      };
-    }
-
-    cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-  } while (cursor);
+      cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
+    } while (cursor);
+  }
 
   return {
     pagesScanned,
     eventsScanned,
+    eventType: null,
     record: null,
     statusAtAttestation: {
       value: null,

@@ -33,18 +33,25 @@ export type DnsVerification = {
   error: string | null;
 };
 
+export type AttestType = "attest_photo" | "attest_file";
+
 export type AttestationRecord = {
+  attestType: AttestType;
   txDigest: string;
   eventSeq: string;
   packageId: string;
   eventTimestampMs: string | null;
   checkpointTimeIso: string | null;
   userCapObjectId: string | null;
-  photoHashHex: string;
-  gpsRawHex: string;
-  gpsDecoded: string;
-  altitudeRawHex: string;
-  altitudeDecoded: string;
+  hashHex: string;
+  photoHashHex?: string;
+  fileHashHex?: string;
+  fileIdRawHex?: string;
+  fileIdDecoded?: string;
+  gpsRawHex?: string;
+  gpsDecoded?: string;
+  altitudeRawHex?: string;
+  altitudeDecoded?: string;
   projectIdRawHex: string;
   projectIdDecoded: string;
   userWallet: string;
@@ -56,10 +63,13 @@ export type VerificationResponse = {
   hasMatch: boolean;
   summary: string;
   request: {
+    attestType: AttestType;
     fileName: string;
     mimeType: string;
     sizeBytes: number;
-    photoHashHex: string;
+    hashHex: string;
+    photoHashHex?: string;
+    fileHashHex?: string;
   };
   config: {
     rpcUrl: string;
@@ -71,6 +81,7 @@ export type VerificationResponse = {
     pagesScanned: number;
     eventsScanned: number;
     eventType: string;
+    eventTypes: string[];
   };
   attestation: AttestationRecord | null;
   userEnabledAtAttestation: {

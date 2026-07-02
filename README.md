@@ -67,7 +67,7 @@ npm install
 npm run dev
 ```
 
-The verification API runs at `http://localhost:8081` and provides a `/verify-photo` endpoint for photo verification.
+The verification API runs at `http://localhost:8081` and provides a `/verify-attestation` endpoint for photo verification.
 
 ### 5) Start verification portal (optional)
 
