@@ -198,9 +198,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     _KeyValueItem(
                       label: 'Capture History',
-                      value: controller.captureHistory.isEmpty
+                      value: controller.attestationHistory.isEmpty
                           ? 'No verified captures'
-                          : '${controller.captureHistory.length} records stored',
+                          : '${controller.attestationHistory.length} records stored',
                     ),
                   ],
                 ),

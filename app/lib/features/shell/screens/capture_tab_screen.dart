@@ -15,7 +15,7 @@ import '../../../core/theme/app_text_styles.dart';
 ///
 /// Displays session status and lets the operator start/end a secure session.
 /// When a session is active, tapping the Capture nav item (or the button here)
-/// navigates to the full-screen camera at [AppRoutes.capture].
+/// navigates to the capture method chooser at [AppRoutes.capture].
 class CaptureTabScreen extends StatefulWidget {
   const CaptureTabScreen({super.key});
 
@@ -804,7 +804,9 @@ class _BiometricUnlockButton extends StatelessWidget {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : Icon(
-                          isActive ? Icons.camera_alt_rounded : iconData,
+                          isActive
+                              ? Icons.collections_bookmark_rounded
+                              : iconData,
                           size: 44,
                           color: ringColor,
                         ),

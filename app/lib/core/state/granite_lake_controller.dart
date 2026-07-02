@@ -52,9 +52,15 @@ class GraniteLakeController extends ChangeNotifier {
   BiometricGatePayload? _biometricGatePayload;
   SuiED25519PrivateKey? _sessionSigningKey;
   SessionRecord? _session;
-  CaptureRecord? _lastCapture;
-  List<CaptureRecord> _captureHistory = const [];
-  Map<String, CaptureChainVerificationRecord> _captureVerifications = const {};
+  AttestationRecord? _lastAttestation;
+  PhotoCaptureRecord? _lastPhotoCapture;
+  UploadedFileRecord? _lastUploadedFile;
+  List<AttestationRecord> _attestationHistory = const [];
+  List<PhotoCaptureRecord> _photoCaptureHistory = const [];
+  List<UploadedFileRecord> _uploadedFileHistory = const [];
+  Map<String, AttestationChainVerificationRecord> _attestationVerifications =
+      const {};
+  Map<String, int> _verificationRetryCounts = const {};
   String? _resetNotice;
   List<ProjectRecord> _projects = const [];
   String? _selectedProjectId;
@@ -74,10 +80,18 @@ class GraniteLakeController extends ChangeNotifier {
       _photoAttestationClaim;
   BiometricBindingRecord? get biometricBinding => _biometricBinding;
   SessionRecord? get session => _session;
-  CaptureRecord? get lastCapture => _lastCapture;
-  List<CaptureRecord> get captureHistory => List.unmodifiable(_captureHistory);
-  CaptureChainVerificationRecord? captureVerificationFor(String captureId) =>
-      _captureVerifications[captureId];
+  AttestationRecord? get lastAttestation => _lastAttestation;
+  PhotoCaptureRecord? get lastPhotoCapture => _lastPhotoCapture;
+  UploadedFileRecord? get lastUploadedFile => _lastUploadedFile;
+  List<AttestationRecord> get attestationHistory =>
+      List.unmodifiable(_attestationHistory);
+  List<PhotoCaptureRecord> get photoCaptureHistory =>
+      List.unmodifiable(_photoCaptureHistory);
+  List<UploadedFileRecord> get uploadedFileHistory =>
+      List.unmodifiable(_uploadedFileHistory);
+  AttestationChainVerificationRecord? attestationVerificationFor(
+    String captureId,
+  ) => _attestationVerifications[captureId];
   String? get resetNotice => _resetNotice;
   List<ProjectRecord> get projects => List.unmodifiable(_projects);
   String? get selectedProjectId => _selectedProjectId;
@@ -390,9 +404,14 @@ class GraniteLakeController extends ChangeNotifier {
     _deviceRegistration = null;
     _employee = null;
     _photoAttestationClaim = null;
-    _lastCapture = null;
-    _captureHistory = const [];
-    _captureVerifications = const {};
+    _lastAttestation = null;
+    _lastPhotoCapture = null;
+    _lastUploadedFile = null;
+    _attestationHistory = const [];
+    _photoCaptureHistory = const [];
+    _uploadedFileHistory = const [];
+    _attestationVerifications = const {};
+    _verificationRetryCounts = const {};
     _projects = const [];
     _selectedProjectId = null;
     _photoAttestationConfig = null;
@@ -401,14 +420,17 @@ class GraniteLakeController extends ChangeNotifier {
     _walletSuiBalanceMist = null;
     _isRefreshingWalletSuiBalance = false;
 
-    await _dataControllers.capture.clear();
+    await _dataControllers.photoCapture.clear();
+    await _dataControllers.uploadedFile.clear();
     await _dataControllers.project.clear();
     await _dataControllers.employee.clear();
     await _dataControllers.config.clear();
     notifyListeners();
   }
 
-  Future<CaptureActionResult> persistCapture(String temporaryImagePath) async {
+  Future<AttestationActionResult> persistCapture(
+    String temporaryImagePath,
+  ) async {
     return persistCaptureWithMetadata(temporaryImagePath);
   }
 
@@ -515,7 +537,7 @@ class GraniteLakeController extends ChangeNotifier {
     }
   }
 
-  Future<CaptureActionResult> persistCaptureWithMetadata(
+  Future<AttestationActionResult> persistCaptureWithMetadata(
     String temporaryImagePath, {
     String? projectId,
     List<String> tags = const <String>[],
@@ -527,25 +549,25 @@ class GraniteLakeController extends ChangeNotifier {
     String? altitudeLabel,
     String? cameraLabel,
     String? cameraDetailsLabel,
-    void Function(CaptureSubmissionProgress progress)? onProgress,
+    void Function(AttestationSubmissionProgress progress)? onProgress,
   }) async {
     final identity = _identity;
     final session = _session;
     final sessionSigningKey = _sessionSigningKey;
     if (identity == null) {
-      return const CaptureActionResult.failure(
+      return const AttestationActionResult.failure(
         'Device identity is unavailable.',
       );
     }
     if (session == null || !session.isActive) {
       await endSession();
-      return const CaptureActionResult.failure(
+      return const AttestationActionResult.failure(
         'Your secure capture session has expired.',
       );
     }
     if (sessionSigningKey == null) {
       await endSession();
-      return const CaptureActionResult.failure(
+      return const AttestationActionResult.failure(
         'Your secure signing key is locked. Start a new session.',
       );
     }
@@ -557,20 +579,20 @@ class GraniteLakeController extends ChangeNotifier {
       if (projectId == null || projectId.trim().isEmpty) 'project_id',
     ];
     if (missingFields.isNotEmpty) {
-      return CaptureActionResult.failure(
+      return AttestationActionResult.failure(
         'Capture submission failed. Missing required fields: ${missingFields.join(', ')}.',
       );
     }
     await refreshWalletSuiBalance(force: true);
     if ((_walletSuiBalanceMist ?? BigInt.zero) <
         BigInt.from(AppConstants.minimumAttestationMistBalance)) {
-      return CaptureActionResult.failure(
-        'Your wallet needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} SUI before submitting a photo. Add test SUI and try again.',
+      return AttestationActionResult.failure(
+        'Your wallet needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} SUI before submitting an attestation. Add test SUI and try again.',
       );
     }
 
     final result = await _captureWorkflowService.persistCapture(
-      captureDataController: _dataControllers.capture,
+      photoCaptureDataController: _dataControllers.photoCapture,
       identity: identity,
       session: session,
       sessionSigningKey: sessionSigningKey,
@@ -592,9 +614,9 @@ class GraniteLakeController extends ChangeNotifier {
     }
 
     onProgress?.call(
-      const CaptureSubmissionProgress(
-        stage: CaptureSubmissionStage.submittingToChain,
-        state: CaptureSubmissionStageState.active,
+      const AttestationSubmissionProgress(
+        stage: AttestationSubmissionStage.submittingToChain,
+        state: AttestationSubmissionStageState.active,
         message: 'Submitting the attestation transaction to Sui testnet.',
       ),
     );
@@ -609,46 +631,201 @@ class GraniteLakeController extends ChangeNotifier {
       'FAILED',
     );
     onProgress?.call(
-      CaptureSubmissionProgress(
-        stage: CaptureSubmissionStage.submittingToChain,
+      AttestationSubmissionProgress(
+        stage: AttestationSubmissionStage.submittingToChain,
         state: submissionFailed
-            ? CaptureSubmissionStageState.failed
-            : CaptureSubmissionStageState.completed,
+            ? AttestationSubmissionStageState.failed
+            : AttestationSubmissionStageState.completed,
         message: submissionFailed
-            ? _captureSubmissionFailureMessage(record)
+            ? _attestationSubmissionFailureMessage(record)
             : 'Attestation transaction accepted by Sui.',
       ),
     );
     onProgress?.call(
-      const CaptureSubmissionProgress(
-        stage: CaptureSubmissionStage.refreshingHistory,
-        state: CaptureSubmissionStageState.active,
-        message: 'Refreshing the on-device capture ledger.',
+      const AttestationSubmissionProgress(
+        stage: AttestationSubmissionStage.refreshingHistory,
+        state: AttestationSubmissionStageState.active,
+        message: 'Refreshing the on-device attestation ledger.',
       ),
     );
-    _lastCapture = record;
-    _captureHistory = [
-      record,
-      ..._captureHistory.where((item) => item.captureId != record.captureId),
+    final photoRecord = PhotoCaptureRecord.fromAttestationRecord(record);
+    _lastAttestation = record;
+    _lastPhotoCapture = photoRecord;
+    _photoCaptureHistory = [
+      photoRecord,
+      ..._photoCaptureHistory.where(
+        (item) => item.photoCaptureId != photoRecord.photoCaptureId,
+      ),
     ]..sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
+    _syncAttestationHistory();
     final seededVerification =
-        _captureVerifications[record.captureId] ?? _localVerification(record);
-    _captureVerifications = {
-      ..._captureVerifications,
+        _attestationVerifications[record.captureId] ??
+        _localVerification(record);
+    _attestationVerifications = {
+      ..._attestationVerifications,
       record.captureId: seededVerification,
     };
     notifyListeners();
     if (record.isAttestationAnchored && !seededVerification.isVerified) {
-      unawaited(verifyCaptureOnChain(record));
+      unawaited(verifyAttestationOnChain(record));
     }
     onProgress?.call(
-      const CaptureSubmissionProgress(
-        stage: CaptureSubmissionStage.refreshingHistory,
-        state: CaptureSubmissionStageState.completed,
-        message: 'Local capture history updated.',
+      const AttestationSubmissionProgress(
+        stage: AttestationSubmissionStage.refreshingHistory,
+        state: AttestationSubmissionStageState.completed,
+        message: 'Local attestation history updated.',
       ),
     );
-    return CaptureActionResult.success(record);
+    return AttestationActionResult.success(record);
+  }
+
+  Future<AttestationActionResult> persistFileWithMetadata({
+    required String sourceFilePath,
+    required String sourceFileName,
+    required int fileSizeBytes,
+    required String mimeType,
+    String? projectId,
+    List<String> tags = const <String>[],
+    String? note,
+    DateTime? capturedAtUtc,
+    DateTime? submittedAtUtc,
+    String? buildLabel,
+    void Function(AttestationSubmissionProgress progress)? onProgress,
+  }) async {
+    final identity = _identity;
+    final session = _session;
+    final sessionSigningKey = _sessionSigningKey;
+    final claim = _photoAttestationClaim;
+    if (identity == null) {
+      return const AttestationActionResult.failure(
+        'Device identity is unavailable.',
+      );
+    }
+    if (session == null || !session.isActive) {
+      await endSession();
+      return const AttestationActionResult.failure(
+        'Your secure capture session has expired.',
+      );
+    }
+    if (sessionSigningKey == null) {
+      await endSession();
+      return const AttestationActionResult.failure(
+        'Your secure signing key is locked. Start a new session.',
+      );
+    }
+    if (claim == null) {
+      return const AttestationActionResult.failure(
+        'Claim your on-chain user record before uploading a file for attestation.',
+      );
+    }
+
+    final missingFields = <String>[
+      if (sourceFilePath.trim().isEmpty) 'file_path',
+      if (sourceFileName.trim().isEmpty) 'file_name',
+      if (fileSizeBytes <= 0) 'file_size_bytes',
+      if (mimeType.trim().isEmpty) 'mime_type',
+      if (capturedAtUtc == null) 'captured_at',
+      if (submittedAtUtc == null) 'submitted_at',
+      if (projectId == null || projectId.trim().isEmpty) 'project_id',
+    ];
+    if (missingFields.isNotEmpty) {
+      return AttestationActionResult.failure(
+        'File attestation failed. Missing required fields: ${missingFields.join(', ')}.',
+      );
+    }
+
+    await refreshWalletSuiBalance(force: true);
+    if ((_walletSuiBalanceMist ?? BigInt.zero) <
+        BigInt.from(AppConstants.minimumAttestationMistBalance)) {
+      return AttestationActionResult.failure(
+        'Your wallet needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} SUI before submitting an attestation. Add test SUI and try again.',
+      );
+    }
+
+    final result = await _captureWorkflowService.persistFile(
+      uploadedFileDataController: _dataControllers.uploadedFile,
+      identity: identity,
+      session: session,
+      sessionSigningKey: sessionSigningKey,
+      sourceFilePath: sourceFilePath,
+      sourceFileName: sourceFileName,
+      mimeType: mimeType,
+      fileSizeBytes: fileSizeBytes,
+      projectId: projectId,
+      tags: tags,
+      note: note,
+      capturedAtUtc: capturedAtUtc,
+      submittedAtUtc: submittedAtUtc,
+      buildLabel: buildLabel,
+      domain: claim.domain,
+      onProgress: onProgress,
+    );
+    if (!result.isSuccess || result.record == null) {
+      return result;
+    }
+
+    onProgress?.call(
+      const AttestationSubmissionProgress(
+        stage: AttestationSubmissionStage.submittingToChain,
+        state: AttestationSubmissionStageState.active,
+        message: 'Submitting the file attestation transaction to Sui testnet.',
+      ),
+    );
+    final record = await _submitFileAttestation(
+      result.record!,
+      sessionSigningKey: sessionSigningKey,
+      projectId: projectId,
+    );
+    final submissionFailed = record.normalizedSuiSubmissionStatus.startsWith(
+      'FAILED',
+    );
+    onProgress?.call(
+      AttestationSubmissionProgress(
+        stage: AttestationSubmissionStage.submittingToChain,
+        state: submissionFailed
+            ? AttestationSubmissionStageState.failed
+            : AttestationSubmissionStageState.completed,
+        message: submissionFailed
+            ? _attestationSubmissionFailureMessage(record)
+            : 'File attestation transaction accepted by Sui.',
+      ),
+    );
+    onProgress?.call(
+      const AttestationSubmissionProgress(
+        stage: AttestationSubmissionStage.refreshingHistory,
+        state: AttestationSubmissionStageState.active,
+        message: 'Refreshing the on-device attestation ledger.',
+      ),
+    );
+    final uploadedFile = UploadedFileRecord.fromAttestationRecord(record);
+    _lastAttestation = record;
+    _lastUploadedFile = uploadedFile;
+    _uploadedFileHistory = [
+      uploadedFile,
+      ..._uploadedFileHistory.where(
+        (item) => item.uploadedFileId != uploadedFile.uploadedFileId,
+      ),
+    ]..sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
+    _syncAttestationHistory();
+    final seededVerification =
+        _attestationVerifications[record.captureId] ??
+        _localVerification(record);
+    _attestationVerifications = {
+      ..._attestationVerifications,
+      record.captureId: seededVerification,
+    };
+    notifyListeners();
+    if (record.isAttestationAnchored && !seededVerification.isVerified) {
+      unawaited(verifyAttestationOnChain(record));
+    }
+    onProgress?.call(
+      const AttestationSubmissionProgress(
+        stage: AttestationSubmissionStage.refreshingHistory,
+        state: AttestationSubmissionStageState.completed,
+        message: 'Local attestation history updated.',
+      ),
+    );
+    return AttestationActionResult.success(record);
   }
 
   @override
@@ -668,7 +845,10 @@ class GraniteLakeController extends ChangeNotifier {
   Future<void> _loadDatabaseState() async {
     final employeeRow = await _dataControllers.employee.loadPrimaryEmployee();
     final projectRows = await _dataControllers.project.loadProjects();
-    final captureRows = await _dataControllers.capture.loadCaptures();
+    final photoCaptureRows = await _dataControllers.photoCapture
+        .loadPhotoCaptures();
+    final uploadedFileRows = await _dataControllers.uploadedFile
+        .loadUploadedFiles();
     final selectedProjectId = await _dataControllers.config
         .loadSelectedProjectId();
     _photoAttestationConfig = await _dataControllers.config
@@ -681,14 +861,31 @@ class GraniteLakeController extends ChangeNotifier {
         : EmployeeRecord.fromJson(employeeRow);
     _projects = projectRows.map(ProjectRecord.fromJson).toList(growable: false)
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    _captureHistory =
-        captureRows.map(CaptureRecord.fromJson).toList(growable: false)
+    _photoCaptureHistory =
+        photoCaptureRows
+            .map(PhotoCaptureRecord.fromJson)
+            .toList(growable: false)
           ..sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
-    _lastCapture = _captureHistory.isEmpty ? null : _captureHistory.first;
-    _captureVerifications = {
-      for (final capture in _captureHistory)
-        capture.captureId: _localVerification(capture),
+    _uploadedFileHistory =
+        uploadedFileRows
+            .map(UploadedFileRecord.fromJson)
+            .toList(growable: false)
+          ..sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
+    _lastPhotoCapture = _photoCaptureHistory.isEmpty
+        ? null
+        : _photoCaptureHistory.first;
+    _lastUploadedFile = _uploadedFileHistory.isEmpty
+        ? null
+        : _uploadedFileHistory.first;
+    _syncAttestationHistory();
+    _lastAttestation = _attestationHistory.isEmpty
+        ? null
+        : _attestationHistory.first;
+    _attestationVerifications = {
+      for (final attestation in _attestationHistory)
+        attestation.captureId: _localVerification(attestation),
     };
+    _verificationRetryCounts = const {};
 
     final hasSavedSelection =
         selectedProjectId != null &&
@@ -706,8 +903,8 @@ class GraniteLakeController extends ChangeNotifier {
     }
   }
 
-  Future<CaptureRecord> _submitPhotoAttestation(
-    CaptureRecord record, {
+  Future<AttestationRecord> _submitPhotoAttestation(
+    AttestationRecord record, {
     required SuiED25519PrivateKey sessionSigningKey,
     String? gpsLabel,
     String? altitudeLabel,
@@ -720,7 +917,7 @@ class GraniteLakeController extends ChangeNotifier {
         config == null ||
         claim == null ||
         !config.isComplete) {
-      return _updateCaptureRecord(
+      return _updateAttestationRecord(
         record,
         suiSubmissionStatus: 'FAILED_NOT_CONFIGURED',
         suiErrorMessage:
@@ -743,7 +940,7 @@ class GraniteLakeController extends ChangeNotifier {
             ? projectId!.trim()
             : 'UNASSIGNED',
       );
-      final updated = await _updateCaptureRecord(
+      final updated = await _updateAttestationRecord(
         record,
         suiTxDigest: submission.transactionDigest,
         suiObjectId: claim.userCapObjectId,
@@ -752,12 +949,12 @@ class GraniteLakeController extends ChangeNotifier {
       );
       final verification = submission.verification;
       if (verification != null) {
-        _captureVerifications = {
-          ..._captureVerifications,
-          record.captureId: CaptureChainVerificationRecord(
+        _attestationVerifications = {
+          ..._attestationVerifications,
+          record.captureId: AttestationChainVerificationRecord(
             state: verification.isVerified
-                ? CaptureChainVerificationState.verified
-                : CaptureChainVerificationState.mismatched,
+                ? AttestationChainVerificationState.verified
+                : AttestationChainVerificationState.mismatched,
             checkedAt: DateTime.now().toUtc(),
             transactionDigest: verification.transactionDigest,
             transactionStatus: verification.transactionStatus,
@@ -774,23 +971,101 @@ class GraniteLakeController extends ChangeNotifier {
       }
       return updated;
     } on PhotoAttestationException catch (error) {
-      return _updateCaptureRecord(
+      return _updateAttestationRecord(
         record,
         suiObjectId: claim.userCapObjectId,
         suiSubmissionStatus: 'FAILED_SUBMISSION',
         suiErrorMessage: error.userMessage,
       );
     } catch (error) {
-      return _updateCaptureRecord(
+      return _updateAttestationRecord(
         record,
         suiObjectId: claim.userCapObjectId,
         suiSubmissionStatus: 'FAILED_SUBMISSION',
-        suiErrorMessage: 'The photo attestation transaction failed: $error',
+        suiErrorMessage: 'The attestation transaction failed: $error',
       );
     }
   }
 
-  String _captureSubmissionFailureMessage(CaptureRecord record) {
+  Future<AttestationRecord> _submitFileAttestation(
+    AttestationRecord record, {
+    required SuiED25519PrivateKey sessionSigningKey,
+    required String? projectId,
+  }) async {
+    final identity = _identity;
+    final config = _photoAttestationConfig;
+    final claim = _photoAttestationClaim;
+    if (identity == null ||
+        config == null ||
+        claim == null ||
+        !config.isComplete) {
+      return _updateAttestationRecord(
+        record,
+        suiSubmissionStatus: 'FAILED_NOT_CONFIGURED',
+        suiErrorMessage:
+            'Sui contract configuration is missing, so on-chain attestation could not be submitted.',
+      );
+    }
+
+    try {
+      final submission = await _photoAttestationService.attestFile(
+        identity: identity,
+        signingKey: sessionSigningKey,
+        config: config,
+        claim: claim,
+        record: record,
+        projectId: projectId?.trim().isNotEmpty == true
+            ? projectId!.trim()
+            : 'UNASSIGNED',
+        timestampMs: record.effectiveSubmittedAt.millisecondsSinceEpoch,
+      );
+      final updated = await _updateAttestationRecord(
+        record,
+        suiTxDigest: submission.transactionDigest,
+        suiObjectId: claim.userCapObjectId,
+        suiSubmissionStatus: submission.status,
+        suiErrorMessage: '',
+      );
+      final verification = submission.verification;
+      if (verification != null) {
+        _attestationVerifications = {
+          ..._attestationVerifications,
+          record.captureId: AttestationChainVerificationRecord(
+            state: verification.isVerified
+                ? AttestationChainVerificationState.verified
+                : AttestationChainVerificationState.mismatched,
+            checkedAt: DateTime.now().toUtc(),
+            transactionDigest: verification.transactionDigest,
+            transactionStatus: verification.transactionStatus,
+            photoHashMatches: verification.fileHashMatches,
+            senderMatches: verification.senderMatches,
+            projectIdMatches: verification.projectIdMatches,
+            fileIdMatches: verification.fileIdMatches,
+            timestampWithinTolerance: verification.timestampWithinTolerance,
+            chainTimestamp: verification.chainTimestamp,
+            failureReason: verification.failureReason,
+          ),
+        };
+      }
+      return updated;
+    } on PhotoAttestationException catch (error) {
+      return _updateAttestationRecord(
+        record,
+        suiObjectId: claim.userCapObjectId,
+        suiSubmissionStatus: 'FAILED_SUBMISSION',
+        suiErrorMessage: error.userMessage,
+      );
+    } catch (error) {
+      return _updateAttestationRecord(
+        record,
+        suiObjectId: claim.userCapObjectId,
+        suiSubmissionStatus: 'FAILED_SUBMISSION',
+        suiErrorMessage: 'The attestation transaction failed: $error',
+      );
+    }
+  }
+
+  String _attestationSubmissionFailureMessage(AttestationRecord record) {
     return switch (record.normalizedSuiSubmissionStatus) {
       'FAILED_NOT_CONFIGURED' =>
         'Sui contract configuration is missing, so on-chain attestation could not be submitted.',
@@ -803,13 +1078,13 @@ class GraniteLakeController extends ChangeNotifier {
     };
   }
 
-  Future<void> verifyCaptureOnChain(CaptureRecord capture) async {
+  Future<void> verifyAttestationOnChain(AttestationRecord capture) async {
     final config = _photoAttestationConfig;
     if (config == null || !config.isComplete) {
-      _captureVerifications = {
-        ..._captureVerifications,
-        capture.captureId: CaptureChainVerificationRecord(
-          state: CaptureChainVerificationState.failed,
+      _attestationVerifications = {
+        ..._attestationVerifications,
+        capture.captureId: AttestationChainVerificationRecord(
+          state: AttestationChainVerificationState.failed,
           checkedAt: DateTime.now().toUtc(),
           transactionDigest: capture.suiTxDigest,
           transactionStatus: capture.suiSubmissionStatus,
@@ -822,10 +1097,10 @@ class GraniteLakeController extends ChangeNotifier {
 
     final baseline = _localVerification(capture);
     if (!capture.isAttestationAnchored) {
-      final existing = _captureVerifications[capture.captureId];
+      final existing = _attestationVerifications[capture.captureId];
       if (existing == null || existing.state != baseline.state) {
-        _captureVerifications = {
-          ..._captureVerifications,
+        _attestationVerifications = {
+          ..._attestationVerifications,
           capture.captureId: baseline,
         };
         notifyListeners();
@@ -833,10 +1108,10 @@ class GraniteLakeController extends ChangeNotifier {
       return;
     }
 
-    _captureVerifications = {
-      ..._captureVerifications,
-      capture.captureId: CaptureChainVerificationRecord(
-        state: CaptureChainVerificationState.pending,
+    _attestationVerifications = {
+      ..._attestationVerifications,
+      capture.captureId: AttestationChainVerificationRecord(
+        state: AttestationChainVerificationState.pending,
         checkedAt: DateTime.now().toUtc(),
         transactionDigest: capture.suiTxDigest,
         transactionStatus: capture.suiSubmissionStatus,
@@ -845,34 +1120,111 @@ class GraniteLakeController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final result = await _photoAttestationService.verifyPhotoAttestation(
-        config: config,
-        capture: capture,
-      );
-      _captureVerifications = {
-        ..._captureVerifications,
-        capture.captureId: CaptureChainVerificationRecord(
-          state: result.isVerified
-              ? CaptureChainVerificationState.verified
-              : CaptureChainVerificationState.mismatched,
-          checkedAt: DateTime.now().toUtc(),
-          transactionDigest: result.transactionDigest,
-          transactionStatus: result.transactionStatus,
-          photoHashMatches: result.photoHashMatches,
-          senderMatches: result.senderMatches,
-          gpsMatches: result.gpsMatches,
-          altitudeMatches: result.altitudeMatches,
-          projectIdMatches: result.projectIdMatches,
-          timestampWithinTolerance: result.timestampWithinTolerance,
-          chainTimestamp: result.chainTimestamp,
-          failureReason: result.failureReason,
-        ),
-      };
+      if (capture.isFile) {
+        final result = await _photoAttestationService.verifyFileAttestation(
+          config: config,
+          capture: capture,
+        );
+        final shouldRetry =
+            !result.isVerified &&
+            _shouldRetryChainVerification(result.failureReason);
+        if (shouldRetry && _scheduleVerificationRetry(capture)) {
+          _attestationVerifications = {
+            ..._attestationVerifications,
+            capture.captureId: AttestationChainVerificationRecord(
+              state: AttestationChainVerificationState.pending,
+              checkedAt: DateTime.now().toUtc(),
+              transactionDigest: result.transactionDigest,
+              transactionStatus: result.transactionStatus,
+              failureReason: result.failureReason,
+            ),
+          };
+          notifyListeners();
+          return;
+        }
+        _clearVerificationRetry(capture.captureId);
+        _attestationVerifications = {
+          ..._attestationVerifications,
+          capture.captureId: AttestationChainVerificationRecord(
+            state: result.isVerified
+                ? AttestationChainVerificationState.verified
+                : AttestationChainVerificationState.mismatched,
+            checkedAt: DateTime.now().toUtc(),
+            transactionDigest: result.transactionDigest,
+            transactionStatus: result.transactionStatus,
+            photoHashMatches: result.fileHashMatches,
+            senderMatches: result.senderMatches,
+            projectIdMatches: result.projectIdMatches,
+            fileIdMatches: result.fileIdMatches,
+            timestampWithinTolerance: result.timestampWithinTolerance,
+            chainTimestamp: result.chainTimestamp,
+            failureReason: result.failureReason,
+          ),
+        };
+      } else {
+        final result = await _photoAttestationService.verifyPhotoAttestation(
+          config: config,
+          capture: capture,
+        );
+        final shouldRetry =
+            !result.isVerified &&
+            _shouldRetryChainVerification(result.failureReason);
+        if (shouldRetry && _scheduleVerificationRetry(capture)) {
+          _attestationVerifications = {
+            ..._attestationVerifications,
+            capture.captureId: AttestationChainVerificationRecord(
+              state: AttestationChainVerificationState.pending,
+              checkedAt: DateTime.now().toUtc(),
+              transactionDigest: result.transactionDigest,
+              transactionStatus: result.transactionStatus,
+              failureReason: result.failureReason,
+            ),
+          };
+          notifyListeners();
+          return;
+        }
+        _clearVerificationRetry(capture.captureId);
+        _attestationVerifications = {
+          ..._attestationVerifications,
+          capture.captureId: AttestationChainVerificationRecord(
+            state: result.isVerified
+                ? AttestationChainVerificationState.verified
+                : AttestationChainVerificationState.mismatched,
+            checkedAt: DateTime.now().toUtc(),
+            transactionDigest: result.transactionDigest,
+            transactionStatus: result.transactionStatus,
+            photoHashMatches: result.photoHashMatches,
+            senderMatches: result.senderMatches,
+            gpsMatches: result.gpsMatches,
+            altitudeMatches: result.altitudeMatches,
+            projectIdMatches: result.projectIdMatches,
+            timestampWithinTolerance: result.timestampWithinTolerance,
+            chainTimestamp: result.chainTimestamp,
+            failureReason: result.failureReason,
+          ),
+        };
+      }
     } catch (error) {
-      _captureVerifications = {
-        ..._captureVerifications,
-        capture.captureId: CaptureChainVerificationRecord(
-          state: CaptureChainVerificationState.failed,
+      if (_shouldRetryChainVerification('$error') &&
+          _scheduleVerificationRetry(capture)) {
+        _attestationVerifications = {
+          ..._attestationVerifications,
+          capture.captureId: AttestationChainVerificationRecord(
+            state: AttestationChainVerificationState.pending,
+            checkedAt: DateTime.now().toUtc(),
+            transactionDigest: capture.suiTxDigest,
+            transactionStatus: capture.suiSubmissionStatus,
+            failureReason: '$error',
+          ),
+        };
+        notifyListeners();
+        return;
+      }
+      _clearVerificationRetry(capture.captureId);
+      _attestationVerifications = {
+        ..._attestationVerifications,
+        capture.captureId: AttestationChainVerificationRecord(
+          state: AttestationChainVerificationState.failed,
           checkedAt: DateTime.now().toUtc(),
           transactionDigest: capture.suiTxDigest,
           transactionStatus: capture.suiSubmissionStatus,
@@ -883,35 +1235,90 @@ class GraniteLakeController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> verifyCapturesOnChain(Iterable<CaptureRecord> captures) async {
+  bool _shouldRetryChainVerification(String? failureReason) {
+    final reason = (failureReason ?? '').trim().toLowerCase();
+    if (reason.isEmpty) {
+      return false;
+    }
+    return reason.contains('event not found') ||
+        reason.contains('transaction block not found') ||
+        reason.contains('not found for digest') ||
+        reason.contains('not indexed') ||
+        reason.contains('temporar') ||
+        reason.contains('timeout') ||
+        reason.contains('socket') ||
+        reason.contains('network');
+  }
+
+  bool _scheduleVerificationRetry(AttestationRecord capture) {
+    final captureId = capture.captureId;
+    final attempt = (_verificationRetryCounts[captureId] ?? 0) + 1;
+    const maxAttempts = 3;
+    if (attempt > maxAttempts) {
+      return false;
+    }
+    _verificationRetryCounts = {
+      ..._verificationRetryCounts,
+      captureId: attempt,
+    };
+
+    final delay = Duration(seconds: attempt * 2);
+    Future<void>.delayed(delay, () async {
+      final latest = _attestationHistory
+          .where((item) => item.captureId == captureId)
+          .firstOrNull;
+      if (latest == null || !latest.isAttestationAnchored) {
+        _clearVerificationRetry(captureId);
+        return;
+      }
+      await verifyAttestationOnChain(latest);
+    });
+
+    return true;
+  }
+
+  void _clearVerificationRetry(String captureId) {
+    if (!_verificationRetryCounts.containsKey(captureId)) {
+      return;
+    }
+    final next = {..._verificationRetryCounts};
+    next.remove(captureId);
+    _verificationRetryCounts = next;
+  }
+
+  Future<void> verifyAttestationsOnChain(
+    Iterable<AttestationRecord> captures,
+  ) async {
     for (final capture in captures) {
-      final current = _captureVerifications[capture.captureId];
+      final current = _attestationVerifications[capture.captureId];
       if (current?.isVerified == true) {
         continue;
       }
-      unawaited(verifyCaptureOnChain(capture));
+      unawaited(verifyAttestationOnChain(capture));
     }
   }
 
-  CaptureChainVerificationRecord _localVerification(CaptureRecord capture) {
+  AttestationChainVerificationRecord _localVerification(
+    AttestationRecord capture,
+  ) {
     if (capture.isAttestationAnchored) {
-      return CaptureChainVerificationRecord(
-        state: CaptureChainVerificationState.pending,
+      return AttestationChainVerificationRecord(
+        state: AttestationChainVerificationState.pending,
         checkedAt: DateTime.now().toUtc(),
         transactionDigest: capture.suiTxDigest,
         transactionStatus: capture.suiSubmissionStatus,
       );
     }
     if (capture.isAttestationPending) {
-      return CaptureChainVerificationRecord(
-        state: CaptureChainVerificationState.pending,
+      return AttestationChainVerificationRecord(
+        state: AttestationChainVerificationState.pending,
         checkedAt: DateTime.now().toUtc(),
         transactionDigest: capture.suiTxDigest,
         transactionStatus: capture.suiSubmissionStatus,
       );
     }
-    return CaptureChainVerificationRecord(
-      state: CaptureChainVerificationState.failed,
+    return AttestationChainVerificationRecord(
+      state: AttestationChainVerificationState.failed,
       checkedAt: DateTime.now().toUtc(),
       transactionDigest: capture.suiTxDigest,
       transactionStatus: capture.suiSubmissionStatus,
@@ -919,14 +1326,14 @@ class GraniteLakeController extends ChangeNotifier {
     );
   }
 
-  Future<CaptureRecord> _updateCaptureRecord(
-    CaptureRecord record, {
+  Future<AttestationRecord> _updateAttestationRecord(
+    AttestationRecord record, {
     String? suiTxDigest,
     String? suiObjectId,
     String? suiSubmissionStatus,
     String? suiErrorMessage,
   }) async {
-    final updated = CaptureRecord(
+    final updated = AttestationRecord(
       captureId: record.captureId,
       capturedAt: record.capturedAt,
       submittedAt: record.submittedAt,
@@ -943,9 +1350,51 @@ class GraniteLakeController extends ChangeNotifier {
       projectId: record.projectId,
       tags: record.tags,
       note: record.note,
+      assetType: record.assetType,
+      fileName: record.fileName,
+      mimeType: record.mimeType,
+      fileSizeBytes: record.fileSizeBytes,
+      fileExtension: record.fileExtension,
+      previewKind: record.previewKind,
+      storageMode: record.storageMode,
     );
-    await _dataControllers.capture.saveCapture(updated.toJson());
+    if (updated.isFile) {
+      final uploadedFile = UploadedFileRecord.fromAttestationRecord(updated);
+      await _dataControllers.uploadedFile.saveUploadedFile(
+        uploadedFile.toJson(),
+      );
+      _lastUploadedFile = uploadedFile;
+      _uploadedFileHistory = [
+        uploadedFile,
+        ..._uploadedFileHistory.where(
+          (item) => item.uploadedFileId != uploadedFile.uploadedFileId,
+        ),
+      ]..sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
+    } else {
+      final photoCapture = PhotoCaptureRecord.fromAttestationRecord(updated);
+      await _dataControllers.photoCapture.savePhotoCapture(
+        photoCapture.toJson(),
+      );
+      _lastPhotoCapture = photoCapture;
+      _photoCaptureHistory = [
+        photoCapture,
+        ..._photoCaptureHistory.where(
+          (item) => item.photoCaptureId != photoCapture.photoCaptureId,
+        ),
+      ]..sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
+    }
+    _syncAttestationHistory();
+    _lastAttestation = _attestationHistory.isEmpty
+        ? null
+        : _attestationHistory.first;
     return updated;
+  }
+
+  void _syncAttestationHistory() {
+    _attestationHistory = [
+      ..._photoCaptureHistory.map((item) => item.toAttestationRecord()),
+      ..._uploadedFileHistory.map((item) => item.toAttestationRecord()),
+    ]..sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
   }
 
   String _generateProjectId(String title) {

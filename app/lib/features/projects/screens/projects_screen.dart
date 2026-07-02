@@ -46,7 +46,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     final projects = controller.projects;
     final selectedProjectId = controller.selectedProjectId;
     final captureCounts = <String, int>{};
-    for (final capture in controller.captureHistory) {
+    for (final capture in controller.attestationHistory) {
       final projectId = capture.projectId;
       if (projectId == null || projectId.isEmpty) {
         continue;

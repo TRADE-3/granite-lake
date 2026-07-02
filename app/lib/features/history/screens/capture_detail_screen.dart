@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
@@ -23,7 +24,7 @@ Color get _detailCorner => AppColors.borderActive;
 class CaptureDetailScreen extends StatefulWidget {
   const CaptureDetailScreen({super.key, required this.record});
 
-  final CaptureRecord record;
+  final AttestationRecord record;
 
   @override
   State<CaptureDetailScreen> createState() => _CaptureDetailScreenState();
@@ -31,6 +32,7 @@ class CaptureDetailScreen extends StatefulWidget {
 
 class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
   bool _isSavingImage = false;
+  bool _isSavingFile = false;
   bool _verificationRequested = false;
 
   @override
@@ -44,28 +46,31 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
       if (!mounted) {
         return;
       }
-      GraniteLakeScope.of(context).verifyCaptureOnChain(widget.record);
+      GraniteLakeScope.of(context).verifyAttestationOnChain(widget.record);
     });
   }
 
   Future<void> _copyProofBundle() async {
     final controller = GraniteLakeScope.of(context);
     final record =
-        controller.captureHistory
+        controller.attestationHistory
             .where((capture) => capture.captureId == widget.record.captureId)
             .firstOrNull ??
         widget.record;
     final proofPayload = record.proofPayload;
     final payload = [
-      'Capture ID: ${record.captureId}',
+      'Asset ID: ${record.captureId}',
+      'Asset Type: ${record.assetTypeLabel}',
+      'Asset Name: ${record.assetName}',
       'Captured At: ${record.capturedAt.toIso8601String()}',
       'Submitted At: ${record.effectiveSubmittedAt.toIso8601String()}',
       'Project: ${record.displayProject}',
+      if (record.isFile) 'Domain: ${record.domainLabel}',
       if (record.tags.isNotEmpty) 'Tags: ${record.tags.join(', ')}',
       if (record.note?.trim().isNotEmpty == true)
         'Note: ${record.note!.trim()}',
-      'SHA-256: ${record.imageSha256}',
-      'Image Path: ${record.imagePath}',
+      'SHA-256: ${record.contentSha256}',
+      'Local Path: ${record.localAssetPath}',
       if (proofPayload.readString('sessionStartedAt') != null)
         'Session Started: ${proofPayload.readString('sessionStartedAt')}',
       if (proofPayload.readString('sessionExpiresAt') != null)
@@ -86,23 +91,61 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
       ..showSnackBar(const SnackBar(content: Text('Proof bundle copied')));
   }
 
-  Future<void> _downloadImage() async {
-    final imageFile = File(widget.record.imagePath);
-    if (!await imageFile.exists()) {
+  Future<void> _handleAssetAction(AttestationRecord record) async {
+    final assetFile = File(record.localAssetPath);
+    if (!await assetFile.exists()) {
       if (!mounted) {
         return;
       }
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
-          const SnackBar(content: Text('Captured image is unavailable')),
+          const SnackBar(content: Text('Stored asset is unavailable')),
         );
+      return;
+    }
+
+    if (record.isFile) {
+      setState(() => _isSavingFile = true);
+      try {
+        final savedPath = await FilePicker.platform.saveFile(
+          dialogTitle: 'Save attested file',
+          fileName: record.assetName,
+          bytes: await assetFile.readAsBytes(),
+          type: FileType.any,
+        );
+        if (!mounted) {
+          return;
+        }
+        if (savedPath == null) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+              const SnackBar(content: Text('File save cancelled')),
+            );
+          return;
+        }
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(const SnackBar(content: Text('File saved')));
+      } catch (_) {
+        if (!mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(const SnackBar(content: Text('Failed to save file')));
+      } finally {
+        if (mounted) {
+          setState(() => _isSavingFile = false);
+        }
+      }
       return;
     }
 
     setState(() => _isSavingImage = true);
     try {
-      await Gal.putImage(imageFile.path, album: AppConstants.appTitle);
+      await Gal.putImage(assetFile.path, album: AppConstants.appTitle);
       if (!mounted) {
         return;
       }
@@ -127,13 +170,15 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
   Widget build(BuildContext context) {
     final controller = GraniteLakeScope.of(context);
     final record =
-        controller.captureHistory
+        controller.attestationHistory
             .where((capture) => capture.captureId == widget.record.captureId)
             .firstOrNull ??
         widget.record;
-    final verification = controller.captureVerificationFor(record.captureId);
+    final verification = controller.attestationVerificationFor(
+      record.captureId,
+    );
     final proofPayload = record.proofPayload;
-    final imageFile = File(record.imagePath);
+    final imageFile = File(record.localAssetPath);
     final verificationStyle = _verificationStyle(record, verification);
     final title = record.note?.trim().isNotEmpty == true
         ? record.note!.trim()
@@ -209,23 +254,18 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                             child: Stack(
                               fit: StackFit.expand,
                               children: [
-                                Image.file(
-                                  imageFile,
-                                  fit: BoxFit.contain,
-                                  errorBuilder: (context, error, stackTrace) {
-                                    return Container(
-                                      color: AppColors.surfaceElevated,
-                                      alignment: Alignment.center,
-                                      child: Text(
-                                        'Preview unavailable',
-                                        style: AppTextStyles.bodyMedium
-                                            .copyWith(
-                                              color: AppColors.textSecondary,
-                                            ),
-                                      ),
-                                    );
-                                  },
-                                ),
+                                if (record.hasVisualPreview)
+                                  Image.file(
+                                    imageFile,
+                                    fit: BoxFit.contain,
+                                    errorBuilder: (context, error, stackTrace) {
+                                      return _FilePreviewPlaceholder(
+                                        record: record,
+                                      );
+                                    },
+                                  )
+                                else
+                                  _FilePreviewPlaceholder(record: record),
                                 IgnorePointer(
                                   child: CustomPaint(
                                     painter: _PreviewFramePainter(),
@@ -269,7 +309,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Capture ID: #$captureLabel',
+                            '${record.assetTypeLabel} ID: #$captureLabel',
                             style: AppTextStyles.headlineLarge.copyWith(
                               color: AppColors.textPrimary,
                               fontWeight: FontWeight.w500,
@@ -317,7 +357,9 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                           SizedBox(
                             width: double.infinity,
                             child: OutlinedButton.icon(
-                              onPressed: _isSavingImage ? null : _downloadImage,
+                              onPressed: (_isSavingImage || _isSavingFile)
+                                  ? null
+                                  : () => _handleAssetAction(record),
                               style: OutlinedButton.styleFrom(
                                 side: BorderSide(color: _detailPanelBorder),
                                 padding: const EdgeInsets.symmetric(
@@ -328,7 +370,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                   borderRadius: BorderRadius.circular(6),
                                 ),
                               ),
-                              icon: _isSavingImage
+                              icon: (_isSavingImage || _isSavingFile)
                                   ? const SizedBox(
                                       width: 16,
                                       height: 16,
@@ -341,7 +383,11 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                       size: 18,
                                     ),
                               label: Text(
-                                _isSavingImage
+                                record.isFile
+                                    ? _isSavingFile
+                                          ? 'SAVING FILE'
+                                          : 'SAVE TO FILES'
+                                    : _isSavingImage
                                     ? 'SAVING IMAGE'
                                     : 'DOWNLOAD CAPTURED IMAGE',
                                 style: AppTextStyles.buttonText.copyWith(
@@ -363,9 +409,26 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                             child: Column(
                               children: [
                                 _DetailCell(
+                                  label: 'ASSET_TYPE',
+                                  value: record.assetTypeLabel,
+                                ),
+                                _DetailCell(
+                                  label: 'ASSET_NAME',
+                                  value: record.assetName,
+                                  canCopy: true,
+                                  copyValue: record.assetName,
+                                ),
+                                _DetailCell(
                                   label: 'PROJECT_SOURCE',
                                   value: record.displayProject.toUpperCase(),
                                 ),
+                                if (record.isFile)
+                                  _DetailCell(
+                                    label: 'DOMAIN_SCOPE',
+                                    value: record.domainLabel,
+                                    canCopy: true,
+                                    copyValue: record.domainLabel,
+                                  ),
                                 _DetailCell(
                                   label: 'CAPTURED_AT',
                                   value:
@@ -377,27 +440,50 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                       '${record.effectiveSubmittedAt.millisecondsSinceEpoch / 1000} // ${record.effectiveSubmittedAt.toIso8601String()}',
                                 ),
                                 _DetailCell(
-                                  label: 'GEOSPATIAL_COORDINATES',
-                                  value: _geospatialValue(proofPayload),
-                                  accent: _geospatialAccent(proofPayload),
+                                  label: 'SHA256_CONTENT_HASH',
+                                  value: record.contentSha256,
+                                  canCopy: true,
+                                  copyValue: record.contentSha256,
                                 ),
+                                _DetailCell(
+                                  label: 'LOCAL_ASSET_PATH',
+                                  value: record.localAssetPath,
+                                ),
+                                if (record.isFile)
+                                  _DetailCell(
+                                    label: 'FILE_METADATA',
+                                    value:
+                                        '${record.formattedFileSize} // ${record.mimeTypeLabel} // ${record.extensionLabel.isEmpty ? 'N/A' : record.extensionLabel}',
+                                  ),
+                                if (record.isFile)
+                                  _DetailCell(
+                                    label: 'STORAGE_MODE',
+                                    value: record.storageModeLabel,
+                                  ),
+                                if (record.isPhoto)
+                                  _DetailCell(
+                                    label: 'GEOSPATIAL_COORDINATES',
+                                    value: _geospatialValue(proofPayload),
+                                    accent: _geospatialAccent(proofPayload),
+                                  ),
+                                if (!record.isPhoto)
+                                  _DetailCell(
+                                    label: 'GEOSPATIAL_COORDINATES',
+                                    value:
+                                        'Not captured for file attestations.',
+                                    accent: 'NOT_APPLICABLE',
+                                  ),
                                 _DetailCell(
                                   label: 'INVESTIGATOR_FIELD_NOTES',
                                   value: record.note?.trim().isNotEmpty == true
                                       ? record.note!.trim()
-                                      : 'No investigator notes were provided for this capture.',
+                                      : 'No investigator notes were provided for this attestation.',
                                 ),
                                 _DetailCell(
                                   label: 'TAGS',
                                   value: record.tags.isNotEmpty
                                       ? record.tags.join(' • ')
                                       : 'No tags recorded',
-                                ),
-                                _DetailCell(
-                                  label: 'SHA256_CONTENT_HASH',
-                                  value: record.imageSha256,
-                                  canCopy: true,
-                                  copyValue: record.imageSha256,
                                 ),
                                 _DetailCell(
                                   label: 'WALLET_ADDRESS',
@@ -483,9 +569,9 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                             child: Column(
                               children: [
                                 _DetailCell(
-                                  label: 'CHAIN_HASH_MATCH',
+                                  label: 'CHAIN_CONTENT_HASH_MATCH',
                                   value: _verificationValue(
-                                    verification?.photoHashMatches,
+                                    verification?.contentHashMatches,
                                   ),
                                 ),
                                 _DetailCell(
@@ -494,18 +580,27 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                     verification?.senderMatches,
                                   ),
                                 ),
-                                _DetailCell(
-                                  label: 'CHAIN_GPS_MATCH',
-                                  value: _verificationValue(
-                                    verification?.gpsMatches,
+                                if (record.isPhoto)
+                                  _DetailCell(
+                                    label: 'CHAIN_GPS_MATCH',
+                                    value: _verificationValue(
+                                      verification?.gpsMatches,
+                                    ),
                                   ),
-                                ),
-                                _DetailCell(
-                                  label: 'CHAIN_ALTITUDE_MATCH',
-                                  value: _verificationValue(
-                                    verification?.altitudeMatches,
+                                if (record.isPhoto)
+                                  _DetailCell(
+                                    label: 'CHAIN_ALTITUDE_MATCH',
+                                    value: _verificationValue(
+                                      verification?.altitudeMatches,
+                                    ),
                                   ),
-                                ),
+                                if (record.isFile)
+                                  _DetailCell(
+                                    label: 'CHAIN_FILE_ID_MATCH',
+                                    value: _verificationValue(
+                                      verification?.fileIdMatches,
+                                    ),
+                                  ),
                                 _DetailCell(
                                   label: 'CHAIN_PROJECT_ID_MATCH',
                                   value: _verificationValue(
@@ -549,7 +644,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
     );
   }
 
-  String _headerLabel(CaptureProofPayload proofPayload) {
+  String _headerLabel(AttestationProofPayload proofPayload) {
     final appName =
         proofPayload.readString('appName')?.trim().isNotEmpty == true
         ? proofPayload.readString('appName')!
@@ -562,16 +657,21 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
   }
 
   (String, Color) _verificationStyle(
-    CaptureRecord record,
-    CaptureChainVerificationRecord? verification,
+    AttestationRecord record,
+    AttestationChainVerificationRecord? verification,
   ) {
     if (verification?.isVerified == true) {
       return ('ANCHORED', AppColors.statusActive);
     }
-    if (verification?.isPending == true || record.isAttestationPending) {
-      return ('PENDING', AppColors.primary);
-    }
     if (record.isAttestationAnchored) {
+      return ('ANCHORED', AppColors.statusActive);
+    }
+    if (verification != null &&
+        !verification.isVerified &&
+        !verification.isPending) {
+      return ('FAILED', AppColors.statusError);
+    }
+    if (verification?.isPending == true || record.isAttestationPending) {
       return ('PENDING', AppColors.primary);
     }
     return ('FAILED', AppColors.statusError);
@@ -585,9 +685,20 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
   }
 
   List<_TelemetryStatData> _overlayStats(
-    CaptureRecord record,
-    CaptureProofPayload proofPayload,
+    AttestationRecord record,
+    AttestationProofPayload proofPayload,
   ) {
+    if (record.isFile) {
+      return [
+        _TelemetryStatData(label: 'TYPE', value: record.assetTypeLabel),
+        _TelemetryStatData(
+          label: 'MIME',
+          value: record.mimeTypeLabel,
+          highlight: true,
+        ),
+      ];
+    }
+
     final cameraLabel = proofPayload.readStringAny(const ['cameraLabel']);
     final cameraDetails = proofPayload.readStringAny(const [
       'cameraDetailsLabel',
@@ -607,7 +718,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
     ];
   }
 
-  String _geospatialValue(CaptureProofPayload proofPayload) {
+  String _geospatialValue(AttestationProofPayload proofPayload) {
     final gpsLabel = proofPayload.readStringAny(const [
       'gpsLabel',
       'gps',
@@ -653,7 +764,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
     return 'Geospatial metadata unavailable for this capture.';
   }
 
-  String? _geospatialAccent(CaptureProofPayload proofPayload) {
+  String? _geospatialAccent(AttestationProofPayload proofPayload) {
     final gpsLabel = proofPayload.readStringAny(const [
       'gpsLabel',
       'gps',
@@ -756,6 +867,49 @@ class _OverlayStat extends StatelessWidget {
             style: AppTextStyles.labelLarge.copyWith(
               color: highlight ? AppColors.statusActive : Colors.white,
               letterSpacing: 0.8,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FilePreviewPlaceholder extends StatelessWidget {
+  const _FilePreviewPlaceholder({required this.record});
+
+  final AttestationRecord record;
+
+  @override
+  Widget build(BuildContext context) {
+    final icon = record.mimeTypeLabel == 'application/pdf'
+        ? Icons.picture_as_pdf_rounded
+        : Icons.insert_drive_file_rounded;
+
+    return Container(
+      color: AppColors.surfaceElevated,
+      alignment: Alignment.center,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 54, color: AppColors.primary),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Text(
+              record.assetName,
+              textAlign: TextAlign.center,
+              style: AppTextStyles.bodyMedium.copyWith(
+                color: AppColors.textPrimary,
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${record.formattedFileSize} // ${record.mimeTypeLabel}',
+            textAlign: TextAlign.center,
+            style: AppTextStyles.bodySmall.copyWith(
+              color: AppColors.textSecondary,
             ),
           ),
         ],

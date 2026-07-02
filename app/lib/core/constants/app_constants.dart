@@ -42,7 +42,7 @@ abstract final class AppConstants {
 
   static const String defaultPhotoAttestationModule = 'photo_attestation';
   static const String defaultPhotoAttestationPackageId =
-      '0x406cb3e27bca8260c8a5f52aa233e02c5e655a4c8c2c9009024c1f27084baffe';
+      '0x2cc255055be3f23c13021f335ee141d15f1dd9f9b8febd819f30ac76796b569e';
   static const String defaultPhotoAttestationRegistryId =
       '0xab1bf31ba2754b488f5c2b7abd1c20ef874f66fb8712778c13b2ac8c1f6b6821';
   static const double minimumAttestationSuiBalance = 0.004;

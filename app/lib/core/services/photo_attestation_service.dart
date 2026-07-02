@@ -48,6 +48,18 @@ class PhotoAttestationSubmissionResult {
   final PhotoAttestationVerificationResult? verification;
 }
 
+class FileAttestationSubmissionResult {
+  const FileAttestationSubmissionResult({
+    required this.transactionDigest,
+    required this.status,
+    this.verification,
+  });
+
+  final String transactionDigest;
+  final String status;
+  final FileAttestationVerificationResult? verification;
+}
+
 class PhotoAttestationException implements Exception {
   const PhotoAttestationException({
     required this.userMessage,
@@ -158,9 +170,11 @@ class PhotoAttestationException implements Exception {
     if (lower.contains('movelocation') &&
         lower.contains('photo_attestation') &&
         (lower.contains('function: 6') ||
+            lower.contains('function: 7') ||
             lower.contains('attest_photo') ||
+            lower.contains('attest_file') ||
             lower.contains('function_name: some("attest_photo")'))) {
-      return 'The photo attestation contract rejected this request while validating your on-chain authorization. This usually means the claimed UserCap, linked wallet, or user status no longer matches the contract state.';
+      return 'The attestation contract rejected this request while validating your on-chain authorization. This usually means the claimed UserCap, linked wallet, or user status no longer matches the contract state.';
     }
 
     final contractMessage = _contractAbortMessage(
@@ -177,14 +191,14 @@ class PhotoAttestationException implements Exception {
         return 'The wallet registration step failed: $summarizedRaw';
       }
       if (lower.contains('abort') || lower.contains('moveabort')) {
-        return 'The contract rejected this photo attestation: $summarizedRaw';
+        return 'The contract rejected this attestation: $summarizedRaw';
       }
-      return 'The photo attestation failed on-chain: $summarizedRaw';
+      return 'The attestation failed on-chain: $summarizedRaw';
     }
 
     return operation == 'claim'
         ? 'The wallet registration step did not complete. Please check the claim inputs and try again.'
-        : 'The photo attestation transaction did not complete on-chain. Please try again.';
+        : 'The attestation transaction did not complete on-chain. Please try again.';
   }
 
   static String _summarizeRawMessage(String raw) {
@@ -281,6 +295,38 @@ class PhotoAttestationVerificationResult {
       senderMatches &&
       gpsMatches &&
       altitudeMatches &&
+      projectIdMatches &&
+      timestampWithinTolerance &&
+      failureReason == null;
+}
+
+class FileAttestationVerificationResult {
+  const FileAttestationVerificationResult({
+    required this.transactionDigest,
+    required this.transactionStatus,
+    required this.fileHashMatches,
+    required this.senderMatches,
+    required this.fileIdMatches,
+    required this.projectIdMatches,
+    required this.timestampWithinTolerance,
+    this.chainTimestamp,
+    this.failureReason,
+  });
+
+  final String transactionDigest;
+  final String transactionStatus;
+  final bool fileHashMatches;
+  final bool senderMatches;
+  final bool fileIdMatches;
+  final bool projectIdMatches;
+  final bool timestampWithinTolerance;
+  final DateTime? chainTimestamp;
+  final String? failureReason;
+
+  bool get isVerified =>
+      fileHashMatches &&
+      senderMatches &&
+      fileIdMatches &&
       projectIdMatches &&
       timestampWithinTolerance &&
       failureReason == null;
@@ -513,7 +559,7 @@ class PhotoAttestationService {
 
   Future<PhotoAttestationVerificationResult> verifyPhotoAttestation({
     required PhotoAttestationContractConfig config,
-    required CaptureRecord capture,
+    required AttestationRecord capture,
   }) async {
     final digest = capture.suiTxDigest.trim();
     if (digest.isEmpty) {
@@ -620,6 +666,193 @@ class PhotoAttestationService {
         senderMatches: senderMatches,
         gpsMatches: gpsMatches,
         altitudeMatches: altitudeMatches,
+        projectIdMatches: projectIdMatches,
+        timestampWithinTolerance: timestampWithinTolerance,
+      ),
+    );
+  }
+
+  Future<FileAttestationSubmissionResult> attestFile({
+    required IdentityRecord identity,
+    required SuiED25519PrivateKey signingKey,
+    required PhotoAttestationContractConfig config,
+    required PhotoAttestationClaimRecord claim,
+    required AttestationRecord record,
+    required String projectId,
+    required int timestampMs,
+  }) async {
+    try {
+      final provider = _provider(config.rpcUrl);
+      final owner = SuiAddress(identity.walletAddress);
+      final userCap = await _loadOwnedObject(provider, claim.userCapObjectId);
+      final registry = await _loadRegistryObjectArg(
+        provider,
+        config.registryId,
+      );
+
+      var tx = SuiTransactionDataV1(
+        expiration: const SuiTransactionExpirationNone(),
+        sender: owner,
+        gasData: SuiGasData(
+          payment: const [],
+          owner: owner,
+          price: await provider.request(const SuiRequestGetReferenceGasPrice()),
+          budget: BigInt.from(50000000),
+        ),
+        kind: SuiTransactionKindProgrammableTransaction(
+          SuiProgrammableTransaction(
+            inputs: [
+              SuiCallArgObject(
+                SuiObjectArgImmOrOwnedObject(userCap.data!.toObjectRef()),
+              ),
+              SuiCallArgObject(registry),
+              SuiCallArgPure.bytes(utf8.encode(record.contentSha256)),
+              SuiCallArgPure.bytes(utf8.encode(record.fileId)),
+              SuiCallArgPure.bytes(utf8.encode(projectId)),
+            ],
+            commands: [
+              SuiCommandMoveCall(
+                SuiProgrammableMoveCall(
+                  package: SuiAddress(config.packageId),
+                  module: config.moduleName,
+                  function: 'attest_file',
+                  arguments: [
+                    SuiArgumentInput(0),
+                    SuiArgumentInput(1),
+                    SuiArgumentInput(2),
+                    SuiArgumentInput(3),
+                    SuiArgumentInput(4),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      tx = await _prepareTransaction(provider, tx);
+      final response = await _execute(provider, tx, signingKey);
+      return FileAttestationSubmissionResult(
+        transactionDigest: response.digest,
+        status:
+            response.effects?.status.status.name.toUpperCase() ?? 'SUBMITTED',
+        verification: _buildImmediateFileVerificationResult(
+          response: response,
+          config: config,
+          walletAddress: identity.walletAddress,
+          record: record,
+          projectId: projectId,
+          timestampMs: timestampMs,
+        ),
+      );
+    } catch (error) {
+      throw PhotoAttestationException.fromError(error, operation: 'attest');
+    }
+  }
+
+  Future<FileAttestationVerificationResult> verifyFileAttestation({
+    required PhotoAttestationContractConfig config,
+    required AttestationRecord capture,
+  }) async {
+    final digest = capture.suiTxDigest.trim();
+    if (digest.isEmpty) {
+      throw StateError('Capture does not have a Sui transaction digest yet.');
+    }
+
+    final provider = _provider(config.rpcUrl);
+    final response = await provider.request(
+      SuiRequestGetTransactionBlock(
+        transactionDigest: digest,
+        options: const SuiApiTransactionBlockResponseOptions(
+          showEvents: true,
+          showEffects: true,
+          showInput: true,
+        ),
+      ),
+    );
+
+    final transactionStatus =
+        response.effects?.status.status.name.toUpperCase() ?? 'UNKNOWN';
+    if (response.effects?.status.status != SuiApiExecutionStatusType.success) {
+      return FileAttestationVerificationResult(
+        transactionDigest: digest,
+        transactionStatus: transactionStatus,
+        fileHashMatches: false,
+        senderMatches: false,
+        fileIdMatches: false,
+        projectIdMatches: false,
+        timestampWithinTolerance: false,
+        failureReason:
+            response.effects?.status.error ??
+            response.errors?.join('\n') ??
+            'On-chain transaction failed.',
+      );
+    }
+
+    final event = _findFileAttestedEvent(response.events, config);
+    if (event == null) {
+      return FileAttestationVerificationResult(
+        transactionDigest: digest,
+        transactionStatus: transactionStatus,
+        fileHashMatches: false,
+        senderMatches: false,
+        fileIdMatches: false,
+        projectIdMatches: false,
+        timestampWithinTolerance: false,
+        failureReason: 'FileAttested event was not found in the transaction.',
+      );
+    }
+
+    final parsedJson = event.parsedJson;
+    if (parsedJson is! Map) {
+      return FileAttestationVerificationResult(
+        transactionDigest: digest,
+        transactionStatus: transactionStatus,
+        fileHashMatches: false,
+        senderMatches: false,
+        fileIdMatches: false,
+        projectIdMatches: false,
+        timestampWithinTolerance: false,
+        failureReason: 'FileAttested event payload could not be parsed.',
+      );
+    }
+
+    final eventJson = Map<String, dynamic>.from(parsedJson);
+    final fileHash = _decodeMoveBytesValue(eventJson['file_hash']);
+    final userWallet = _decodeMoveAddressValue(eventJson['user_wallet']);
+    final fileId = _decodeMoveBytesValue(eventJson['file_id']);
+    final projectId = _decodeMoveBytesValue(eventJson['project_id']);
+    final chainTimestamp = _resolveChainTimestamp(response, event);
+
+    final fileHashMatches = fileHash == capture.contentSha256;
+    final senderMatches =
+        _addressesMatch(
+          response.transaction?.data.sender,
+          capture.walletAddress,
+        ) &&
+        _addressesMatch(event.sender, capture.walletAddress) &&
+        _addressesMatch(userWallet, capture.walletAddress);
+    final fileIdMatches = fileId == capture.fileId;
+    final projectIdMatches =
+        projectId == (capture.attestedProjectId?.trim() ?? '');
+    final timestampWithinTolerance = _isTimestampWithinTolerance(
+      localTimestamp: capture.effectiveSubmittedAt,
+      chainTimestamp: chainTimestamp,
+    );
+
+    return FileAttestationVerificationResult(
+      transactionDigest: digest,
+      transactionStatus: transactionStatus,
+      fileHashMatches: fileHashMatches,
+      senderMatches: senderMatches,
+      fileIdMatches: fileIdMatches,
+      projectIdMatches: projectIdMatches,
+      timestampWithinTolerance: timestampWithinTolerance,
+      chainTimestamp: chainTimestamp,
+      failureReason: _fileVerificationFailureReason(
+        fileHashMatches: fileHashMatches,
+        senderMatches: senderMatches,
+        fileIdMatches: fileIdMatches,
         projectIdMatches: projectIdMatches,
         timestampWithinTolerance: timestampWithinTolerance,
       ),
@@ -986,6 +1219,66 @@ class PhotoAttestationService {
     );
   }
 
+  FileAttestationVerificationResult? _buildImmediateFileVerificationResult({
+    required SuiApiTransactionBlockResponse response,
+    required PhotoAttestationContractConfig config,
+    required String walletAddress,
+    required AttestationRecord record,
+    required String projectId,
+    required int timestampMs,
+  }) {
+    final event = _findFileAttestedEvent(response.events, config);
+    if (event == null) {
+      return null;
+    }
+
+    final parsedJson = event.parsedJson;
+    if (parsedJson is! Map) {
+      return null;
+    }
+
+    final eventJson = Map<String, dynamic>.from(parsedJson);
+    final fileHash = _decodeMoveBytesValue(eventJson['file_hash']);
+    final userWallet = _decodeMoveAddressValue(eventJson['user_wallet']);
+    final fileId = _decodeMoveBytesValue(eventJson['file_id']);
+    final eventProjectId = _decodeMoveBytesValue(eventJson['project_id']);
+    final chainTimestamp = _resolveChainTimestamp(response, event);
+
+    final fileHashMatches = fileHash == record.contentSha256;
+    final senderMatches =
+        _addressesMatch(response.transaction?.data.sender, walletAddress) &&
+        _addressesMatch(event.sender, walletAddress) &&
+        _addressesMatch(userWallet, walletAddress);
+    final fileIdMatches = fileId == record.fileId;
+    final projectIdMatches = eventProjectId == projectId;
+    final timestampWithinTolerance = _isTimestampWithinTolerance(
+      localTimestamp: DateTime.fromMillisecondsSinceEpoch(
+        timestampMs,
+        isUtc: true,
+      ),
+      chainTimestamp: chainTimestamp,
+    );
+
+    return FileAttestationVerificationResult(
+      transactionDigest: response.digest,
+      transactionStatus:
+          response.effects?.status.status.name.toUpperCase() ?? 'SUBMITTED',
+      fileHashMatches: fileHashMatches,
+      senderMatches: senderMatches,
+      fileIdMatches: fileIdMatches,
+      projectIdMatches: projectIdMatches,
+      timestampWithinTolerance: timestampWithinTolerance,
+      chainTimestamp: chainTimestamp,
+      failureReason: _fileVerificationFailureReason(
+        fileHashMatches: fileHashMatches,
+        senderMatches: senderMatches,
+        fileIdMatches: fileIdMatches,
+        projectIdMatches: projectIdMatches,
+        timestampWithinTolerance: timestampWithinTolerance,
+      ),
+    );
+  }
+
   SuiProvider _provider(String rpcUrl) {
     return SuiProvider(SuiHttpService(rpcUrl));
   }
@@ -994,15 +1287,65 @@ class PhotoAttestationService {
     List<SuiApiEvent>? events,
     PhotoAttestationContractConfig config,
   ) {
-    final expectedType =
-        '${config.packageId}::${config.moduleName}::PhotoAttested'
-            .toLowerCase();
     for (final event in events ?? const <SuiApiEvent>[]) {
-      if (event.type.toLowerCase() == expectedType) {
+      if (_matchesEventType(
+        event,
+        config: config,
+        eventName: 'PhotoAttested',
+      )) {
         return event;
       }
     }
     return null;
+  }
+
+  SuiApiEvent? _findFileAttestedEvent(
+    List<SuiApiEvent>? events,
+    PhotoAttestationContractConfig config,
+  ) {
+    for (final event in events ?? const <SuiApiEvent>[]) {
+      if (_matchesEventType(event, config: config, eventName: 'FileAttested')) {
+        return event;
+      }
+    }
+    return null;
+  }
+
+  bool _matchesEventType(
+    SuiApiEvent event, {
+    required PhotoAttestationContractConfig config,
+    required String eventName,
+  }) {
+    final parts = event.type.trim().toLowerCase().split('::');
+    if (parts.length < 3) {
+      return false;
+    }
+
+    final eventPackageFromType = _normalizeSuiAddress(parts[0]);
+    final eventPackageFromField = _normalizeSuiAddress(event.packageId);
+    final expectedPackage = _normalizeSuiAddress(config.packageId);
+    final eventModuleFromType = parts[1];
+    final eventModuleFromField = event.transactionModule.trim().toLowerCase();
+    final eventStruct = parts[2];
+
+    final packageMatches =
+        eventPackageFromType == expectedPackage ||
+        eventPackageFromField == expectedPackage;
+    final moduleMatches =
+        eventModuleFromType == config.moduleName.trim().toLowerCase() ||
+        eventModuleFromField == config.moduleName.trim().toLowerCase();
+
+    return packageMatches &&
+        moduleMatches &&
+        eventStruct == eventName.toLowerCase();
+  }
+
+  String _normalizeSuiAddress(String value) {
+    final raw = value.trim().toLowerCase();
+    final noPrefix = raw.startsWith('0x') ? raw.substring(2) : raw;
+    final dePadded = noPrefix.replaceFirst(RegExp(r'^0+'), '');
+    final normalized = dePadded.isEmpty ? '0' : dePadded;
+    return '0x$normalized';
   }
 
   String _decodeMoveBytesValue(Object? value) {
@@ -1012,6 +1355,13 @@ class PhotoAttestationService {
     if (value is List) {
       final bytes = value.whereType<num>().map((item) => item.toInt()).toList();
       return utf8.decode(bytes).trim();
+    }
+    return '';
+  }
+
+  String _decodeMoveAddressValue(Object? value) {
+    if (value is String) {
+      return value.trim();
     }
     return '';
   }
@@ -1096,6 +1446,40 @@ class PhotoAttestationService {
     }
     if (!altitudeMatches) {
       failures.add('Altitude mismatch');
+    }
+    if (!projectIdMatches) {
+      failures.add('Project id mismatch');
+    }
+    if (!timestampWithinTolerance) {
+      failures.add('Submitted time and chain time differ too much');
+    }
+    return '${failures.join('; ')}.';
+  }
+
+  String? _fileVerificationFailureReason({
+    required bool fileHashMatches,
+    required bool senderMatches,
+    required bool fileIdMatches,
+    required bool projectIdMatches,
+    required bool timestampWithinTolerance,
+  }) {
+    if (fileHashMatches &&
+        senderMatches &&
+        fileIdMatches &&
+        projectIdMatches &&
+        timestampWithinTolerance) {
+      return null;
+    }
+
+    final failures = <String>[];
+    if (!fileHashMatches) {
+      failures.add('File hash mismatch');
+    }
+    if (!senderMatches) {
+      failures.add('Wallet sender mismatch');
+    }
+    if (!fileIdMatches) {
+      failures.add('File id mismatch');
     }
     if (!projectIdMatches) {
       failures.add('Project id mismatch');

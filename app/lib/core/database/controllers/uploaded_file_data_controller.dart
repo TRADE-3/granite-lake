@@ -1,32 +1,32 @@
 import 'dart:convert';
 
-import '../dao/capture_dao.dart';
+import '../dao/uploaded_file_dao.dart';
 
-class CaptureDataController {
-  CaptureDataController(this._captureDao);
+class UploadedFileDataController {
+  UploadedFileDataController(this._uploadedFileDao);
 
-  final CaptureDao _captureDao;
+  final UploadedFileDao _uploadedFileDao;
 
-  Future<List<Map<String, dynamic>>> loadCaptures() async {
-    final rows = await _captureDao.listCaptures();
+  Future<List<Map<String, dynamic>>> loadUploadedFiles() async {
+    final rows = await _uploadedFileDao.listUploadedFiles();
     return rows.map(_toAppShape).toList(growable: false);
   }
 
-  Future<void> saveCapture(Map<String, dynamic> capture) {
-    return _captureDao.upsert(capture);
+  Future<void> saveUploadedFile(Map<String, dynamic> uploadedFile) {
+    return _uploadedFileDao.upsert(uploadedFile);
   }
 
   Future<void> clear() {
-    return _captureDao.deleteAll();
+    return _uploadedFileDao.deleteAll();
   }
 
   Map<String, dynamic> _toAppShape(Map<String, dynamic> row) {
     return <String, dynamic>{
-      'captureId': row['capture_id'],
+      'uploadedFileId': row['uploaded_file_id'],
       'capturedAt': row['captured_at'],
       'submittedAt': row['submitted_at'],
-      'imagePath': row['image_path'],
-      'imageSha256': row['image_sha256'],
+      'filePath': row['file_path'],
+      'fileSha256': row['file_sha256'],
       'signatureBase64': row['signature_base64'],
       'walletAddress': row['wallet_address'],
       'publicKeyHex': row['public_key_hex'],
@@ -38,6 +38,12 @@ class CaptureDataController {
       'projectId': row['project_id'],
       'tags': _decodeTags(row['tags_json']),
       'note': row['note'],
+      'fileName': row['file_name'],
+      'mimeType': row['mime_type'],
+      'fileSizeBytes': row['file_size_bytes'],
+      'fileExtension': row['file_extension'],
+      'previewKind': row['preview_kind'],
+      'storageMode': row['storage_mode'],
     };
   }
 

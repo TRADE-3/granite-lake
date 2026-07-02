@@ -27,6 +27,17 @@ class _MainShellState extends State<MainShell> {
     _selectedIndex = widget.initialTab;
   }
 
+  @override
+  void didUpdateWidget(covariant MainShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialTab != widget.initialTab &&
+        widget.initialTab != _selectedIndex) {
+      setState(() {
+        _selectedIndex = widget.initialTab;
+      });
+    }
+  }
+
   static const _tabs = [
     _NavItem(label: 'History', icon: Icons.history_rounded),
     _NavItem(label: 'Capture', icon: Icons.radio_button_checked_rounded),

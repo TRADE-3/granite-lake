@@ -79,19 +79,19 @@ class _CaptureScreenState extends State<CaptureScreen> {
   int _submissionRunId = 0;
   Future<void> _submissionProgressQueue = Future<void>.value();
   String? _stagedImagePath;
-  CaptureRecord? _latestRecord;
+  AttestationRecord? _latestRecord;
   _CaptureMetadataSnapshot? _stagedMetadata;
   _CaptureMetadataSnapshot? _latestMetadata;
   final TextEditingController _noteController = TextEditingController();
   String _selectedTag = 'STRUCTURAL';
   int _submissionStep = 0;
-  CaptureSubmissionStage? _activeSubmissionStage;
+  AttestationSubmissionStage? _activeSubmissionStage;
   String _submissionProgressMessage =
       'Preparing secure capture and attestation steps.';
-  final Map<CaptureSubmissionStage, CaptureSubmissionStageState>
+  final Map<AttestationSubmissionStage, AttestationSubmissionStageState>
   _submissionStageStates = {
-    for (final stage in CaptureSubmissionStage.values)
-      stage: CaptureSubmissionStageState.pending,
+    for (final stage in AttestationSubmissionStage.values)
+      stage: AttestationSubmissionStageState.pending,
   };
 
   @override
@@ -118,8 +118,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
     _activeSubmissionStage = null;
     _submissionProgressMessage =
         'Preparing secure capture and attestation steps.';
-    for (final stage in CaptureSubmissionStage.values) {
-      _submissionStageStates[stage] = CaptureSubmissionStageState.pending;
+    for (final stage in AttestationSubmissionStage.values) {
+      _submissionStageStates[stage] = AttestationSubmissionStageState.pending;
     }
   }
 
@@ -580,7 +580,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   Future<void> _applySubmissionProgress(
-    CaptureSubmissionProgress progress,
+    AttestationSubmissionProgress progress,
     int runId,
   ) {
     _submissionProgressQueue = _submissionProgressQueue.then((_) async {
@@ -593,23 +593,23 @@ class _CaptureScreenState extends State<CaptureScreen> {
         _activeSubmissionStage = progress.stage;
         _submissionProgressMessage = progress.message ?? _submissionDetail;
         final stageIndex =
-            CaptureSubmissionStage.values.indexOf(progress.stage) + 1;
+            AttestationSubmissionStage.values.indexOf(progress.stage) + 1;
         if (stageIndex > _submissionStep) {
           _submissionStep = stageIndex;
         }
       });
 
       final delay = switch (progress.state) {
-        CaptureSubmissionStageState.active => const Duration(
+        AttestationSubmissionStageState.active => const Duration(
           milliseconds: 1200,
         ),
-        CaptureSubmissionStageState.completed => const Duration(
+        AttestationSubmissionStageState.completed => const Duration(
           milliseconds: 900,
         ),
-        CaptureSubmissionStageState.failed => const Duration(
+        AttestationSubmissionStageState.failed => const Duration(
           milliseconds: 1400,
         ),
-        CaptureSubmissionStageState.pending => Duration.zero,
+        AttestationSubmissionStageState.pending => Duration.zero,
       };
       if (delay > Duration.zero) {
         await Future<void>.delayed(delay);
@@ -1348,52 +1348,53 @@ class _CaptureScreenState extends State<CaptureScreen> {
                 _SubmissionStep(
                   title: 'Hashing And Signing Evidence',
                   value: _submissionStageValue(
-                    CaptureSubmissionStage.signing,
+                    AttestationSubmissionStage.signing,
                     activeLabel:
                         'Hashing the image and signing the proof bundle',
                     completeLabel: 'Proof bundle signed for this session',
                     failedLabel: 'Signing the local proof bundle failed',
                   ),
                   state:
-                      _submissionStageStates[CaptureSubmissionStage.signing]!,
+                      _submissionStageStates[AttestationSubmissionStage
+                          .signing]!,
                 ),
                 _SubmissionStep(
                   title: 'Saving Local Record',
                   value: _submissionStageValue(
-                    CaptureSubmissionStage.savingLocalRecord,
+                    AttestationSubmissionStage.savingLocalRecord,
                     activeLabel:
                         'Writing image metadata and manifest to this device',
                     completeLabel: 'Local capture record saved on-device',
                     failedLabel: 'Saving the local capture record failed',
                   ),
                   state:
-                      _submissionStageStates[CaptureSubmissionStage
+                      _submissionStageStates[AttestationSubmissionStage
                           .savingLocalRecord]!,
                 ),
                 _SubmissionStep(
                   title: 'Submitting To Sui Testnet',
                   value: _submissionStageValue(
-                    CaptureSubmissionStage.submittingToChain,
+                    AttestationSubmissionStage.submittingToChain,
                     activeLabel:
                         'Calling `attest_photo` with UserCap, Registry, hash, GPS, altitude, and project id',
                     completeLabel: 'Sui attestation transaction submitted',
                     failedLabel: 'Sui attestation transaction failed',
                   ),
                   state:
-                      _submissionStageStates[CaptureSubmissionStage
+                      _submissionStageStates[AttestationSubmissionStage
                           .submittingToChain]!,
                 ),
                 _SubmissionStep(
                   title: 'Refreshing Device History',
                   value: _submissionStageValue(
-                    CaptureSubmissionStage.refreshingHistory,
+                    AttestationSubmissionStage.refreshingHistory,
                     activeLabel: 'Refreshing the local capture ledger',
                     completeLabel:
                         'Capture ledger updated with the latest status',
                     failedLabel: 'Refreshing the local capture ledger failed',
                   ),
                   state:
-                      _submissionStageStates[CaptureSubmissionStage
+                      _submissionStageStates[AttestationSubmissionStage
                           .refreshingHistory]!,
                 ),
               ],
@@ -1735,43 +1736,52 @@ class _CaptureScreenState extends State<CaptureScreen> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () => context.go(AppRoutes.capture),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 18),
+                      ),
+                      icon: const Icon(Icons.radio_button_checked_rounded),
+                      label: Text(
+                        'BACK_TO_CAPTURE',
+                        style: AppTextStyles.buttonText.copyWith(
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
                   const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: () {
-                            setState(() {
-                              _latestRecord = null;
-                              _latestMetadata = null;
-                              _flow = _CaptureFlow.live;
-                              _errorMessage = null;
-                              _submissionStep = 0;
-                              _noteController.clear();
-                              _selectedTag = 'STRUCTURAL';
-                            });
-                          },
-                          child: Text(
-                            'CAPTURE ANOTHER',
-                            style: AppTextStyles.buttonText.copyWith(
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _latestRecord = null;
+                          _latestMetadata = null;
+                          _flow = _CaptureFlow.live;
+                          _errorMessage = null;
+                          _submissionStep = 0;
+                          _noteController.clear();
+                          _selectedTag = 'STRUCTURAL';
+                        });
+                      },
+                      style: OutlinedButton.styleFrom(
+                        side: BorderSide(color: AppColors.borderActive),
+                        padding: const EdgeInsets.symmetric(vertical: 18),
+                      ),
+                      icon: const Icon(Icons.camera_alt_rounded),
+                      label: Text(
+                        'CAPTURE_ANOTHER',
+                        style: AppTextStyles.buttonText.copyWith(
+                          color: AppColors.textPrimary,
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: () => context.go(AppRoutes.dashboard),
-                          child: Text(
-                            'DONE',
-                            style: AppTextStyles.buttonText.copyWith(
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ],
               ),
@@ -1947,23 +1957,23 @@ class _CaptureScreenState extends State<CaptureScreen> {
     return 'Internet connectivity is required before capture. Status: $_networkStatusLabel';
   }
 
-  bool _hasAttestationFailure(CaptureRecord record) {
+  bool _hasAttestationFailure(AttestationRecord record) {
     return record.normalizedSuiSubmissionStatus.startsWith('FAILED');
   }
 
   String get _submissionHeadline {
     final hasFailure = _submissionStageStates.values.contains(
-      CaptureSubmissionStageState.failed,
+      AttestationSubmissionStageState.failed,
     );
     if (hasFailure) {
       return 'Capture Submission Needs Attention';
     }
     return switch (_activeSubmissionStage) {
-      CaptureSubmissionStage.signing || null => 'Preparing Secure Evidence',
-      CaptureSubmissionStage.savingLocalRecord => 'Saving Local Proof',
-      CaptureSubmissionStage.submittingToChain =>
+      AttestationSubmissionStage.signing || null => 'Preparing Secure Evidence',
+      AttestationSubmissionStage.savingLocalRecord => 'Saving Local Proof',
+      AttestationSubmissionStage.submittingToChain =>
         'Writing Attestation To Chain',
-      CaptureSubmissionStage.refreshingHistory => 'Updating Capture Ledger',
+      AttestationSubmissionStage.refreshingHistory => 'Updating Capture Ledger',
     };
   }
 
@@ -1971,7 +1981,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
     return _submissionProgressMessage;
   }
 
-  String _submissionStatusMessage(CaptureRecord record) {
+  String _submissionStatusMessage(AttestationRecord record) {
     return switch (record.normalizedSuiSubmissionStatus) {
       'FAILED_NOT_CONFIGURED' =>
         'This capture was saved, but the app does not have valid Sui contract settings for attestation.',
@@ -1985,16 +1995,16 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   String _submissionStageValue(
-    CaptureSubmissionStage stage, {
+    AttestationSubmissionStage stage, {
     required String activeLabel,
     required String completeLabel,
     required String failedLabel,
   }) {
     return switch (_submissionStageStates[stage]!) {
-      CaptureSubmissionStageState.pending => 'Queued',
-      CaptureSubmissionStageState.active => activeLabel,
-      CaptureSubmissionStageState.completed => completeLabel,
-      CaptureSubmissionStageState.failed => failedLabel,
+      AttestationSubmissionStageState.pending => 'Queued',
+      AttestationSubmissionStageState.active => activeLabel,
+      AttestationSubmissionStageState.completed => completeLabel,
+      AttestationSubmissionStageState.failed => failedLabel,
     };
   }
 
@@ -2365,57 +2375,71 @@ class _SubmissionStep extends StatelessWidget {
 
   final String title;
   final String value;
-  final CaptureSubmissionStageState state;
+  final AttestationSubmissionStageState state;
 
   @override
   Widget build(BuildContext context) {
-    final isActive = state == CaptureSubmissionStageState.active;
-    final isComplete = state == CaptureSubmissionStageState.completed;
-    final isFailed = state == CaptureSubmissionStageState.failed;
-    final titleColor = isFailed
+    final isActive = state == AttestationSubmissionStageState.active;
+    final isComplete = state == AttestationSubmissionStageState.completed;
+    final isFailed = state == AttestationSubmissionStageState.failed;
+    final accent = isFailed
         ? AppColors.statusError
         : isComplete || isActive
         ? AppColors.statusActive
-        : AppColors.textSecondary;
-    final valueColor = isFailed
-        ? AppColors.statusError
-        : isComplete || isActive
-        ? AppColors.statusActive
-        : AppColors.textMuted;
+        : AppColors.borderActive;
     final icon = isFailed
-        ? Icons.error_outline_rounded
+        ? Icons.close_rounded
         : isComplete
-        ? Icons.done_rounded
-        : isActive
-        ? Icons.sync_rounded
+        ? Icons.check_rounded
         : Icons.more_horiz_rounded;
 
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 14),
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: AppColors.border)),
+        color: AppColors.surface,
+        border: Border.all(color: accent.withAlpha(isActive ? 180 : 100)),
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Text(
-              title.toUpperCase(),
-              style: AppTextStyles.labelMedium.copyWith(
-                color: titleColor,
-                letterSpacing: 1,
-              ),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 250),
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: accent.withAlpha(isActive ? 36 : 20),
+              border: Border.all(color: accent),
             ),
+            child: isActive
+                ? Padding(
+                    padding: const EdgeInsets.all(6),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation(accent),
+                    ),
+                  )
+                : Icon(icon, size: 16, color: accent),
           ),
           const SizedBox(width: 12),
-          Flexible(
-            child: Text(
-              value,
-              overflow: TextOverflow.ellipsis,
-              style: AppTextStyles.labelSmall.copyWith(color: valueColor),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: AppTextStyles.labelMedium),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: AppTextStyles.bodySmall.copyWith(
+                    color: AppColors.textSecondary,
+                    height: 1.45,
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(width: 8),
-          Icon(icon, size: 16, color: valueColor),
         ],
       ),
     );
@@ -2667,13 +2691,20 @@ class _ViewfinderPainter extends CustomPainter {
 class _SubmissionScanPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = AppColors.statusActive.withAlpha(90)
-      ..strokeWidth = 2;
+    final linePaint = Paint()
+      ..color = AppColors.statusActive.withAlpha(70)
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
+    final glowPaint = Paint()
+      ..color = AppColors.statusActive.withAlpha(32)
+      ..style = PaintingStyle.fill;
+    final centerY = size.height * 0.5;
+    final rect = Rect.fromLTWH(0, centerY - 6, size.width, 12);
+    canvas.drawRect(rect, glowPaint);
     canvas.drawLine(
-      Offset(0, size.height * 0.58),
-      Offset(size.width, size.height * 0.58),
-      paint,
+      Offset(18, centerY),
+      Offset(size.width - 18, centerY),
+      linePaint,
     );
   }
 

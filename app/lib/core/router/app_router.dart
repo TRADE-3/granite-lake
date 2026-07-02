@@ -3,6 +3,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/state/granite_lake_controller.dart';
 import '../../features/capture/screens/capture_screen.dart';
+import '../../features/capture/screens/capture_method_screen.dart';
+import '../../features/capture/screens/file_attestation_screen.dart';
 import '../../features/history/screens/capture_detail_screen.dart';
 import '../../features/shell/screens/main_shell.dart';
 import '../../features/system/screens/boot_screen.dart';
@@ -21,6 +23,8 @@ abstract final class AppRoutes {
   static const String biometricSetup = '/biometric-setup';
   static const String dashboard = '/dashboard';
   static const String capture = '/capture';
+  static const String capturePhoto = '/capture/photo';
+  static const String captureFile = '/capture/file';
   static const String historyDetail = '/history-detail';
 }
 
@@ -61,7 +65,10 @@ GoRouter createAppRouter(GraniteLakeController controller) {
             : AppRoutes.biometricSetup;
       }
 
-      if (location == AppRoutes.capture && !controller.hasActiveSession) {
+      if ((location == AppRoutes.capture ||
+              location == AppRoutes.capturePhoto ||
+              location == AppRoutes.captureFile) &&
+          !controller.hasActiveSession) {
         return AppRoutes.dashboard;
       }
 
@@ -115,13 +122,29 @@ GoRouter createAppRouter(GraniteLakeController controller) {
           final initialTab = requestedTab >= 0 && requestedTab <= 3
               ? requestedTab
               : 1;
-          return NoTransitionPage(child: MainShell(initialTab: initialTab));
+          return NoTransitionPage(
+            key: ValueKey('dashboard-$initialTab'),
+            child: MainShell(
+              key: ValueKey('dashboard-shell-$initialTab'),
+              initialTab: initialTab,
+            ),
+          );
         },
       ),
       GoRoute(
         path: AppRoutes.capture,
         pageBuilder: (context, state) =>
+            const MaterialPage(child: CaptureMethodScreen()),
+      ),
+      GoRoute(
+        path: AppRoutes.capturePhoto,
+        pageBuilder: (context, state) =>
             const MaterialPage(child: CaptureScreen()),
+      ),
+      GoRoute(
+        path: AppRoutes.captureFile,
+        pageBuilder: (context, state) =>
+            const MaterialPage(child: FileAttestationScreen()),
       ),
       GoRoute(
         path: AppRoutes.historyDetail,
@@ -134,17 +157,17 @@ GoRouter createAppRouter(GraniteLakeController controller) {
   );
 }
 
-CaptureRecord _resolveCaptureRecord(Object? extra) {
-  if (extra is CaptureRecord) {
+AttestationRecord _resolveCaptureRecord(Object? extra) {
+  if (extra is AttestationRecord) {
     return extra;
   }
   if (extra is Map<String, dynamic>) {
-    return CaptureRecord.fromJson(extra);
+    return AttestationRecord.fromJson(extra);
   }
   if (extra is Map) {
-    return CaptureRecord.fromJson(Map<String, dynamic>.from(extra));
+    return AttestationRecord.fromJson(Map<String, dynamic>.from(extra));
   }
   throw ArgumentError(
-    'History detail route expected a CaptureRecord or serialized map, got ${extra.runtimeType}.',
+    'History detail route expected a AttestationRecord or serialized map, got ${extra.runtimeType}.',
   );
 }
