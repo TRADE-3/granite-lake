@@ -1423,308 +1423,137 @@ class _CaptureScreenState extends State<CaptureScreen> {
             child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(18),
+                    width: 96,
+                    height: 96,
                     decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: hasSubmissionFailure
+                            ? AppColors.statusError
+                            : AppColors.statusActive,
+                        width: 2,
+                      ),
                       color:
                           (hasSubmissionFailure
                                   ? AppColors.statusError
                                   : AppColors.statusActive)
-                              .withAlpha(24),
-                      border: Border.all(
-                        color:
-                            (hasSubmissionFailure
-                                    ? AppColors.statusError
-                                    : AppColors.statusActive)
-                                .withAlpha(120),
-                      ),
-                      borderRadius: BorderRadius.circular(18),
+                              .withAlpha(20),
                     ),
-                    child: Column(
-                      children: [
-                        Container(
-                          width: 64,
-                          height: 64,
-                          decoration: BoxDecoration(
-                            color: hasSubmissionFailure
-                                ? AppColors.statusError
-                                : AppColors.statusActive,
-                            shape: BoxShape.circle,
-                          ),
-                          child: Icon(
-                            hasSubmissionFailure
-                                ? Icons.warning_rounded
-                                : Icons.check_circle_rounded,
-                            color: AppColors.background,
-                            size: 34,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          hasSubmissionFailure
-                              ? 'Capture Saved Locally'
-                              : 'Capture Secured',
-                          style: AppTextStyles.headlineLarge.copyWith(
-                            color: hasSubmissionFailure
-                                ? AppColors.statusError
-                                : AppColors.statusActive,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          hasSubmissionFailure
-                              ? 'ON-CHAIN ATTESTATION NEEDS ATTENTION'
-                              : 'METADATA RECORD CREATED',
-                          style: AppTextStyles.labelMedium.copyWith(
-                            color: AppColors.textSecondary,
-                            letterSpacing: 1.4,
-                          ),
-                        ),
-                        if (hasSubmissionFailure) ...[
-                          const SizedBox(height: 10),
-                          Text(
-                            _submissionStatusMessage(record),
-                            textAlign: TextAlign.center,
-                            style: AppTextStyles.bodySmall.copyWith(
-                              color: AppColors.textSecondary,
-                              height: 1.5,
-                            ),
-                          ),
-                        ],
-                      ],
+                    child: Icon(
+                      hasSubmissionFailure
+                          ? Icons.warning_rounded
+                          : Icons.check_circle_rounded,
+                      color: hasSubmissionFailure
+                          ? AppColors.statusError
+                          : AppColors.statusActive,
+                      size: 56,
                     ),
                   ),
                   const SizedBox(height: 18),
-                  _CopyFieldCard(
-                    label: 'USERCAP ID',
-                    value: record.suiObjectId,
-                    actionIcon: Icons.copy_rounded,
-                    onTap: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      await Clipboard.setData(
-                        ClipboardData(text: record.suiObjectId),
-                      );
-                      if (!mounted) {
-                        return;
-                      }
-                      messenger
-                        ..hideCurrentSnackBar()
-                        ..showSnackBar(
-                          const SnackBar(content: Text('UserCap ID copied')),
-                        );
-                    },
+                  Text(
+                    hasSubmissionFailure
+                        ? 'Capture Saved Locally'
+                        : 'Image Attested',
+                    style: AppTextStyles.headlineLarge.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: hasSubmissionFailure
+                          ? AppColors.statusError
+                          : AppColors.statusActive,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    hasSubmissionFailure
+                        ? 'On-chain attestation needs attention'
+                        : 'Data integrity verified and sequenced',
+                    style: AppTextStyles.labelMedium.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  if (hasSubmissionFailure) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      _submissionStatusMessage(record),
+                      textAlign: TextAlign.center,
+                      style: AppTextStyles.bodySmall.copyWith(
+                        color: AppColors.textSecondary,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 24),
+                  _MetadataCard(
+                    title: 'HASH_FINGERPRINT',
+                    icon: Icons.fingerprint_rounded,
+                    rows: [
+                      ('SHA256', record.contentSha256),
+                      ('Image', record.assetName),
+                      ('capture_id', record.captureId),
+                    ],
                   ),
                   const SizedBox(height: 12),
-                  _CopyFieldCard(
-                    label: 'CAPTURE TIMESTAMP (UTC)',
-                    value: metadata.capturedAtUtc.toIso8601String(),
-                    actionIcon: Icons.copy_rounded,
-                    onTap: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      await Clipboard.setData(
-                        ClipboardData(
-                          text: metadata.capturedAtUtc.toIso8601String(),
-                        ),
-                      );
-                      if (!mounted) {
-                        return;
-                      }
-                      messenger
-                        ..hideCurrentSnackBar()
-                        ..showSnackBar(
-                          const SnackBar(
-                            content: Text('Capture timestamp copied'),
-                          ),
-                        );
-                    },
+                  _MetadataCard(
+                    title: 'CHAIN_REFERENCE',
+                    icon: Icons.receipt_long_rounded,
+                    rows: [
+                      ('Project', record.displayProject),
+                      (
+                        'Transaction',
+                        record.suiTxDigest.isEmpty
+                            ? 'Pending'
+                            : record.suiTxDigest,
+                      ),
+                      ('Status', record.verificationLabel),
+                    ],
                   ),
                   const SizedBox(height: 12),
-                  _CopyFieldCard(
-                    label: 'SUBMITTED TIMESTAMP (UTC)',
-                    value:
+                  _MetadataCard(
+                    title: 'CAPTURE_METADATA',
+                    icon: Icons.image_search_rounded,
+                    rows: [
+                      ('Captured', metadata.capturedAtUtc.toIso8601String()),
+                      (
+                        'Submitted',
                         (metadata.submittedAtUtc ?? record.effectiveSubmittedAt)
                             .toIso8601String(),
-                    actionIcon: Icons.copy_rounded,
-                    onTap: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      await Clipboard.setData(
-                        ClipboardData(
-                          text:
-                              (metadata.submittedAtUtc ??
-                                      record.effectiveSubmittedAt)
-                                  .toIso8601String(),
-                        ),
-                      );
-                      if (!mounted) {
-                        return;
-                      }
-                      messenger
-                        ..hideCurrentSnackBar()
-                        ..showSnackBar(
-                          const SnackBar(
-                            content: Text('Submitted timestamp copied'),
-                          ),
-                        );
-                    },
+                      ),
+                      ('GPS', metadata.gpsLabel),
+                      ('Altitude', metadata.altitudeLabel),
+                    ],
                   ),
                   const SizedBox(height: 12),
-                  _CopyFieldCard(
-                    label: 'GPS POSITION',
-                    value: metadata.gpsLabel,
-                    actionIcon: Icons.copy_rounded,
-                    onTap: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      await Clipboard.setData(
-                        ClipboardData(text: metadata.gpsLabel),
-                      );
-                      if (!mounted) {
-                        return;
-                      }
-                      messenger
-                        ..hideCurrentSnackBar()
-                        ..showSnackBar(
-                          const SnackBar(content: Text('GPS position copied')),
-                        );
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  _CopyFieldCard(
-                    label: 'ALTITUDE',
-                    value: metadata.altitudeLabel,
-                    actionIcon: Icons.copy_rounded,
-                    onTap: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      await Clipboard.setData(
-                        ClipboardData(text: metadata.altitudeLabel),
-                      );
-                      if (!mounted) {
-                        return;
-                      }
-                      messenger
-                        ..hideCurrentSnackBar()
-                        ..showSnackBar(
-                          const SnackBar(content: Text('Altitude copied')),
-                        );
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  _CopyFieldCard(
-                    label: 'CAMERA PROFILE',
-                    value:
+                  _MetadataCard(
+                    title: 'DEVICE_CONTEXT',
+                    icon: Icons.photo_camera_rounded,
+                    rows: [
+                      (
+                        'Camera',
                         '${metadata.cameraLabel} • ${metadata.cameraDetailsLabel}',
-                    actionIcon: Icons.copy_rounded,
-                    onTap: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      await Clipboard.setData(
-                        ClipboardData(
-                          text:
-                              '${metadata.cameraLabel} • ${metadata.cameraDetailsLabel}',
-                        ),
-                      );
-                      if (!mounted) {
-                        return;
-                      }
-                      messenger
-                        ..hideCurrentSnackBar()
-                        ..showSnackBar(
-                          const SnackBar(
-                            content: Text('Camera profile copied'),
-                          ),
-                        );
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  _CopyFieldCard(
-                    label: 'APP BUILD',
-                    value: metadata.buildLabel,
-                    actionIcon: Icons.copy_rounded,
-                    onTap: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      await Clipboard.setData(
-                        ClipboardData(text: metadata.buildLabel),
-                      );
-                      if (!mounted) {
-                        return;
-                      }
-                      messenger
-                        ..hideCurrentSnackBar()
-                        ..showSnackBar(
-                          const SnackBar(content: Text('App build copied')),
-                        );
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  _CopyFieldCard(
-                    label: 'SUI TX DIGEST',
-                    value: record.suiTxDigest,
-                    actionIcon: Icons.copy_rounded,
-                    onTap: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      await Clipboard.setData(
-                        ClipboardData(text: record.suiTxDigest),
-                      );
-                      if (!mounted) {
-                        return;
-                      }
-                      messenger
-                        ..hideCurrentSnackBar()
-                        ..showSnackBar(
-                          const SnackBar(
-                            content: Text('Sui transaction digest copied'),
-                          ),
-                        );
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  _CopyFieldCard(
-                    label: 'SUI SUBMISSION STATUS',
-                    value: record.suiSubmissionStatus,
-                    actionIcon: Icons.copy_rounded,
-                    onTap: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      await Clipboard.setData(
-                        ClipboardData(text: record.suiSubmissionStatus),
-                      );
-                      if (!mounted) {
-                        return;
-                      }
-                      messenger
-                        ..hideCurrentSnackBar()
-                        ..showSnackBar(
-                          const SnackBar(
-                            content: Text('Sui submission status copied'),
-                          ),
-                        );
-                    },
+                      ),
+                      ('App Build', metadata.buildLabel),
+                    ],
                   ),
                   if (record.attestationErrorLabel != null) ...[
                     const SizedBox(height: 12),
-                    _CopyFieldCard(
-                      label: 'SUI ATTESTATION ERROR',
-                      value: record.attestationErrorLabel!,
-                      actionIcon: Icons.copy_rounded,
-                      onTap: () async {
-                        final messenger = ScaffoldMessenger.of(context);
-                        await Clipboard.setData(
-                          ClipboardData(text: record.attestationErrorLabel!),
-                        );
-                        if (!mounted) {
-                          return;
-                        }
-                        messenger
-                          ..hideCurrentSnackBar()
-                          ..showSnackBar(
-                            const SnackBar(
-                              content: Text('Sui attestation error copied'),
-                            ),
-                          );
-                      },
+                    _MetadataCard(
+                      title: 'ATTESTATION_ERROR',
+                      icon: Icons.warning_rounded,
+                      rows: [('Error', record.attestationErrorLabel!)],
                     ),
                   ],
-                  const SizedBox(height: 18),
+                  if (record.note?.trim().isNotEmpty == true) ...[
+                    const SizedBox(height: 12),
+                    _MetadataCard(
+                      title: 'ADDITIONAL_NOTE',
+                      icon: Icons.note_alt_rounded,
+                      rows: [('Note', record.note!.trim())],
+                    ),
+                  ],
+                  const SizedBox(height: 20),
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
@@ -2551,66 +2380,118 @@ class _MetadataRow extends StatelessWidget {
   }
 }
 
-class _CopyFieldCard extends StatelessWidget {
-  const _CopyFieldCard({
-    required this.label,
-    required this.value,
-    required this.actionIcon,
-    required this.onTap,
+class _MetadataCard extends StatelessWidget {
+  const _MetadataCard({
+    required this.title,
+    required this.icon,
+    required this.rows,
   });
 
-  final String label;
-  final String value;
-  final IconData actionIcon;
-  final VoidCallback onTap;
+  final String title;
+  final IconData icon;
+  final List<(String, String)> rows;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: double.infinity,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        border: Border.all(color: AppColors.borderActive),
-        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            label,
-            style: AppTextStyles.labelSmall.copyWith(
-              color: AppColors.textMuted,
-              letterSpacing: 1,
-            ),
-          ),
-          const SizedBox(height: 10),
           Row(
             children: [
-              Expanded(
-                child: Text(
-                  value,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTextStyles.labelMedium.copyWith(
-                    color: AppColors.primary,
-                    letterSpacing: 0.4,
-                  ),
-                ),
-              ),
-              IconButton(
-                onPressed: onTap,
-                icon: Icon(
-                  actionIcon,
-                  size: 18,
-                  color: AppColors.textSecondary,
+              Icon(icon, size: 16, color: AppColors.primary),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: AppTextStyles.labelMedium.copyWith(
+                  color: AppColors.primary,
                 ),
               ),
             ],
           ),
+          const SizedBox(height: 12),
+          for (final row in rows) ...[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    row.$1.toUpperCase(),
+                    style: AppTextStyles.labelSmall,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 2,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _middleEllipsis(row.$2),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.right,
+                          style: AppTextStyles.bodySmall.copyWith(
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      InkWell(
+                        onTap: () =>
+                            _copyMetadataValue(context, row.$1, row.$2),
+                        borderRadius: BorderRadius.circular(16),
+                        child: Padding(
+                          padding: const EdgeInsets.all(4),
+                          child: Icon(
+                            Icons.copy_rounded,
+                            size: 16,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+          ],
         ],
       ),
     );
   }
+
+  Future<void> _copyMetadataValue(
+    BuildContext context,
+    String label,
+    String value,
+  ) async {
+    await Clipboard.setData(ClipboardData(text: value));
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text('${label.toUpperCase()} copied')));
+  }
+}
+
+String _middleEllipsis(String value, {int keepStart = 14, int keepEnd = 12}) {
+  final normalized = value.trim();
+  if (normalized.length <= keepStart + keepEnd + 3) {
+    return normalized;
+  }
+  final start = normalized.substring(0, keepStart);
+  final end = normalized.substring(normalized.length - keepEnd);
+  return '$start...$end';
 }
 
 class _ViewfinderPainter extends CustomPainter {

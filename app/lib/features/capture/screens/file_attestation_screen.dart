@@ -715,9 +715,10 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                 ),
                 const SizedBox(height: 18),
                 Text(
-                  'ATTESTATION_SUCCESSFUL',
-                  style: AppTextStyles.displayMedium.copyWith(
+                  'File Attested',
+                  style: AppTextStyles.headlineLarge.copyWith(
                     fontWeight: FontWeight.w800,
+                    color: AppColors.statusActive,
                   ),
                   textAlign: TextAlign.center,
                 ),
