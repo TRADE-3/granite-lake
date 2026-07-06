@@ -1,6 +1,6 @@
 # Granite Lake API
 
-TypeScript/Fastify API for Granite Lake domain-scoped OTP verification. Each running Docker stack is for one configured domain and one domain admin wallet. OTP sessions and users are stored in Postgres; user add/enable/disable operations are submitted to Sui.
+TypeScript/Fastify API for Granite Lake domain-scoped OTP verification. Each running Docker stack is for one configured domain and one domain admin wallet. OTP sessions and users are stored in Postgres; user add/enable/disable operations are submitted to Sui and later used by the app for photo and file attestation.
 
 ## Deployment Model
 

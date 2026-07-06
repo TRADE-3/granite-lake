@@ -1,7 +1,9 @@
 import {
+  FILE_ATTESTED_EVENT_TYPES,
   DOMAIN_ADDED_EVENT_TYPE,
   GRANITE_LAKE_PACKAGE_ID,
-  PHOTO_ATTESTED_EVENT_TYPE,
+  GRANITE_LAKE_ORIGINAL_PACKAGE_ID,
+  PHOTO_ATTESTED_EVENT_TYPES,
   SUI_RPC_URL,
   USER_CAP_TYPE,
   USER_CAP_TYPE_ORIGINAL,
@@ -72,6 +74,22 @@ export type PhotoAttestationRecord = {
   userEnabledAtAttestation: boolean | null;
 };
 
+export type FileAttestationRecord = {
+  txDigest: string;
+  eventSeq: string;
+  timestampMs: string | null;
+  checkpointTime: string;
+  fileHashHex: string;
+  fileIdRawHex: string;
+  fileIdDecoded: string;
+  projectIdRawHex: string;
+  projectIdDecoded: string;
+  userWallet: string;
+  domain: string | null;
+  domainAdminWallet: string | null;
+  userEnabledAtAttestation: boolean | null;
+};
+
 export type VerificationResult =
   | {
       hasMatch: false;
@@ -82,6 +100,52 @@ export type VerificationResult =
       progress: ScanProgress;
       record: PhotoAttestationRecord;
     };
+
+export type FileVerificationResult =
+  | {
+      hasMatch: false;
+      progress: ScanProgress;
+    }
+  | {
+      hasMatch: true;
+      progress: ScanProgress;
+      record: FileAttestationRecord;
+    };
+
+export type WalletAttestType = "attest_photo" | "attest_file";
+
+export type WalletAttestationRecord = {
+  attestType: WalletAttestType;
+  txDigest: string;
+  eventSeq: string;
+  packageId: string;
+  timestampMs: string | null;
+  checkpointTime: string;
+  hashHex: string;
+  projectIdRawHex: string;
+  projectIdDecoded: string;
+  userWallet: string;
+  domain: string | null;
+  domainAdminWallet: string | null;
+  userEnabledAtAttestation: boolean | null;
+  photoHashHex?: string;
+  fileHashHex?: string;
+  fileIdRawHex?: string;
+  fileIdDecoded?: string;
+  gpsRawHex?: string;
+  gpsDecoded?: string;
+  altitudeRawHex?: string;
+  altitudeDecoded?: string;
+};
+
+export type WalletAttestationsResult = {
+  wallet: string;
+  pagesScanned: number;
+  eventsScanned: number;
+  photoCount: number;
+  fileCount: number;
+  events: WalletAttestationRecord[];
+};
 
 function normalizeHex(value: string): string {
   return value.toLowerCase().replace(/^0x/, "");
@@ -161,6 +225,14 @@ function decodePhotoHash(value: unknown): string {
 
 function safeAddress(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function isAllowedPackageId(packageId: string): boolean {
+  const normalized = normalizeHex(packageId);
+  return (
+    normalized === normalizeHex(GRANITE_LAKE_PACKAGE_ID) ||
+    normalized === normalizeHex(GRANITE_LAKE_ORIGINAL_PACKAGE_ID)
+  );
 }
 
 async function suiRpcCall<T>(method: string, params: unknown[]): Promise<T> {
@@ -404,67 +476,369 @@ function toRecord(
   };
 }
 
+function toFileRecord(
+  event: SuiEvent,
+  domain: string | null,
+  domainAdminWallet: string | null,
+  enabled: boolean | null
+): FileAttestationRecord | null {
+  const parsed = event.parsedJson;
+  if (!parsed) return null;
+
+  const hash = decodePhotoHash(parsed.file_hash);
+  const fileId = decodeVector(parsed.file_id);
+  const projectId = decodeVector(parsed.project_id);
+  const userWallet = safeAddress(parsed.user_wallet);
+
+  if (!hash || !userWallet) {
+    return null;
+  }
+
+  const timestampMs = event.timestampMs ?? null;
+
+  return {
+    txDigest: event.id.txDigest,
+    eventSeq: event.id.eventSeq,
+    timestampMs,
+    checkpointTime: timestampMs ? new Date(Number(timestampMs)).toLocaleString() : "Unavailable",
+    fileHashHex: hash,
+    fileIdRawHex: fileId.hex,
+    fileIdDecoded: fileId.decoded,
+    projectIdRawHex: projectId.hex,
+    projectIdDecoded: projectId.decoded,
+    userWallet,
+    domain,
+    domainAdminWallet,
+    userEnabledAtAttestation: enabled,
+  };
+}
+
+function normalizeWalletAddress(value: string): string {
+  return normalizeHex(value);
+}
+
+function matchesWallet(event: SuiEvent, wallet: string): boolean {
+  const target = normalizeWalletAddress(wallet);
+  const senderMatches = normalizeWalletAddress(event.sender) === target;
+  const parsedWallet = safeAddress(event.parsedJson?.user_wallet);
+  const parsedMatches = parsedWallet ? normalizeWalletAddress(parsedWallet) === target : false;
+  return senderMatches || parsedMatches;
+}
+
+function toWalletPhotoRecord(
+  event: SuiEvent,
+  domain: string | null,
+  domainAdminWallet: string | null,
+  enabled: boolean | null
+): WalletAttestationRecord | null {
+  const parsed = event.parsedJson;
+  if (!parsed) return null;
+
+  const hash = decodePhotoHash(parsed.photo_hash);
+  const gps = decodeVector(parsed.gps);
+  const altitude = decodeVector(parsed.altitude);
+  const projectId = decodeVector(parsed.project_id);
+  const userWallet = safeAddress(parsed.user_wallet);
+
+  if (!hash || !userWallet) {
+    return null;
+  }
+
+  const timestampMs = event.timestampMs ?? null;
+
+  return {
+    attestType: "attest_photo",
+    txDigest: event.id.txDigest,
+    eventSeq: event.id.eventSeq,
+    packageId: event.packageId,
+    timestampMs,
+    checkpointTime: timestampMs ? new Date(Number(timestampMs)).toLocaleString() : "Unavailable",
+    hashHex: hash,
+    photoHashHex: hash,
+    gpsRawHex: gps.hex,
+    gpsDecoded: gps.decoded,
+    altitudeRawHex: altitude.hex,
+    altitudeDecoded: altitude.decoded,
+    projectIdRawHex: projectId.hex,
+    projectIdDecoded: projectId.decoded,
+    userWallet,
+    domain,
+    domainAdminWallet,
+    userEnabledAtAttestation: enabled,
+  };
+}
+
+function toWalletFileRecord(
+  event: SuiEvent,
+  domain: string | null,
+  domainAdminWallet: string | null,
+  enabled: boolean | null
+): WalletAttestationRecord | null {
+  const parsed = event.parsedJson;
+  if (!parsed) return null;
+
+  const hash = decodePhotoHash(parsed.file_hash);
+  const fileId = decodeVector(parsed.file_id);
+  const projectId = decodeVector(parsed.project_id);
+  const userWallet = safeAddress(parsed.user_wallet);
+
+  if (!hash || !userWallet) {
+    return null;
+  }
+
+  const timestampMs = event.timestampMs ?? null;
+
+  return {
+    attestType: "attest_file",
+    txDigest: event.id.txDigest,
+    eventSeq: event.id.eventSeq,
+    packageId: event.packageId,
+    timestampMs,
+    checkpointTime: timestampMs ? new Date(Number(timestampMs)).toLocaleString() : "Unavailable",
+    hashHex: hash,
+    fileHashHex: hash,
+    fileIdRawHex: fileId.hex,
+    fileIdDecoded: fileId.decoded,
+    projectIdRawHex: projectId.hex,
+    projectIdDecoded: projectId.decoded,
+    userWallet,
+    domain,
+    domainAdminWallet,
+    userEnabledAtAttestation: enabled,
+  };
+}
+
+export async function getWalletAttestationsByWallet(options: {
+  wallet: string;
+  onProgress?: (progress: ScanProgress) => void;
+}): Promise<WalletAttestationsResult> {
+  const wallet = options.wallet.trim();
+  const collected: Array<{ attestType: WalletAttestType; event: SuiEvent }> = [];
+  const seen = new Set<string>();
+  let pagesScanned = 0;
+  let eventsScanned = 0;
+
+  const scanTypes: Array<{ eventType: string; attestType: WalletAttestType }> = [
+    ...PHOTO_ATTESTED_EVENT_TYPES.map((eventType) => ({ eventType, attestType: "attest_photo" as const })),
+    ...FILE_ATTESTED_EVENT_TYPES.map((eventType) => ({ eventType, attestType: "attest_file" as const })),
+  ];
+
+  for (const { eventType, attestType } of scanTypes) {
+    let cursor: SuiEventCursor | null = null;
+
+    do {
+      const page: SuiEventPage = await suiRpcCall<SuiEventPage>("suix_queryEvents", [
+        {
+          MoveEventType: eventType,
+        },
+        cursor,
+        50,
+        true,
+      ]);
+
+      pagesScanned += 1;
+      eventsScanned += page.data?.length ?? 0;
+      options.onProgress?.({ pagesScanned, eventsScanned });
+
+      for (const event of page.data ?? []) {
+        if (!isAllowedPackageId(event.packageId)) {
+          continue;
+        }
+        if (!matchesWallet(event, wallet)) {
+          continue;
+        }
+
+        const key = `${event.id.txDigest}:${event.id.eventSeq}:${attestType}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        collected.push({ attestType, event });
+      }
+
+      cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
+    } while (cursor);
+  }
+
+  if (collected.length === 0) {
+    return {
+      wallet,
+      pagesScanned,
+      eventsScanned,
+      photoCount: 0,
+      fileCount: 0,
+      events: [],
+    };
+  }
+
+  const domain = await getDomainFromUserCap(wallet);
+  const domainAdminWallet = await getDomainAdminWallet(domain);
+
+  const events: WalletAttestationRecord[] = [];
+  for (const item of collected) {
+    const enabled = await getEnabledAtAttestation({
+      userWallet: wallet,
+      domain,
+      attestationTimestampMs: Number(item.event.timestampMs ?? 0),
+    });
+
+    const record =
+      item.attestType === "attest_photo"
+        ? toWalletPhotoRecord(item.event, domain, domainAdminWallet, enabled)
+        : toWalletFileRecord(item.event, domain, domainAdminWallet, enabled);
+
+    if (record) {
+      events.push(record);
+    }
+  }
+
+  events.sort((left, right) => Number(right.timestampMs ?? 0) - Number(left.timestampMs ?? 0));
+
+  return {
+    wallet,
+    pagesScanned,
+    eventsScanned,
+    photoCount: events.filter((event) => event.attestType === "attest_photo").length,
+    fileCount: events.filter((event) => event.attestType === "attest_file").length,
+    events,
+  };
+}
+
 export async function verifyPhotoHash(options: {
   photoHashHex: string;
   onProgress?: (progress: ScanProgress) => void;
 }): Promise<VerificationResult> {
   const targetHash = normalizeHex(options.photoHashHex);
-  let cursor: SuiEventCursor | null = null;
   let pagesScanned = 0;
   let eventsScanned = 0;
 
-  do {
-    const page: SuiEventPage = await suiRpcCall<SuiEventPage>("suix_queryEvents", [
-      {
-        MoveEventType: PHOTO_ATTESTED_EVENT_TYPE,
-      },
-      cursor,
-      50,
-      true,
-    ]);
+  for (const eventType of PHOTO_ATTESTED_EVENT_TYPES) {
+    let cursor: SuiEventCursor | null = null;
 
-    pagesScanned += 1;
-    eventsScanned += page.data?.length ?? 0;
-    options.onProgress?.({ pagesScanned, eventsScanned });
+    do {
+      const page: SuiEventPage = await suiRpcCall<SuiEventPage>("suix_queryEvents", [
+        {
+          MoveEventType: eventType,
+        },
+        cursor,
+        50,
+        true,
+      ]);
 
-    for (const event of page.data ?? []) {
-      if (event.packageId !== GRANITE_LAKE_PACKAGE_ID) {
-        continue;
+      pagesScanned += 1;
+      eventsScanned += page.data?.length ?? 0;
+      options.onProgress?.({ pagesScanned, eventsScanned });
+
+      for (const event of page.data ?? []) {
+        if (!isAllowedPackageId(event.packageId)) {
+          continue;
+        }
+
+        const parsed = event.parsedJson;
+        const eventPhotoHash = decodePhotoHash(parsed?.photo_hash);
+        if (!eventPhotoHash || normalizeHex(eventPhotoHash) !== targetHash) {
+          continue;
+        }
+
+        const userWallet = safeAddress(parsed?.user_wallet);
+        if (!userWallet) {
+          continue;
+        }
+
+        const domain = await getDomainFromUserCap(userWallet);
+        const domainAdminWallet = await getDomainAdminWallet(domain);
+        const enabled = await getEnabledAtAttestation({
+          userWallet,
+          domain,
+          attestationTimestampMs: Number(event.timestampMs ?? 0),
+        });
+
+        const record = toRecord(event, domain, domainAdminWallet, enabled);
+        if (!record) {
+          continue;
+        }
+
+        return {
+          hasMatch: true,
+          progress: { pagesScanned, eventsScanned },
+          record,
+        };
       }
 
-      const parsed = event.parsedJson;
-      const eventPhotoHash = decodePhotoHash(parsed?.photo_hash);
-      if (!eventPhotoHash || normalizeHex(eventPhotoHash) !== targetHash) {
-        continue;
+      cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
+    } while (cursor);
+  }
+
+  return {
+    hasMatch: false,
+    progress: { pagesScanned, eventsScanned },
+  };
+}
+
+export async function verifyFileHash(options: {
+  fileHashHex: string;
+  onProgress?: (progress: ScanProgress) => void;
+}): Promise<FileVerificationResult> {
+  const targetHash = normalizeHex(options.fileHashHex);
+  let pagesScanned = 0;
+  let eventsScanned = 0;
+
+  for (const eventType of FILE_ATTESTED_EVENT_TYPES) {
+    let cursor: SuiEventCursor | null = null;
+
+    do {
+      const page: SuiEventPage = await suiRpcCall<SuiEventPage>("suix_queryEvents", [
+        {
+          MoveEventType: eventType,
+        },
+        cursor,
+        50,
+        true,
+      ]);
+
+      pagesScanned += 1;
+      eventsScanned += page.data?.length ?? 0;
+      options.onProgress?.({ pagesScanned, eventsScanned });
+
+      for (const event of page.data ?? []) {
+        if (!isAllowedPackageId(event.packageId)) {
+          continue;
+        }
+
+        const parsed = event.parsedJson;
+        const eventFileHash = decodePhotoHash(parsed?.file_hash);
+        if (!eventFileHash || normalizeHex(eventFileHash) !== targetHash) {
+          continue;
+        }
+
+        const userWallet = safeAddress(parsed?.user_wallet);
+        if (!userWallet) {
+          continue;
+        }
+
+        const domain = await getDomainFromUserCap(userWallet);
+        const domainAdminWallet = await getDomainAdminWallet(domain);
+        const enabled = await getEnabledAtAttestation({
+          userWallet,
+          domain,
+          attestationTimestampMs: Number(event.timestampMs ?? 0),
+        });
+
+        const record = toFileRecord(event, domain, domainAdminWallet, enabled);
+        if (!record) {
+          continue;
+        }
+
+        return {
+          hasMatch: true,
+          progress: { pagesScanned, eventsScanned },
+          record,
+        };
       }
 
-      const userWallet = safeAddress(parsed?.user_wallet);
-      if (!userWallet) {
-        continue;
-      }
-
-      const domain = await getDomainFromUserCap(userWallet);
-      const domainAdminWallet = await getDomainAdminWallet(domain);
-      const enabled = await getEnabledAtAttestation({
-        userWallet,
-        domain,
-        attestationTimestampMs: Number(event.timestampMs ?? 0),
-      });
-
-      const record = toRecord(event, domain, domainAdminWallet, enabled);
-      if (!record) {
-        continue;
-      }
-
-      return {
-        hasMatch: true,
-        progress: { pagesScanned, eventsScanned },
-        record,
-      };
-    }
-
-    cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-  } while (cursor);
+      cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
+    } while (cursor);
+  }
 
   return {
     hasMatch: false,

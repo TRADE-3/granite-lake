@@ -20,3 +20,5 @@ coverage
 *.rar
 .coverage*
 Pub.*.toml
+.codegraph
+.claude

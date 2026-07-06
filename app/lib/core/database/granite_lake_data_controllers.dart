@@ -1,13 +1,15 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-import 'controllers/capture_data_controller.dart';
 import 'controllers/config_data_controller.dart';
 import 'controllers/employee_data_controller.dart';
+import 'controllers/photo_capture_data_controller.dart';
 import 'controllers/project_data_controller.dart';
-import 'dao/capture_dao.dart';
+import 'controllers/uploaded_file_data_controller.dart';
 import 'dao/config_dao.dart';
+import 'dao/photo_capture_dao.dart';
 import 'dao/employee_dao.dart';
 import 'dao/project_dao.dart';
+import 'dao/uploaded_file_dao.dart';
 import 'granite_lake_database_service.dart';
 
 class GraniteLakeDataControllers {
@@ -15,7 +17,8 @@ class GraniteLakeDataControllers {
     required this.databaseService,
     required this.employee,
     required this.project,
-    required this.capture,
+    required this.photoCapture,
+    required this.uploadedFile,
     required this.config,
   });
 
@@ -25,7 +28,12 @@ class GraniteLakeDataControllers {
       databaseService: databaseService,
       employee: EmployeeDataController(EmployeeDao(databaseService)),
       project: ProjectDataController(ProjectDao(databaseService)),
-      capture: CaptureDataController(CaptureDao(databaseService)),
+      photoCapture: PhotoCaptureDataController(
+        PhotoCaptureDao(databaseService),
+      ),
+      uploadedFile: UploadedFileDataController(
+        UploadedFileDao(databaseService),
+      ),
       config: ConfigDataController(ConfigDao(databaseService)),
     );
   }
@@ -33,7 +41,8 @@ class GraniteLakeDataControllers {
   final GraniteLakeDatabaseService databaseService;
   final EmployeeDataController employee;
   final ProjectDataController project;
-  final CaptureDataController capture;
+  final PhotoCaptureDataController photoCapture;
+  final UploadedFileDataController uploadedFile;
   final ConfigDataController config;
 
   Future<void> initialize({required FlutterSecureStorage secureStorage}) {

@@ -143,11 +143,43 @@ code {
   line-height: 1.5;
 }
 
+.tab-switcher {
+  display: inline-flex;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 6px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--panel-soft) 55%, var(--panel) 45%);
+  flex-wrap: wrap;
+}
+
+.tab-button {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 700;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+.tab-button.is-active {
+  background: var(--accent);
+  color: white;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 18px;
   align-items: stretch;
+}
+
+.wallet-workspace {
+  grid-template-columns: 1fr;
+  align-items: start;
 }
 
 .form-panel,
@@ -201,6 +233,40 @@ code {
   border-style: solid;
   border-color: var(--accent);
   background: #e7f4f5;
+}
+
+.verification-select {
+  width: 100%;
+  border: 1px solid #9bb5ba;
+  border-radius: 12px;
+  background: var(--panel-soft);
+  color: var(--text);
+  padding: 12px 14px;
+  font: inherit;
+  min-height: 52px;
+}
+
+.verification-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 15%, transparent);
+}
+
+.verification-input {
+  width: 100%;
+  border: 1px solid #9bb5ba;
+  border-radius: 12px;
+  background: var(--panel-soft);
+  color: var(--text);
+  padding: 12px 14px;
+  font: inherit;
+  min-height: 52px;
+}
+
+.verification-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 15%, transparent);
 }
 
 :root[data-theme="dark"] .upload-zone.has-file {
@@ -386,6 +452,82 @@ code {
   font-weight: 600;
 }
 
+.wallet-result-panel {
+  min-height: 0;
+}
+
+.wallet-event-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  max-height: none;
+}
+
+.wallet-event-card {
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--panel-soft) 45%, var(--panel) 55%);
+  padding: 14px;
+}
+
+.wallet-event-card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.wallet-event-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.wallet-event-chip.is-photo {
+  background: color-mix(in oklab, var(--ok) 18%, transparent);
+  color: var(--ok);
+}
+
+.wallet-event-chip.is-file {
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+  color: var(--accent-strong);
+}
+
+.wallet-event-title {
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.wallet-event-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.wallet-event-grid > div {
+  display: grid;
+  gap: 4px;
+}
+
+.wallet-event-grid span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.wallet-event-grid code {
+  word-break: break-word;
+}
+
+.wallet-event-grid a {
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
 @media (max-width: 860px) {
   .shell {
     padding: 18px 12px 22px;
@@ -397,6 +539,14 @@ code {
   }
 
   .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .wallet-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .wallet-event-grid {
     grid-template-columns: 1fr;
   }
 

@@ -1,4 +1,5 @@
 import 'package:on_chain/sui/sui.dart';
+import 'package:path/path.dart' as path;
 
 import '../constants/app_constants.dart';
 
@@ -18,34 +19,34 @@ class ActionResult {
   final String? code;
 }
 
-class CaptureActionResult extends ActionResult {
-  const CaptureActionResult.success(this.record) : super._(isSuccess: true);
+class AttestationActionResult extends ActionResult {
+  const AttestationActionResult.success(this.record) : super._(isSuccess: true);
 
-  const CaptureActionResult.failure(String message)
+  const AttestationActionResult.failure(String message)
     : record = null,
       super._(isSuccess: false, message: message);
 
-  final CaptureRecord? record;
+  final AttestationRecord? record;
 }
 
-enum CaptureSubmissionStage {
+enum AttestationSubmissionStage {
   signing,
   savingLocalRecord,
   submittingToChain,
   refreshingHistory,
 }
 
-enum CaptureSubmissionStageState { pending, active, completed, failed }
+enum AttestationSubmissionStageState { pending, active, completed, failed }
 
-class CaptureSubmissionProgress {
-  const CaptureSubmissionProgress({
+class AttestationSubmissionProgress {
+  const AttestationSubmissionProgress({
     required this.stage,
     required this.state,
     this.message,
   });
 
-  final CaptureSubmissionStage stage;
-  final CaptureSubmissionStageState state;
+  final AttestationSubmissionStage stage;
+  final AttestationSubmissionStageState state;
   final String? message;
 }
 
@@ -394,11 +395,15 @@ class SessionRecord {
   }
 }
 
-class CaptureProofPayload {
-  const CaptureProofPayload({required this.values});
+enum AttestationAssetType { photo, file }
 
-  factory CaptureProofPayload.fromJson(Map<String, dynamic> json) {
-    return CaptureProofPayload(values: Map<String, dynamic>.from(json));
+enum AttestationPreviewKind { image, document, binary }
+
+class AttestationProofPayload {
+  const AttestationProofPayload({required this.values});
+
+  factory AttestationProofPayload.fromJson(Map<String, dynamic> json) {
+    return AttestationProofPayload(values: Map<String, dynamic>.from(json));
   }
 
   final Map<String, dynamic> values;
@@ -442,10 +447,10 @@ class CaptureProofPayload {
   Map<String, dynamic> toJson() => Map<String, dynamic>.from(values);
 }
 
-enum CaptureChainVerificationState { pending, verified, mismatched, failed }
+enum AttestationChainVerificationState { pending, verified, mismatched, failed }
 
-class CaptureChainVerificationRecord {
-  const CaptureChainVerificationRecord({
+class AttestationChainVerificationRecord {
+  const AttestationChainVerificationRecord({
     required this.state,
     required this.checkedAt,
     this.transactionDigest,
@@ -455,12 +460,13 @@ class CaptureChainVerificationRecord {
     this.gpsMatches = false,
     this.altitudeMatches = false,
     this.projectIdMatches = false,
+    this.fileIdMatches = false,
     this.timestampWithinTolerance = false,
     this.chainTimestamp,
     this.failureReason,
   });
 
-  final CaptureChainVerificationState state;
+  final AttestationChainVerificationState state;
   final DateTime checkedAt;
   final String? transactionDigest;
   final String? transactionStatus;
@@ -469,28 +475,30 @@ class CaptureChainVerificationRecord {
   final bool gpsMatches;
   final bool altitudeMatches;
   final bool projectIdMatches;
+  final bool fileIdMatches;
   final bool timestampWithinTolerance;
   final DateTime? chainTimestamp;
   final String? failureReason;
 
-  bool get isVerified => state == CaptureChainVerificationState.verified;
-  bool get isPending => state == CaptureChainVerificationState.pending;
+  bool get isVerified => state == AttestationChainVerificationState.verified;
+  bool get isPending => state == AttestationChainVerificationState.pending;
+  bool get contentHashMatches => photoHashMatches;
   bool get isFailed =>
-      state == CaptureChainVerificationState.failed ||
-      state == CaptureChainVerificationState.mismatched;
+      state == AttestationChainVerificationState.failed ||
+      state == AttestationChainVerificationState.mismatched;
 
   String get label {
     return switch (state) {
-      CaptureChainVerificationState.pending => 'PENDING',
-      CaptureChainVerificationState.verified => 'ANCHORED',
-      CaptureChainVerificationState.mismatched => 'MISMATCH',
-      CaptureChainVerificationState.failed => 'FAILED',
+      AttestationChainVerificationState.pending => 'PENDING',
+      AttestationChainVerificationState.verified => 'ANCHORED',
+      AttestationChainVerificationState.mismatched => 'MISMATCH',
+      AttestationChainVerificationState.failed => 'FAILED',
     };
   }
 }
 
-class CaptureRecord {
-  const CaptureRecord({
+class AttestationRecord {
+  const AttestationRecord({
     required this.captureId,
     required this.capturedAt,
     this.submittedAt,
@@ -507,29 +515,55 @@ class CaptureRecord {
     this.projectId,
     this.tags = const <String>[],
     this.note,
+    this.assetType = AttestationAssetType.photo,
+    this.fileName,
+    this.mimeType,
+    this.fileSizeBytes,
+    this.fileExtension,
+    this.previewKind = AttestationPreviewKind.image,
+    this.storageMode = 'LOCAL_ONLY',
   });
 
-  factory CaptureRecord.fromJson(Map<String, dynamic> json) {
-    return CaptureRecord(
+  factory AttestationRecord.fromJson(Map<String, dynamic> json) {
+    final proofPayload = Map<String, dynamic>.from(
+      json['proofPayload'] as Map<String, dynamic>? ??
+          const <String, dynamic>{},
+    );
+    final assetType = _assetTypeFromValue(
+      json['assetType'] ?? proofPayload['assetType'],
+    );
+    final fileName =
+        _readStringValue(json['fileName']) ??
+        _readStringValue(proofPayload['fileName']);
+    final mimeType =
+        _readStringValue(json['mimeType']) ??
+        _readStringValue(proofPayload['mimeType']);
+    final fileExtension =
+        _readStringValue(json['fileExtension']) ??
+        _readStringValue(proofPayload['fileExtension']);
+    final fileSizeBytes =
+        _readIntValue(json['fileSizeBytes']) ??
+        _readIntValue(proofPayload['fileSizeBytes']);
+    final previewKind = _previewKindFromValue(
+      json['previewKind'] ?? proofPayload['previewKind'],
+      mimeType: mimeType,
+      fileName: fileName,
+      assetType: assetType,
+    );
+
+    return AttestationRecord(
       captureId: json['captureId'] as String,
       capturedAt: DateTime.parse(json['capturedAt'] as String).toUtc(),
       submittedAt: _parseOptionalTimestamp(
         json['submittedAt'],
-        fallbackValue:
-            (json['proofPayload'] as Map<String, dynamic>?)?['submittedAt'] ??
-            json['capturedAt'],
+        fallbackValue: proofPayload['submittedAt'] ?? json['capturedAt'],
       ),
       imagePath: json['imagePath'] as String,
       imageSha256: json['imageSha256'] as String,
       signatureBase64: json['signatureBase64'] as String,
       walletAddress: json['walletAddress'] as String? ?? 'UNKNOWN',
       publicKeyHex: json['publicKeyHex'] as String,
-      proofPayload: CaptureProofPayload.fromJson(
-        Map<String, dynamic>.from(
-          json['proofPayload'] as Map<String, dynamic>? ??
-              const <String, dynamic>{},
-        ),
-      ),
+      proofPayload: AttestationProofPayload.fromJson(proofPayload),
       suiTxDigest: json['suiTxDigest'] as String? ?? '',
       suiObjectId: json['suiObjectId'] as String? ?? '',
       suiSubmissionStatus:
@@ -539,6 +573,16 @@ class CaptureRecord {
       tags: (json['tags'] as List<dynamic>? ?? const <dynamic>[])
           .cast<String>(),
       note: json['note'] as String?,
+      assetType: assetType,
+      fileName: fileName,
+      mimeType: mimeType,
+      fileSizeBytes: fileSizeBytes,
+      fileExtension: fileExtension,
+      previewKind: previewKind,
+      storageMode:
+          _readStringValue(json['storageMode']) ??
+          _readStringValue(proofPayload['storageMode']) ??
+          'LOCAL_ONLY',
     );
   }
 
@@ -550,7 +594,7 @@ class CaptureRecord {
   final String signatureBase64;
   final String walletAddress;
   final String publicKeyHex;
-  final CaptureProofPayload proofPayload;
+  final AttestationProofPayload proofPayload;
   final String suiTxDigest;
   final String suiObjectId;
   final String suiSubmissionStatus;
@@ -558,6 +602,17 @@ class CaptureRecord {
   final String? projectId;
   final List<String> tags;
   final String? note;
+  final AttestationAssetType assetType;
+  final String? fileName;
+  final String? mimeType;
+  final int? fileSizeBytes;
+  final String? fileExtension;
+  final AttestationPreviewKind previewKind;
+  final String storageMode;
+
+  bool get isPhoto => assetType == AttestationAssetType.photo;
+
+  bool get isFile => assetType == AttestationAssetType.file;
 
   String get normalizedSuiSubmissionStatus =>
       suiSubmissionStatus.trim().toUpperCase();
@@ -598,9 +653,11 @@ class CaptureRecord {
     if (lower.contains('movelocation') &&
         lower.contains('photo_attestation') &&
         (lower.contains('function: 6') ||
+            lower.contains('function: 7') ||
             lower.contains('attest_photo') ||
+            lower.contains('attest_file') ||
             lower.contains('function_name: some("attest_photo")'))) {
-      return 'The photo attestation contract rejected this request while validating your on-chain authorization. This usually means the claimed UserCap, linked wallet, or user status no longer matches the contract state.';
+      return 'The attestation contract rejected this request while validating your on-chain authorization. This usually means the claimed UserCap, linked wallet, or user status no longer matches the contract state.';
     }
 
     return normalized;
@@ -622,6 +679,80 @@ class CaptureRecord {
 
   DateTime get effectiveSubmittedAt => submittedAt ?? capturedAt;
 
+  String get localAssetPath => imagePath;
+
+  String get contentSha256 => imageSha256;
+
+  String get fileId => proofPayload.readString('fileId') ?? captureId;
+
+  String get assetTypeLabel => isFile ? 'FILE' : 'PHOTO';
+
+  String get assetName {
+    final explicitName = fileName?.trim();
+    if (explicitName != null && explicitName.isNotEmpty) {
+      return explicitName;
+    }
+    final basename = path.basename(imagePath).trim();
+    if (basename.isNotEmpty) {
+      return basename;
+    }
+    return isFile ? 'uploaded_asset' : 'capture.jpg';
+  }
+
+  String get normalizedMimeType => (mimeType ?? '').trim().toLowerCase();
+
+  String get mimeTypeLabel => normalizedMimeType.isEmpty
+      ? isPhoto
+            ? 'image/jpeg'
+            : 'application/octet-stream'
+      : normalizedMimeType;
+
+  String get extensionLabel {
+    final explicit = fileExtension?.trim().toLowerCase();
+    if (explicit != null && explicit.isNotEmpty) {
+      return explicit.startsWith('.') ? explicit : '.$explicit';
+    }
+    final derived = path.extension(assetName).trim().toLowerCase();
+    return derived.isEmpty ? (isPhoto ? '.jpg' : '') : derived;
+  }
+
+  String get formattedFileSize {
+    final bytes = fileSizeBytes;
+    if (bytes == null || bytes <= 0) {
+      return 'Unknown size';
+    }
+    if (bytes < 1024) {
+      return '$bytes B';
+    }
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    }
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+  }
+
+  bool get hasVisualPreview => previewKind == AttestationPreviewKind.image;
+
+  String get storageModeLabel {
+    final normalized = storageMode.trim();
+    return normalized.isEmpty ? 'LOCAL_ONLY' : normalized.toUpperCase();
+  }
+
+  int get onChainFileType {
+    if (normalizedMimeType == 'application/pdf') {
+      return 0;
+    }
+    if (hasVisualPreview) {
+      return 1;
+    }
+    return 2;
+  }
+
+  String get domainLabel =>
+      proofPayload.readString('domain') ?? 'UNASSIGNED_DOMAIN';
+
   String? get attestedProjectId =>
       proofPayload.readString('projectId') ?? projectId?.trim();
 
@@ -632,6 +763,10 @@ class CaptureRecord {
     final note = this.note?.trim();
     if (note != null && note.isNotEmpty) {
       return note;
+    }
+
+    if (isFile) {
+      return assetName;
     }
 
     if (tags.isNotEmpty) {
@@ -667,6 +802,13 @@ class CaptureRecord {
       'projectId': projectId,
       'tags': tags,
       'note': note,
+      'assetType': assetType.name,
+      'fileName': fileName,
+      'mimeType': mimeType,
+      'fileSizeBytes': fileSizeBytes,
+      'fileExtension': fileExtension,
+      'previewKind': previewKind.name,
+      'storageMode': storageMode,
     };
   }
 
@@ -679,6 +821,419 @@ class CaptureRecord {
       return null;
     }
     return DateTime.parse(raw).toUtc();
+  }
+
+  static String? _readStringValue(Object? value) {
+    if (value is! String) {
+      return null;
+    }
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  static int? _readIntValue(Object? value) {
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      return value.toInt();
+    }
+    if (value is String) {
+      return int.tryParse(value.trim());
+    }
+    return null;
+  }
+
+  static AttestationAssetType _assetTypeFromValue(Object? value) {
+    if (value is String && value.trim().toLowerCase() == 'file') {
+      return AttestationAssetType.file;
+    }
+    return AttestationAssetType.photo;
+  }
+
+  static AttestationPreviewKind _previewKindFromValue(
+    Object? value, {
+    required String? mimeType,
+    required String? fileName,
+    required AttestationAssetType assetType,
+  }) {
+    if (value is String) {
+      final normalized = value.trim().toLowerCase();
+      if (normalized == 'image') {
+        return AttestationPreviewKind.image;
+      }
+      if (normalized == 'document') {
+        return AttestationPreviewKind.document;
+      }
+      if (normalized == 'binary') {
+        return AttestationPreviewKind.binary;
+      }
+    }
+
+    if (assetType == AttestationAssetType.photo) {
+      return AttestationPreviewKind.image;
+    }
+
+    final normalizedMime = (mimeType ?? '').trim().toLowerCase();
+    if (normalizedMime.startsWith('image/')) {
+      return AttestationPreviewKind.image;
+    }
+    if (normalizedMime == 'application/pdf' ||
+        normalizedMime.contains('document') ||
+        normalizedMime.contains('officedocument')) {
+      return AttestationPreviewKind.document;
+    }
+
+    final extension = path.extension(fileName ?? '').trim().toLowerCase();
+    if ({
+      '.png',
+      '.jpg',
+      '.jpeg',
+      '.gif',
+      '.webp',
+      '.bmp',
+      '.heic',
+    }.contains(extension)) {
+      return AttestationPreviewKind.image;
+    }
+    if ({
+      '.pdf',
+      '.doc',
+      '.docx',
+      '.xls',
+      '.xlsx',
+      '.ppt',
+      '.pptx',
+      '.txt',
+      '.csv',
+    }.contains(extension)) {
+      return AttestationPreviewKind.document;
+    }
+    return AttestationPreviewKind.binary;
+  }
+}
+
+class PhotoCaptureRecord {
+  const PhotoCaptureRecord({
+    required this.photoCaptureId,
+    required this.capturedAt,
+    this.submittedAt,
+    required this.imagePath,
+    required this.imageSha256,
+    required this.signatureBase64,
+    required this.walletAddress,
+    required this.publicKeyHex,
+    required this.proofPayload,
+    required this.suiTxDigest,
+    required this.suiObjectId,
+    required this.suiSubmissionStatus,
+    required this.suiErrorMessage,
+    this.projectId,
+    this.tags = const <String>[],
+    this.note,
+    this.previewKind = AttestationPreviewKind.image,
+    this.storageMode = 'LOCAL_ONLY',
+  });
+
+  factory PhotoCaptureRecord.fromJson(Map<String, dynamic> json) {
+    return PhotoCaptureRecord(
+      photoCaptureId: json['photoCaptureId'] as String,
+      capturedAt: DateTime.parse(json['capturedAt'] as String).toUtc(),
+      submittedAt: AttestationRecord._parseOptionalTimestamp(
+        json['submittedAt'],
+        fallbackValue: json['capturedAt'],
+      ),
+      imagePath: json['imagePath'] as String,
+      imageSha256: json['imageSha256'] as String,
+      signatureBase64: json['signatureBase64'] as String,
+      walletAddress: json['walletAddress'] as String? ?? 'UNKNOWN',
+      publicKeyHex: json['publicKeyHex'] as String,
+      proofPayload: AttestationProofPayload.fromJson(
+        Map<String, dynamic>.from(
+          json['proofPayload'] as Map<String, dynamic>? ??
+              const <String, dynamic>{},
+        ),
+      ),
+      suiTxDigest: json['suiTxDigest'] as String? ?? '',
+      suiObjectId: json['suiObjectId'] as String? ?? '',
+      suiSubmissionStatus:
+          json['suiSubmissionStatus'] as String? ?? 'PENDING_SUBMISSION',
+      suiErrorMessage: json['suiErrorMessage'] as String? ?? '',
+      projectId: json['projectId'] as String?,
+      tags: (json['tags'] as List<dynamic>? ?? const <dynamic>[])
+          .cast<String>(),
+      note: json['note'] as String?,
+      previewKind: AttestationRecord._previewKindFromValue(
+        json['previewKind'],
+        mimeType: 'image/jpeg',
+        fileName: 'capture.jpg',
+        assetType: AttestationAssetType.photo,
+      ),
+      storageMode: json['storageMode'] as String? ?? 'LOCAL_ONLY',
+    );
+  }
+
+  factory PhotoCaptureRecord.fromAttestationRecord(AttestationRecord record) {
+    return PhotoCaptureRecord(
+      photoCaptureId: record.captureId,
+      capturedAt: record.capturedAt,
+      submittedAt: record.submittedAt,
+      imagePath: record.imagePath,
+      imageSha256: record.imageSha256,
+      signatureBase64: record.signatureBase64,
+      walletAddress: record.walletAddress,
+      publicKeyHex: record.publicKeyHex,
+      proofPayload: record.proofPayload,
+      suiTxDigest: record.suiTxDigest,
+      suiObjectId: record.suiObjectId,
+      suiSubmissionStatus: record.suiSubmissionStatus,
+      suiErrorMessage: record.suiErrorMessage,
+      projectId: record.projectId,
+      tags: record.tags,
+      note: record.note,
+      previewKind: record.previewKind,
+      storageMode: record.storageMode,
+    );
+  }
+
+  final String photoCaptureId;
+  final DateTime capturedAt;
+  final DateTime? submittedAt;
+  final String imagePath;
+  final String imageSha256;
+  final String signatureBase64;
+  final String walletAddress;
+  final String publicKeyHex;
+  final AttestationProofPayload proofPayload;
+  final String suiTxDigest;
+  final String suiObjectId;
+  final String suiSubmissionStatus;
+  final String suiErrorMessage;
+  final String? projectId;
+  final List<String> tags;
+  final String? note;
+  final AttestationPreviewKind previewKind;
+  final String storageMode;
+
+  AttestationRecord toAttestationRecord() {
+    return AttestationRecord(
+      captureId: photoCaptureId,
+      capturedAt: capturedAt,
+      submittedAt: submittedAt,
+      imagePath: imagePath,
+      imageSha256: imageSha256,
+      signatureBase64: signatureBase64,
+      walletAddress: walletAddress,
+      publicKeyHex: publicKeyHex,
+      proofPayload: proofPayload,
+      suiTxDigest: suiTxDigest,
+      suiObjectId: suiObjectId,
+      suiSubmissionStatus: suiSubmissionStatus,
+      suiErrorMessage: suiErrorMessage,
+      projectId: projectId,
+      tags: tags,
+      note: note,
+      assetType: AttestationAssetType.photo,
+      previewKind: previewKind,
+      storageMode: storageMode,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'photoCaptureId': photoCaptureId,
+      'capturedAt': capturedAt.toIso8601String(),
+      'submittedAt': submittedAt?.toIso8601String(),
+      'imagePath': imagePath,
+      'imageSha256': imageSha256,
+      'signatureBase64': signatureBase64,
+      'walletAddress': walletAddress,
+      'publicKeyHex': publicKeyHex,
+      'proofPayload': proofPayload.toJson(),
+      'suiTxDigest': suiTxDigest,
+      'suiObjectId': suiObjectId,
+      'suiSubmissionStatus': suiSubmissionStatus,
+      'suiErrorMessage': suiErrorMessage,
+      'projectId': projectId,
+      'tags': tags,
+      'note': note,
+      'previewKind': previewKind.name,
+      'storageMode': storageMode,
+    };
+  }
+}
+
+class UploadedFileRecord {
+  const UploadedFileRecord({
+    required this.uploadedFileId,
+    required this.capturedAt,
+    this.submittedAt,
+    required this.filePath,
+    required this.fileSha256,
+    required this.signatureBase64,
+    required this.walletAddress,
+    required this.publicKeyHex,
+    required this.proofPayload,
+    required this.suiTxDigest,
+    required this.suiObjectId,
+    required this.suiSubmissionStatus,
+    required this.suiErrorMessage,
+    this.projectId,
+    this.tags = const <String>[],
+    this.note,
+    required this.fileName,
+    this.mimeType,
+    this.fileSizeBytes,
+    this.fileExtension,
+    this.previewKind = AttestationPreviewKind.document,
+    this.storageMode = 'LOCAL_ONLY',
+  });
+
+  factory UploadedFileRecord.fromJson(Map<String, dynamic> json) {
+    return UploadedFileRecord(
+      uploadedFileId: json['uploadedFileId'] as String,
+      capturedAt: DateTime.parse(json['capturedAt'] as String).toUtc(),
+      submittedAt: AttestationRecord._parseOptionalTimestamp(
+        json['submittedAt'],
+        fallbackValue: json['capturedAt'],
+      ),
+      filePath: json['filePath'] as String,
+      fileSha256: json['fileSha256'] as String,
+      signatureBase64: json['signatureBase64'] as String,
+      walletAddress: json['walletAddress'] as String? ?? 'UNKNOWN',
+      publicKeyHex: json['publicKeyHex'] as String,
+      proofPayload: AttestationProofPayload.fromJson(
+        Map<String, dynamic>.from(
+          json['proofPayload'] as Map<String, dynamic>? ??
+              const <String, dynamic>{},
+        ),
+      ),
+      suiTxDigest: json['suiTxDigest'] as String? ?? '',
+      suiObjectId: json['suiObjectId'] as String? ?? '',
+      suiSubmissionStatus:
+          json['suiSubmissionStatus'] as String? ?? 'PENDING_SUBMISSION',
+      suiErrorMessage: json['suiErrorMessage'] as String? ?? '',
+      projectId: json['projectId'] as String?,
+      tags: (json['tags'] as List<dynamic>? ?? const <dynamic>[])
+          .cast<String>(),
+      note: json['note'] as String?,
+      fileName: json['fileName'] as String? ?? 'uploaded_asset',
+      mimeType: json['mimeType'] as String?,
+      fileSizeBytes: AttestationRecord._readIntValue(json['fileSizeBytes']),
+      fileExtension: json['fileExtension'] as String?,
+      previewKind: AttestationRecord._previewKindFromValue(
+        json['previewKind'],
+        mimeType: json['mimeType'] as String?,
+        fileName: json['fileName'] as String?,
+        assetType: AttestationAssetType.file,
+      ),
+      storageMode: json['storageMode'] as String? ?? 'LOCAL_ONLY',
+    );
+  }
+
+  factory UploadedFileRecord.fromAttestationRecord(AttestationRecord record) {
+    return UploadedFileRecord(
+      uploadedFileId: record.fileId,
+      capturedAt: record.capturedAt,
+      submittedAt: record.submittedAt,
+      filePath: record.imagePath,
+      fileSha256: record.imageSha256,
+      signatureBase64: record.signatureBase64,
+      walletAddress: record.walletAddress,
+      publicKeyHex: record.publicKeyHex,
+      proofPayload: record.proofPayload,
+      suiTxDigest: record.suiTxDigest,
+      suiObjectId: record.suiObjectId,
+      suiSubmissionStatus: record.suiSubmissionStatus,
+      suiErrorMessage: record.suiErrorMessage,
+      projectId: record.projectId,
+      tags: record.tags,
+      note: record.note,
+      fileName: record.fileName ?? record.assetName,
+      mimeType: record.mimeType,
+      fileSizeBytes: record.fileSizeBytes,
+      fileExtension: record.fileExtension,
+      previewKind: record.previewKind,
+      storageMode: record.storageMode,
+    );
+  }
+
+  final String uploadedFileId;
+  final DateTime capturedAt;
+  final DateTime? submittedAt;
+  final String filePath;
+  final String fileSha256;
+  final String signatureBase64;
+  final String walletAddress;
+  final String publicKeyHex;
+  final AttestationProofPayload proofPayload;
+  final String suiTxDigest;
+  final String suiObjectId;
+  final String suiSubmissionStatus;
+  final String suiErrorMessage;
+  final String? projectId;
+  final List<String> tags;
+  final String? note;
+  final String fileName;
+  final String? mimeType;
+  final int? fileSizeBytes;
+  final String? fileExtension;
+  final AttestationPreviewKind previewKind;
+  final String storageMode;
+
+  AttestationRecord toAttestationRecord() {
+    return AttestationRecord(
+      captureId: uploadedFileId,
+      capturedAt: capturedAt,
+      submittedAt: submittedAt,
+      imagePath: filePath,
+      imageSha256: fileSha256,
+      signatureBase64: signatureBase64,
+      walletAddress: walletAddress,
+      publicKeyHex: publicKeyHex,
+      proofPayload: proofPayload,
+      suiTxDigest: suiTxDigest,
+      suiObjectId: suiObjectId,
+      suiSubmissionStatus: suiSubmissionStatus,
+      suiErrorMessage: suiErrorMessage,
+      projectId: projectId,
+      tags: tags,
+      note: note,
+      assetType: AttestationAssetType.file,
+      fileName: fileName,
+      mimeType: mimeType,
+      fileSizeBytes: fileSizeBytes,
+      fileExtension: fileExtension,
+      previewKind: previewKind,
+      storageMode: storageMode,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'uploadedFileId': uploadedFileId,
+      'capturedAt': capturedAt.toIso8601String(),
+      'submittedAt': submittedAt?.toIso8601String(),
+      'filePath': filePath,
+      'fileSha256': fileSha256,
+      'signatureBase64': signatureBase64,
+      'walletAddress': walletAddress,
+      'publicKeyHex': publicKeyHex,
+      'proofPayload': proofPayload.toJson(),
+      'suiTxDigest': suiTxDigest,
+      'suiObjectId': suiObjectId,
+      'suiSubmissionStatus': suiSubmissionStatus,
+      'suiErrorMessage': suiErrorMessage,
+      'projectId': projectId,
+      'tags': tags,
+      'note': note,
+      'fileName': fileName,
+      'mimeType': mimeType,
+      'fileSizeBytes': fileSizeBytes,
+      'fileExtension': fileExtension,
+      'previewKind': previewKind.name,
+      'storageMode': storageMode,
+    };
   }
 }
 

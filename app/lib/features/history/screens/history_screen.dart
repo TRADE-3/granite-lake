@@ -13,6 +13,8 @@ enum _VerificationFilter { any, anchored, pending, failed }
 
 enum _VerificationStatus { anchored, pending, failed }
 
+enum _AssetTypeFilter { all, photos, files }
+
 enum _PeriodFilter { allTime, today, last7Days, last30Days }
 
 class HistoryScreen extends StatefulWidget {
@@ -30,6 +32,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   String _searchQuery = '';
   String _selectedProject = 'All';
   _VerificationFilter _verificationFilter = _VerificationFilter.any;
+  _AssetTypeFilter _assetTypeFilter = _AssetTypeFilter.all;
   _PeriodFilter _periodFilter = _PeriodFilter.allTime;
 
   @override
@@ -41,7 +44,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   @override
   Widget build(BuildContext context) {
     final controller = GraniteLakeScope.of(context);
-    final captures = controller.captureHistory;
+    final captures = controller.attestationHistory;
     final projectTitlesById = {
       for (final project in controller.projects)
         project.projectId: project.title,
@@ -53,6 +56,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final filteredCaptures = captures
         .where((capture) => _matchesSearch(capture, projectTitlesById))
         .where((capture) => _matchesProject(capture, projectTitlesById))
+        .where(_matchesAssetType)
         .where((capture) => _matchesVerification(capture, controller))
         .where(_matchesPeriod)
         .toList();
@@ -71,7 +75,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         _verificationRequested.addAll(
           capturesToVerify.map((capture) => capture.captureId),
         );
-        controller.verifyCapturesOnChain(capturesToVerify);
+        controller.verifyAttestationsOnChain(capturesToVerify);
       });
     }
 
@@ -201,6 +205,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       },
                     ),
                     const SizedBox(width: 8),
+                    _MenuChip<_AssetTypeFilter>(
+                      label: 'Type: ${_assetTypeLabel(_assetTypeFilter)}',
+                      isActive: _assetTypeFilter != _AssetTypeFilter.all,
+                      value: _assetTypeFilter,
+                      items: _AssetTypeFilter.values,
+                      labelBuilder: _assetTypeLabel,
+                      onSelected: (value) {
+                        setState(() => _assetTypeFilter = value);
+                      },
+                    ),
+                    const SizedBox(width: 8),
                     _MenuChip<_PeriodFilter>(
                       label: 'Period: ${_periodLabel(_periodFilter)}',
                       isActive: _periodFilter != _PeriodFilter.allTime,
@@ -231,7 +246,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     return _HistoryRow(
                       capture: capture,
                       projectLabel: _projectLabel(capture, projectTitlesById),
-                      verification: controller.captureVerificationFor(
+                      verification: controller.attestationVerificationFor(
                         capture.captureId,
                       ),
                     );
@@ -246,6 +261,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       _searchQuery.isNotEmpty ||
       _selectedProject != 'All' ||
       _verificationFilter != _VerificationFilter.any ||
+      _assetTypeFilter != _AssetTypeFilter.all ||
       _periodFilter != _PeriodFilter.allTime;
 
   void _toggleSearch() {
@@ -259,7 +275,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   bool _matchesSearch(
-    CaptureRecord capture,
+    AttestationRecord capture,
     Map<String, String> projectTitlesById,
   ) {
     if (_searchQuery.isEmpty) {
@@ -269,6 +285,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final haystack = [
       _projectLabel(capture, projectTitlesById),
       capture.displayTitle,
+      capture.assetName,
+      capture.assetTypeLabel,
+      capture.mimeTypeLabel,
       capture.imageSha256,
       capture.shortHash,
       ...capture.tags,
@@ -278,7 +297,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   bool _matchesProject(
-    CaptureRecord capture,
+    AttestationRecord capture,
     Map<String, String> projectTitlesById,
   ) {
     if (_selectedProject == 'All') {
@@ -288,7 +307,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   String _projectLabel(
-    CaptureRecord capture,
+    AttestationRecord capture,
     Map<String, String> projectTitlesById,
   ) {
     final projectId = capture.projectId?.trim();
@@ -305,12 +324,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   bool _matchesVerification(
-    CaptureRecord capture,
+    AttestationRecord capture,
     GraniteLakeController controller,
   ) {
     final status = _verificationStatusFor(
       capture,
-      controller.captureVerificationFor(capture.captureId),
+      controller.attestationVerificationFor(capture.captureId),
     );
     switch (_verificationFilter) {
       case _VerificationFilter.any:
@@ -324,7 +343,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
-  bool _matchesPeriod(CaptureRecord capture) {
+  bool _matchesAssetType(AttestationRecord capture) {
+    return switch (_assetTypeFilter) {
+      _AssetTypeFilter.all => true,
+      _AssetTypeFilter.photos => capture.isPhoto,
+      _AssetTypeFilter.files => capture.isFile,
+    };
+  }
+
+  bool _matchesPeriod(AttestationRecord capture) {
     final capturedAt = capture.capturedAt.toLocal();
     final now = DateTime.now();
     final todayStart = DateTime(now.year, now.month, now.day);
@@ -345,6 +372,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
     setState(() {
       _selectedProject = 'All';
       _verificationFilter = _VerificationFilter.any;
+      _assetTypeFilter = _AssetTypeFilter.all;
       _periodFilter = _PeriodFilter.allTime;
       _searchController.clear();
       _searchQuery = '';
@@ -370,17 +398,30 @@ class _HistoryScreenState extends State<HistoryScreen> {
     };
   }
 
+  static String _assetTypeLabel(_AssetTypeFilter filter) {
+    return switch (filter) {
+      _AssetTypeFilter.all => 'All',
+      _AssetTypeFilter.photos => 'Photos',
+      _AssetTypeFilter.files => 'Files',
+    };
+  }
+
   static _VerificationStatus _verificationStatusFor(
-    CaptureRecord capture,
-    CaptureChainVerificationRecord? verification,
+    AttestationRecord capture,
+    AttestationChainVerificationRecord? verification,
   ) {
     if (verification?.isVerified == true) {
       return _VerificationStatus.anchored;
     }
-    if (verification?.isPending == true) {
-      return _VerificationStatus.pending;
-    }
     if (capture.isAttestationAnchored) {
+      return _VerificationStatus.anchored;
+    }
+    if (verification != null &&
+        !verification.isVerified &&
+        !verification.isPending) {
+      return _VerificationStatus.failed;
+    }
+    if (verification?.isPending == true) {
       return _VerificationStatus.pending;
     }
     if (capture.isAttestationPending) {
@@ -521,7 +562,7 @@ class _EmptyHistoryState extends StatelessWidget {
             Icon(Icons.history_rounded, size: 48, color: AppColors.textMuted),
             const SizedBox(height: 16),
             Text(
-              hasFilters ? 'NO MATCHING CAPTURES' : 'NO CAPTURES YET',
+              hasFilters ? 'NO MATCHING ASSETS' : 'NO ASSETS YET',
               style: AppTextStyles.labelMedium.copyWith(
                 color: AppColors.textMuted,
                 letterSpacing: 1.0,
@@ -531,7 +572,7 @@ class _EmptyHistoryState extends StatelessWidget {
             Text(
               hasFilters
                   ? 'Try adjusting search, project, verification, or period filters.'
-                  : 'Start a secure session and save a capture to build your on-device ledger.',
+                  : 'Start a secure session and attest a photo or file to build your on-device ledger.',
               textAlign: TextAlign.center,
               style: AppTextStyles.bodySmall.copyWith(
                 color: AppColors.textMuted,
@@ -552,14 +593,14 @@ class _HistoryRow extends StatelessWidget {
     required this.verification,
   });
 
-  final CaptureRecord capture;
+  final AttestationRecord capture;
   final String projectLabel;
-  final CaptureChainVerificationRecord? verification;
+  final AttestationChainVerificationRecord? verification;
 
   @override
   Widget build(BuildContext context) {
     final imageFile = File(capture.imagePath);
-    final hasImage = imageFile.existsSync();
+    final hasImage = capture.hasVisualPreview && imageFile.existsSync();
     final verificationStatus = _HistoryScreenState._verificationStatusFor(
       capture,
       verification,
@@ -587,9 +628,9 @@ class _HistoryRow extends StatelessWidget {
                       imageFile,
                       fit: BoxFit.cover,
                       errorBuilder: (context, error, stackTrace) =>
-                          const _MissingThumb(),
+                          _MissingThumb(capture: capture),
                     )
-                  : const _MissingThumb(),
+                  : _MissingThumb(capture: capture),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -605,11 +646,24 @@ class _HistoryRow extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'SHA256: ${capture.shortHash}',
+                    capture.isFile
+                        ? capture.assetName
+                        : 'SHA256: ${capture.shortHash}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: AppTextStyles.bodyMedium.copyWith(
                       color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    capture.isFile
+                        ? 'SHA256: ${capture.shortHash}'
+                        : capture.assetTypeLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: AppColors.textSecondary,
                     ),
                   ),
                   if (capture.tags.isNotEmpty) ...[
@@ -714,19 +768,20 @@ class _VerificationBadge extends StatelessWidget {
 }
 
 class _MissingThumb extends StatelessWidget {
-  const _MissingThumb();
+  const _MissingThumb({required this.capture});
+
+  final AttestationRecord capture;
 
   @override
   Widget build(BuildContext context) {
+    final icon = capture.isFile
+        ? capture.mimeTypeLabel == 'application/pdf'
+              ? Icons.picture_as_pdf_rounded
+              : Icons.insert_drive_file_rounded
+        : Icons.image_not_supported_outlined;
     return Container(
       color: AppColors.surfaceElevated,
-      child: Center(
-        child: Icon(
-          Icons.image_not_supported_outlined,
-          color: AppColors.textMuted,
-          size: 20,
-        ),
-      ),
+      child: Center(child: Icon(icon, color: AppColors.textMuted, size: 20)),
     );
   }
 }

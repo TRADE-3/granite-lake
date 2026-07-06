@@ -64,6 +64,13 @@ module granite_lake::photo_attestation {
         user_wallet: address,
     }
 
+    public struct FileAttested has copy, drop {
+        file_hash: vector<u8>,
+        user_wallet: address,
+        file_id: vector<u8>,
+        project_id: vector<u8>,
+    }
+
     fun init(ctx: &mut TxContext) {
         let owner_cap = OwnerCap {
             id: object::new(ctx),
@@ -195,6 +202,27 @@ module granite_lake::photo_attestation {
             altitude,
             project_id,
             user_wallet: sender,
+        });
+    }
+
+    public entry fun attest_file(
+        user_cap: &UserCap,
+        registry: &Registry,
+        hash: vector<u8>,
+        file_id: vector<u8>,
+        project_id: vector<u8>,
+        ctx: &mut TxContext,
+    ) {
+        let sender = tx_context::sender(ctx);
+
+        assert!(sender == user_cap.user_wallet, E_NOT_USER);
+        assert_user_enabled(registry, user_cap, sender);
+
+        event::emit(FileAttested {
+            file_hash: hash,
+            user_wallet: sender,
+            file_id,
+            project_id,
         });
     }
 

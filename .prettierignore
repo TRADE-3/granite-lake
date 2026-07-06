@@ -2,6 +2,8 @@
 **/dist
 **/coverage
 **/.DS_Store
+.claude
+.codegraph
 app/.dart_tool
 app/.flutter-plugins
 app/.flutter-plugins-dependencies

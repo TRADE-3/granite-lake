@@ -137,16 +137,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 isActive: activeSession,
               ),
               const SizedBox(height: 16),
-              if (controller.lastCapture != null)
+              if (controller.lastAttestation != null)
                 _MetricCard(
                   title: 'LAST CAPTURE',
-                  primaryValue: controller.lastCapture!.shortHash,
-                  secondaryValue: controller.lastCapture!.capturedAt
+                  primaryValue: controller.lastAttestation!.shortHash,
+                  secondaryValue: controller.lastAttestation!.capturedAt
                       .toLocal()
                       .toString(),
                   isActive: true,
                 ),
-              if (controller.lastCapture != null) const SizedBox(height: 16),
+              if (controller.lastAttestation != null)
+                const SizedBox(height: 16),
               if (_errorMessage != null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 12),

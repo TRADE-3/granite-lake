@@ -1,6 +1,6 @@
 # granite_lake
 
-Forensic-grade photo authenticity for field operations.
+Forensic-grade photo and file authenticity for field operations.
 
 ## Overview
 
@@ -9,8 +9,9 @@ Granite Lake is an Android-focused Flutter app for:
 - creating a device-local Sui wallet
 - protecting that wallet with Android biometrics
 - capturing photos with signed local proof data
-- submitting photo attestations to a Sui testnet smart contract
-- verifying saved captures against the on-chain `PhotoAttested` event
+- uploading files with signed local proof data
+- submitting photo and file attestations to a Sui testnet smart contract
+- verifying saved captures against the on-chain `PhotoAttested` and `FileAttested` events
 
 The app currently targets Android because the biometric gate is implemented through Flutter plus an Android `MethodChannel` bridge backed by Android Keystore.
 
@@ -26,10 +27,10 @@ The current onboarding and capture flow is:
    - OTP
 4. Protect the wallet with biometrics
 5. Start a secure session
-6. Capture a photo
+6. Choose a capture method: capture a photo or upload a file
 7. Save the local signed proof bundle
-8. Submit `attest_photo` to Sui testnet
-9. Verify later that on-chain event data matches the local capture
+8. Submit `attest_photo` or `attest_file` to Sui testnet
+9. Verify later that on-chain event data matches the local photo or file attestation
 
 Important implementation detail:
 
@@ -70,6 +71,7 @@ The app integrates with the published Move module:
 The app currently uses these contract entry points:
 
 - `attest_photo`
+- `attest_file`
 
 OTP and UserCap claim flow:
 
@@ -92,16 +94,29 @@ Attestation flow:
   - altitude string
   - project id
 
+File upload flow:
+
+- the app lets the user choose a file from the capture method screen
+- the app reuses the claimed `UserCap`
+- it calls `attest_file` with:
+  - `UserCap`
+  - `Registry`
+  - file SHA-256
+  - file id
+  - project id
+
 Important contract behavior:
 
 - `attest_photo` emits an event
 - it does not create a separate photo object
+- `attest_file` emits an event
+- it does not create a separate file object
 
 Because of that:
 
 - `sui_tx_digest` is the real transaction digest
 - `sui_object_id` in the app is the `UserCap` object id used for attestation
-- the actual proof of attestation is the transaction plus the `PhotoAttested` event
+- the actual proof of attestation is the transaction plus the `PhotoAttested` or `FileAttested` event
 
 ## Storage Layout
 
@@ -251,6 +266,18 @@ Stores all persisted capture records, including:
 - project id
 - tags
 - note
+
+#### `uploaded_files`
+
+Stores uploaded file attestations separately from camera captures, including:
+
+- local file path and name
+- MIME type and size
+- file SHA-256
+- transaction digest
+- UserCap object id
+- submission status and error message
+- project id, tags, and note
 
 #### `app_config`
 
@@ -467,7 +494,7 @@ The post-submit progress screen now reflects real pipeline stages:
 
 ## On-Chain Verification
 
-History verification now checks the real `PhotoAttested` event, not just local status flags.
+History verification now checks the real `PhotoAttested` and `FileAttested` events, not just local status flags.
 
 Verification service:
 
@@ -475,7 +502,7 @@ Verification service:
 
 The app fetches the transaction block and compares:
 
-- on-chain `photo_hash`
+- on-chain `photo_hash` or `file_hash`
 - on-chain `gps`
 - on-chain `altitude`
 - on-chain `project_id`
@@ -484,6 +511,7 @@ The app fetches the transaction block and compares:
 against local capture data:
 
 - `imageSha256`
+- `fileSha256`
 - `gpsLabel`
 - `altitudeLabel`
 - `projectId`
@@ -492,7 +520,7 @@ against local capture data:
 History behavior:
 
 - successful submission alone is not treated as fully verified
-- an anchored capture is marked verified only after the event fields match
+- an anchored photo or file is marked verified only after the event fields match
 - chain timestamp is checked against local `submittedAt` with the configured tolerance window
 - mismatches and chain lookup failures are surfaced in history/detail state
 

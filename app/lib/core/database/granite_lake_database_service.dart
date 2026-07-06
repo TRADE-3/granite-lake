@@ -6,11 +6,13 @@ import 'migrations.dart';
 
 class GraniteLakeDatabaseService {
   static const String databaseName = 'granite_lake.db';
-  static const int databaseVersion = 6;
+  static const int databaseVersion = 8;
 
   static const String employeesTable = 'employees';
   static const String projectsTable = 'projects';
   static const String capturesTable = 'captures';
+  static const String photoCapturesTable = 'photo_captures';
+  static const String uploadedFilesTable = 'uploaded_files';
   static const String configTable = 'app_config';
 
   static const String selectedProjectConfigKey = 'selected_project_id';

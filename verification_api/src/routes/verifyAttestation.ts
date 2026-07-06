@@ -1,32 +1,73 @@
 import { createHash } from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
+  FILE_ATTESTED_EVENT_TYPE,
+  FILE_ATTESTED_EVENT_TYPES,
   GRANITE_LAKE_ORIGINAL_PACKAGE_ID,
   GRANITE_LAKE_PACKAGE_ID,
   GRANITE_LAKE_REGISTRY_ID,
   PHOTO_ATTESTED_EVENT_TYPE,
+  PHOTO_ATTESTED_EVENT_TYPES,
   SUI_RPC_URL,
 } from "../constants.js";
 import { lookupGraniteTxtConsensus } from "../services/dnsLookup.js";
-import { verifyPhotoHashDetailed } from "../services/photoVerification.js";
-import { VerificationResponse } from "../types.js";
+import { verifyAttestationHashDetailed } from "../services/attestVerification.js";
+import { AttestType, VerificationResponse } from "../types.js";
+
+function normalizeAttestType(value: string): AttestType | null {
+  if (value === "attest_photo" || value === "attest_file") {
+    return value;
+  }
+
+  return null;
+}
 
 export async function registerVerifyPhotoRoute(app: FastifyInstance): Promise<void> {
-  app.post("/verify-photo", async (request, reply) => {
+  async function verifyAttestationHandler(request: FastifyRequest, reply: FastifyReply) {
     const startedAt = Date.now();
 
-    const part = await request.file();
-    if (!part) {
-      return reply.code(400).send({ error: "Missing multipart file field." });
+    let attestType: AttestType | null = null;
+    let upload: {
+      fileName: string;
+      mimeType: string;
+      buffer: Buffer;
+    } | null = null;
+
+    for await (const part of request.parts()) {
+      if (part.type === "file") {
+        upload = {
+          fileName: part.filename,
+          mimeType: part.mimetype,
+          buffer: await part.toBuffer(),
+        };
+        continue;
+      }
+
+      if (part.fieldname === "attest_type") {
+        attestType = normalizeAttestType(String(part.value ?? ""));
+      }
     }
 
-    const buffer = await part.toBuffer();
+    if (!upload) {
+      return reply.code(400).send({ error: "Missing multipart file field." });
+    }
+    if (!attestType) {
+      return reply.code(400).send({
+        error: "Missing or invalid attest_type. Expected attest_photo or attest_file.",
+      });
+    }
+
+    const { buffer } = upload;
     if (buffer.length === 0) {
       return reply.code(400).send({ error: "Uploaded file is empty." });
     }
 
-    const photoHashHex = createHash("sha256").update(buffer).digest("hex");
-    const scan = await verifyPhotoHashDetailed(photoHashHex, SUI_RPC_URL);
+    const hashHex = createHash("sha256").update(buffer).digest("hex");
+    const scan = await verifyAttestationHashDetailed(attestType, hashHex, SUI_RPC_URL);
+    const eventType = attestType === "attest_photo" ? PHOTO_ATTESTED_EVENT_TYPE : FILE_ATTESTED_EVENT_TYPE;
+    const scannedEventTypes = attestType === "attest_photo" ? PHOTO_ATTESTED_EVENT_TYPES : FILE_ATTESTED_EVENT_TYPES;
+    const attestationLabel = attestType === "attest_photo" ? "PhotoAttested" : "FileAttested";
+    const requestHash = attestType === "attest_photo" ? { photoHashHex: hashHex } : { fileHashHex: hashHex };
 
     const warnings: string[] = [];
 
@@ -88,13 +129,15 @@ export async function registerVerifyPhotoRoute(app: FastifyInstance): Promise<vo
     const response: VerificationResponse = {
       hasMatch: Boolean(scan.record),
       summary: scan.record
-        ? "Photo hash matched a PhotoAttested event and metadata was resolved."
-        : "No PhotoAttested event matched the provided file hash.",
+        ? `${attestationLabel} hash matched and metadata was resolved.`
+        : `No ${attestationLabel} event matched the provided file hash.`,
       request: {
-        fileName: part.filename,
-        mimeType: part.mimetype,
+        attestType,
+        fileName: upload.fileName,
+        mimeType: upload.mimeType,
         sizeBytes: buffer.length,
-        photoHashHex,
+        hashHex,
+        ...requestHash,
       },
       config: {
         rpcUrl: SUI_RPC_URL,
@@ -105,7 +148,8 @@ export async function registerVerifyPhotoRoute(app: FastifyInstance): Promise<vo
       scan: {
         pagesScanned: scan.pagesScanned,
         eventsScanned: scan.eventsScanned,
-        eventType: PHOTO_ATTESTED_EVENT_TYPE,
+        eventType: scan.eventType ?? eventType,
+        eventTypes: scannedEventTypes,
       },
       attestation: scan.record,
       userEnabledAtAttestation: scan.statusAtAttestation,
@@ -115,5 +159,7 @@ export async function registerVerifyPhotoRoute(app: FastifyInstance): Promise<vo
     };
 
     return reply.code(200).send(response);
-  });
+  }
+
+  app.post("/verify-attestation", verifyAttestationHandler);
 }

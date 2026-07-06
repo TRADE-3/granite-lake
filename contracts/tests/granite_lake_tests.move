@@ -212,6 +212,42 @@ fun test_disabled_users_cannot_attest_photos() {
     scenario.end();
 }
 
+#[test, expected_failure(abort_code = E_USER_DISABLED, location = granite_lake::photo_attestation)]
+fun test_disabled_users_cannot_attest_files() {
+    let mut scenario = ts::begin(OWNER);
+    let domain = b"disabled-file-attest.com";
+    pa::init_for_testing(scenario.ctx());
+
+    setup_domain_and_user(&mut scenario, copy domain, USER);
+
+    scenario.next_tx(ADMIN);
+    {
+        let mut registry: pa::Registry = scenario.take_shared();
+        pa::disable_user(&mut registry, domain, USER, scenario.ctx());
+        ts::return_shared(registry);
+    };
+
+    scenario.next_tx(USER);
+    {
+        let user_cap: pa::UserCap = scenario.take_from_sender();
+        let registry: pa::Registry = scenario.take_shared();
+
+        pa::attest_file(
+            &user_cap,
+            &registry,
+            b"file-hash-1",
+            b"file-1",
+            b"project-disabled-file",
+            scenario.ctx(),
+        );
+
+        ts::return_shared(registry);
+        scenario.return_to_sender(user_cap);
+    };
+
+    scenario.end();
+}
+
 #[test, expected_failure(abort_code = E_NOT_USER, location = granite_lake::photo_attestation)]
 fun test_only_user_cap_owner_can_call_attest_photo() {
     let mut scenario = ts::begin(OWNER);
@@ -273,6 +309,38 @@ fun test_attest_photo_emits_photo_attested_event() {
 
         assert_eq!(event::num_events(), 1);
         assert_eq!(event::events_by_type<pa::PhotoAttested>().length(), 1);
+
+        ts::return_shared(registry);
+        scenario.return_to_sender(user_cap);
+    };
+
+    scenario.end();
+}
+
+#[test]
+fun test_attest_file_emits_file_attested_event() {
+    let mut scenario = ts::begin(OWNER);
+    let domain = b"file-attest-event.com";
+    pa::init_for_testing(scenario.ctx());
+
+    setup_domain_and_user(&mut scenario, domain, USER);
+
+    scenario.next_tx(USER);
+    {
+        let user_cap: pa::UserCap = scenario.take_from_sender();
+        let registry: pa::Registry = scenario.take_shared();
+
+        pa::attest_file(
+            &user_cap,
+            &registry,
+            b"file-hash-2",
+            b"file-2",
+            b"project-file-success",
+            scenario.ctx(),
+        );
+
+        assert_eq!(event::num_events(), 1);
+        assert_eq!(event::events_by_type<pa::FileAttested>().length(), 1);
 
         ts::return_shared(registry);
         scenario.return_to_sender(user_cap);
