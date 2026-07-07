@@ -1,6 +1,20 @@
-# granite-lake
+# Granite Lake
 
-Open source Granite Lake monorepo for field photo and file authenticity, domain-scoped user authorization, and Sui-based attestation.
+**Granite Lake** is an open-source, mobile-first platform that turns everyday field photos and critical project documents into bulletproof, forensic-grade evidence. By hardware-locking user identity via a biometric gate and anchoring records to the Sui blockchain, Granite Lake provides a permanent, tamper-proof audit trail for industries like construction, insurance, and logistics.
+
+## Core Capabilities
+
+- **Hardware-Locked Identity**
+  Cryptographic signing keys are secured by the user's physical fingerprint via a biometric gate.
+
+- **Flexible Field Workflows**
+  Teams can seamlessly snap live, location-verified photos or securely upload critical documents (like PDFs and compliance logs).
+
+- **Immutable Context**
+  Photos are instantly bound with verified GPS coordinates, altitude, and timestamps; all assets (photos and documents) are tagged with project IDs.
+
+- **Zero-Trust Verification**
+  Every file's cryptographic hash is anchored on-chain, allowing a public web portal to let anyone select a raw file to instantly verify its authenticity, or run comprehensive, chronological audits on a user's entire field history directly against the public ledger.
 
 ## Repository Structure
 
