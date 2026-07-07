@@ -1,0 +1,7 @@
+# Funding sources for Granite Lake.
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+open_collective: granite
+github: granite
+patreon: granite
+custom:
+  - "https://github.com/sponsors/granite"

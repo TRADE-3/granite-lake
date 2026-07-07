@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Granite Open Source Charter
+    url: https://github.com/granite/granite-lake/blob/main/GRANITE_OPEN_SOURCE_CHARTER.md
+    about: How to contribute, PR rules, code style, security reporting
+  - name: Security Reporting
+    url: https://github.com/granite/granite-lake/security/advisories/new
+    about: Privately report a security vulnerability. Do not file public issues.
+  - name: Discussions
+    url: https://github.com/granite/granite-lake/discussions
+    about: Open-ended design and operator questions
