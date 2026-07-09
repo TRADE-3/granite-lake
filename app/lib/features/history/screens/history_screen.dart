@@ -413,13 +413,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
     if (verification?.isVerified == true) {
       return _VerificationStatus.anchored;
     }
-    if (capture.isAttestationAnchored) {
-      return _VerificationStatus.anchored;
-    }
     if (verification != null &&
         !verification.isVerified &&
         !verification.isPending) {
       return _VerificationStatus.failed;
+    }
+    if (capture.isAttestationAnchored) {
+      return _VerificationStatus.anchored;
     }
     if (verification?.isPending == true) {
       return _VerificationStatus.pending;

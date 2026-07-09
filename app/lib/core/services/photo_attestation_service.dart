@@ -9,7 +9,14 @@ import 'package:on_chain/on_chain.dart';
 import '../constants/app_constants.dart';
 import '../state/granite_lake_models.dart';
 import '../utils/utils.dart';
-import 'sui_http_service.dart';
+import 'sui_graphql_service.dart';
+
+class _GraphQlCoin {
+  const _GraphQlCoin({required this.object, required this.balance});
+
+  final SuiGraphQlObject object;
+  final BigInt balance;
+}
 
 class PhotoAttestationClaimInput {
   const PhotoAttestationClaimInput({
@@ -334,28 +341,23 @@ class FileAttestationVerificationResult {
 }
 
 class PhotoAttestationService {
-  PhotoAttestationService({http.Client? httpClient})
-    : _httpClient = httpClient ?? http.Client();
+  PhotoAttestationService({
+    http.Client? httpClient,
+    SuiGraphQlService? graphQlService,
+  }) : _httpClient = httpClient ?? http.Client(),
+       _graphQlService = graphQlService ?? SuiGraphQlService();
 
   final http.Client _httpClient;
+  final SuiGraphQlService _graphQlService;
 
   Future<BigInt> getWalletSuiBalanceMist({
     required PhotoAttestationContractConfig config,
     required String walletAddress,
   }) async {
-    final provider = _provider(config.rpcUrl);
-    final response = await provider.request(
-      SuiRequestGetCoins(
-        owner: SuiAddress(walletAddress),
-        coinType: SuiTransactionConst.suiTypeArgs,
-      ),
+    return _graphQlService.getSuiBalance(
+      config.rpcUrl,
+      ownerAddress: walletAddress,
     );
-
-    BigInt total = BigInt.zero;
-    for (final coin in response.data) {
-      total += coin.balance;
-    }
-    return total;
   }
 
   Future<PhotoAttestationOtpRequestResult> requestUserOtp({
@@ -487,11 +489,13 @@ class PhotoAttestationService {
     required String projectId,
   }) async {
     try {
-      final provider = _provider(config.rpcUrl);
       final owner = SuiAddress(identity.walletAddress);
-      final userCap = await _loadOwnedObject(provider, claim.userCapObjectId);
+      final userCap = await _loadOwnedObject(
+        config.rpcUrl,
+        claim.userCapObjectId,
+      );
       final registry = await _loadRegistryObjectArg(
-        provider,
+        config.rpcUrl,
         config.registryId,
       );
 
@@ -501,14 +505,14 @@ class PhotoAttestationService {
         gasData: SuiGasData(
           payment: const [],
           owner: owner,
-          price: await provider.request(const SuiRequestGetReferenceGasPrice()),
+          price: await _graphQlService.getReferenceGasPrice(config.rpcUrl),
           budget: BigInt.from(50000000),
         ),
         kind: SuiTransactionKindProgrammableTransaction(
           SuiProgrammableTransaction(
             inputs: [
               SuiCallArgObject(
-                SuiObjectArgImmOrOwnedObject(userCap.data!.toObjectRef()),
+                SuiObjectArgImmOrOwnedObject(userCap.toObjectRef()),
               ),
               SuiCallArgObject(registry),
               SuiCallArgPure.bytes(utf8.encode(imageSha256)),
@@ -537,12 +541,11 @@ class PhotoAttestationService {
         ),
       );
 
-      tx = await _prepareTransaction(provider, tx);
-      final response = await _execute(provider, tx, signingKey);
+      tx = await _prepareTransaction(config.rpcUrl, tx);
+      final response = await _execute(config.rpcUrl, tx, signingKey);
       return PhotoAttestationSubmissionResult(
         transactionDigest: response.digest,
-        status:
-            response.effects?.status.status.name.toUpperCase() ?? 'SUBMITTED',
+        status: response.status,
         verification: _buildImmediateVerificationResult(
           response: response,
           config: config,
@@ -567,21 +570,13 @@ class PhotoAttestationService {
       throw StateError('Capture does not have a Sui transaction digest yet.');
     }
 
-    final provider = _provider(config.rpcUrl);
-    final response = await provider.request(
-      SuiRequestGetTransactionBlock(
-        transactionDigest: digest,
-        options: const SuiApiTransactionBlockResponseOptions(
-          showEvents: true,
-          showEffects: true,
-          showInput: true,
-        ),
-      ),
+    final response = await _graphQlService.getTransaction(
+      config.rpcUrl,
+      digest: digest,
     );
 
-    final transactionStatus =
-        response.effects?.status.status.name.toUpperCase() ?? 'UNKNOWN';
-    if (response.effects?.status.status != SuiApiExecutionStatusType.success) {
+    final transactionStatus = response.status;
+    if (transactionStatus != 'SUCCESS') {
       return PhotoAttestationVerificationResult(
         transactionDigest: digest,
         transactionStatus: transactionStatus,
@@ -591,10 +586,7 @@ class PhotoAttestationService {
         altitudeMatches: false,
         projectIdMatches: false,
         timestampWithinTolerance: false,
-        failureReason:
-            response.effects?.status.error ??
-            response.errors?.join('\n') ??
-            'On-chain transaction failed.',
+        failureReason: response.error ?? 'On-chain transaction failed.',
       );
     }
 
@@ -613,8 +605,8 @@ class PhotoAttestationService {
       );
     }
 
-    final parsedJson = event.parsedJson;
-    if (parsedJson is! Map) {
+    final eventJson = event.parsedJson;
+    if (eventJson == null) {
       return PhotoAttestationVerificationResult(
         transactionDigest: digest,
         transactionStatus: transactionStatus,
@@ -627,8 +619,6 @@ class PhotoAttestationService {
         failureReason: 'PhotoAttested event payload could not be parsed.',
       );
     }
-
-    final eventJson = Map<String, dynamic>.from(parsedJson);
     final photoHash = _decodeMoveBytesValue(eventJson['photo_hash']);
     final gps = _decodeMoveBytesValue(eventJson['gps']);
     final altitude = _decodeMoveBytesValue(eventJson['altitude']);
@@ -636,10 +626,8 @@ class PhotoAttestationService {
 
     final photoHashMatches = photoHash == capture.imageSha256;
     final senderMatches =
-        _addressesMatch(
-          response.transaction?.data.sender,
-          capture.walletAddress,
-        ) &&
+        (response.sender == null ||
+            _addressesMatch(response.sender, capture.walletAddress)) &&
         _addressesMatch(event.sender, capture.walletAddress);
     final gpsMatches = gps == (capture.capturedGpsLabel?.trim() ?? '');
     final altitudeMatches =
@@ -683,11 +671,13 @@ class PhotoAttestationService {
     required int timestampMs,
   }) async {
     try {
-      final provider = _provider(config.rpcUrl);
       final owner = SuiAddress(identity.walletAddress);
-      final userCap = await _loadOwnedObject(provider, claim.userCapObjectId);
+      final userCap = await _loadOwnedObject(
+        config.rpcUrl,
+        claim.userCapObjectId,
+      );
       final registry = await _loadRegistryObjectArg(
-        provider,
+        config.rpcUrl,
         config.registryId,
       );
 
@@ -697,14 +687,14 @@ class PhotoAttestationService {
         gasData: SuiGasData(
           payment: const [],
           owner: owner,
-          price: await provider.request(const SuiRequestGetReferenceGasPrice()),
+          price: await _graphQlService.getReferenceGasPrice(config.rpcUrl),
           budget: BigInt.from(50000000),
         ),
         kind: SuiTransactionKindProgrammableTransaction(
           SuiProgrammableTransaction(
             inputs: [
               SuiCallArgObject(
-                SuiObjectArgImmOrOwnedObject(userCap.data!.toObjectRef()),
+                SuiObjectArgImmOrOwnedObject(userCap.toObjectRef()),
               ),
               SuiCallArgObject(registry),
               SuiCallArgPure.bytes(utf8.encode(record.contentSha256)),
@@ -731,12 +721,11 @@ class PhotoAttestationService {
         ),
       );
 
-      tx = await _prepareTransaction(provider, tx);
-      final response = await _execute(provider, tx, signingKey);
+      tx = await _prepareTransaction(config.rpcUrl, tx);
+      final response = await _execute(config.rpcUrl, tx, signingKey);
       return FileAttestationSubmissionResult(
         transactionDigest: response.digest,
-        status:
-            response.effects?.status.status.name.toUpperCase() ?? 'SUBMITTED',
+        status: response.status,
         verification: _buildImmediateFileVerificationResult(
           response: response,
           config: config,
@@ -760,21 +749,13 @@ class PhotoAttestationService {
       throw StateError('Capture does not have a Sui transaction digest yet.');
     }
 
-    final provider = _provider(config.rpcUrl);
-    final response = await provider.request(
-      SuiRequestGetTransactionBlock(
-        transactionDigest: digest,
-        options: const SuiApiTransactionBlockResponseOptions(
-          showEvents: true,
-          showEffects: true,
-          showInput: true,
-        ),
-      ),
+    final response = await _graphQlService.getTransaction(
+      config.rpcUrl,
+      digest: digest,
     );
 
-    final transactionStatus =
-        response.effects?.status.status.name.toUpperCase() ?? 'UNKNOWN';
-    if (response.effects?.status.status != SuiApiExecutionStatusType.success) {
+    final transactionStatus = response.status;
+    if (transactionStatus != 'SUCCESS') {
       return FileAttestationVerificationResult(
         transactionDigest: digest,
         transactionStatus: transactionStatus,
@@ -783,10 +764,7 @@ class PhotoAttestationService {
         fileIdMatches: false,
         projectIdMatches: false,
         timestampWithinTolerance: false,
-        failureReason:
-            response.effects?.status.error ??
-            response.errors?.join('\n') ??
-            'On-chain transaction failed.',
+        failureReason: response.error ?? 'On-chain transaction failed.',
       );
     }
 
@@ -804,8 +782,8 @@ class PhotoAttestationService {
       );
     }
 
-    final parsedJson = event.parsedJson;
-    if (parsedJson is! Map) {
+    final eventJson = event.parsedJson;
+    if (eventJson == null) {
       return FileAttestationVerificationResult(
         transactionDigest: digest,
         transactionStatus: transactionStatus,
@@ -817,8 +795,6 @@ class PhotoAttestationService {
         failureReason: 'FileAttested event payload could not be parsed.',
       );
     }
-
-    final eventJson = Map<String, dynamic>.from(parsedJson);
     final fileHash = _decodeMoveBytesValue(eventJson['file_hash']);
     final userWallet = _decodeMoveAddressValue(eventJson['user_wallet']);
     final fileId = _decodeMoveBytesValue(eventJson['file_id']);
@@ -827,10 +803,8 @@ class PhotoAttestationService {
 
     final fileHashMatches = fileHash == capture.contentSha256;
     final senderMatches =
-        _addressesMatch(
-          response.transaction?.data.sender,
-          capture.walletAddress,
-        ) &&
+        (response.sender == null ||
+            _addressesMatch(response.sender, capture.walletAddress)) &&
         _addressesMatch(event.sender, capture.walletAddress) &&
         _addressesMatch(userWallet, capture.walletAddress);
     final fileIdMatches = fileId == capture.fileId;
@@ -860,24 +834,22 @@ class PhotoAttestationService {
     );
   }
 
-  Future<SuiApiObjectResponse> _loadOwnedObject(
-    SuiProvider provider,
+  Future<SuiGraphQlObject> _loadOwnedObject(
+    String graphqlUrl,
     String objectId,
   ) async {
-    final response = await provider.request(
-      SuiRequestGetObject(
-        objectId: objectId,
-        options: const SuiApiObjectDataOptions(showOwner: true),
-      ),
+    final response = await _graphQlService.getObject(
+      graphqlUrl,
+      objectId: objectId,
     );
-    if (response.data == null) {
+    if (response == null) {
       throw StateError('Owned object $objectId was not found on-chain.');
     }
     return response;
   }
 
   Future<SuiObjectArg> _loadRegistryObjectArg(
-    SuiProvider provider,
+    String graphqlUrl,
     String registryId,
   ) async {
     final normalizedRegistryId = registryId.trim();
@@ -885,24 +857,20 @@ class PhotoAttestationService {
       throw StateError('Contract registry id is missing.');
     }
 
-    final response = await provider.request(
-      SuiRequestGetObject(
-        objectId: normalizedRegistryId,
-        options: const SuiApiObjectDataOptions(showOwner: true),
-      ),
+    final data = await _graphQlService.getObject(
+      graphqlUrl,
+      objectId: normalizedRegistryId,
     );
-    final data = response.data;
     if (data == null) {
       throw StateError(
         'Configured registry object $normalizedRegistryId was not found on-chain.',
       );
     }
 
-    final owner = data.owner;
-    if (owner is SuiApiObjectOwnerShared) {
+    if (data.ownerKind == 'Shared' && data.initialSharedVersion != null) {
       return SuiObjectArgSharedObject(
-        id: data.objectId,
-        initialSharedVersion: owner.shared.initialSharedVersion,
+        id: SuiAddress(data.objectId),
+        initialSharedVersion: data.initialSharedVersion!,
         mutable: false,
       );
     }
@@ -916,51 +884,40 @@ class PhotoAttestationService {
     required String preferredObjectId,
     required String claimTxDigest,
   }) async {
-    final provider = _provider(config.rpcUrl);
     final expectedType = '${config.packageId}::${config.moduleName}::UserCap';
     final normalizedPreferredObjectId = preferredObjectId.trim();
 
     if (normalizedPreferredObjectId.isNotEmpty) {
       final preferred = await _loadUserCapFromObjectId(
-        provider,
+        config.rpcUrl,
         objectId: normalizedPreferredObjectId,
         expectedType: expectedType,
       );
       if (preferred != null) {
-        return preferred.objectId.address;
+        return preferred.objectId;
       }
     }
 
-    var ownedCaps = const <SuiApiObjectData>[];
-    for (var attempt = 0; attempt < 5; attempt++) {
-      final response = await provider.request(
-        SuiRequestGetOwnedObjects(
-          address: SuiAddress(walletAddress),
-          query: SuiApiObjectResponseQuery(
-            filter: SuiApiObjectDataFilterStructType(expectedType),
-            options: const SuiApiObjectDataOptions(
-              showType: true,
-              showPreviousTransaction: true,
-              showOwner: true,
-            ),
-          ),
-        ),
-      );
+    var ownedCaps = const <SuiGraphQlObject>[];
+    try {
+      for (var attempt = 0; attempt < 5; attempt++) {
+        ownedCaps = await _graphQlService.listOwnedObjectsByType(
+          config.rpcUrl,
+          ownerAddress: walletAddress,
+          type: expectedType,
+        );
 
-      ownedCaps = response.data
-          .map((item) => item.data)
-          .whereType<SuiApiObjectData>()
-          .where(
-            (item) => item.type?.toLowerCase() == expectedType.toLowerCase(),
-          )
-          .toList(growable: false);
-
-      if (ownedCaps.isNotEmpty) {
-        break;
+        if (ownedCaps.isNotEmpty) {
+          break;
+        }
+        if (attempt < 4) {
+          await Future<void>.delayed(
+            Duration(milliseconds: 350 * (attempt + 1)),
+          );
+        }
       }
-      if (attempt < 4) {
-        await Future<void>.delayed(Duration(milliseconds: 350 * (attempt + 1)));
-      }
+    } catch (_) {
+      // Fall through to the preferredObjectId fallback below.
     }
 
     if (ownedCaps.isEmpty) {
@@ -979,16 +936,16 @@ class PhotoAttestationService {
       for (final cap in ownedCaps) {
         if ((cap.previousTransaction ?? '').trim().toLowerCase() ==
             claimTxDigest.toLowerCase()) {
-          return cap.objectId.address;
+          return cap.objectId;
         }
       }
     }
 
     if (normalizedPreferredObjectId.isNotEmpty) {
       for (final cap in ownedCaps) {
-        if (cap.objectId.address.toLowerCase() ==
+        if (cap.objectId.toLowerCase() ==
             normalizedPreferredObjectId.toLowerCase()) {
-          return cap.objectId.address;
+          return cap.objectId;
         }
       }
     }
@@ -996,27 +953,19 @@ class PhotoAttestationService {
     final newestCap = ownedCaps.reduce(
       (left, right) => left.version >= right.version ? left : right,
     );
-    return newestCap.objectId.address;
+    return newestCap.objectId;
   }
 
-  Future<SuiApiObjectData?> _loadUserCapFromObjectId(
-    SuiProvider provider, {
+  Future<SuiGraphQlObject?> _loadUserCapFromObjectId(
+    String graphqlUrl, {
     required String objectId,
     required String expectedType,
   }) async {
     try {
-      final response = await provider.request(
-        SuiRequestGetObject(
-          objectId: objectId,
-          options: const SuiApiObjectDataOptions(
-            showType: true,
-            showOwner: true,
-            showPreviousTransaction: true,
-          ),
-        ),
+      final data = await _graphQlService.getObject(
+        graphqlUrl,
+        objectId: objectId,
       );
-
-      final data = response.data;
       if (data == null) {
         return null;
       }
@@ -1058,33 +1007,47 @@ class PhotoAttestationService {
   }
 
   Future<SuiTransactionDataV1> _prepareTransaction(
-    SuiProvider provider,
+    String graphqlUrl,
     SuiTransactionDataV1 tx,
   ) async {
-    final dryRunReady = await _dryRun(provider, tx);
-    return _fillGasPayment(provider, dryRunReady);
+    var dryRunTx = tx;
+    if (dryRunTx.gasData.payment.isEmpty) {
+      final availableBalance = await _graphQlService.getSuiBalance(
+        graphqlUrl,
+        ownerAddress: dryRunTx.gasData.owner.address,
+      );
+      if (availableBalance > BigInt.zero &&
+          availableBalance < dryRunTx.gasData.budget) {
+        dryRunTx = dryRunTx.copyWith(
+          gasData: dryRunTx.gasData.copyWith(budget: availableBalance),
+        );
+      }
+    }
+
+    final dryRunReady = await _dryRun(graphqlUrl, dryRunTx);
+    return _fillGasPayment(graphqlUrl, dryRunReady);
   }
 
   Future<SuiTransactionDataV1> _dryRun(
-    SuiProvider provider,
+    String graphqlUrl,
     SuiTransactionDataV1 tx,
   ) async {
-    final response = await provider.request(
-      SuiRequestDryRunTransactionBlock(txBytes: tx.toVariantBcsBase64()),
+    final response = await _graphQlService.simulateTransaction(
+      graphqlUrl,
+      transactionDataBcs: tx.toVariantBcsBase64(),
     );
-    if (response.effects.status.status != SuiApiExecutionStatusType.success) {
-      throw StateError(
-        response.effects.status.error ?? 'Dry run failed for Sui transaction.',
-      );
+    if (response.status != 'SUCCESS') {
+      throw StateError(response.error ?? 'Dry run failed for Sui transaction.');
+    }
+    final gasSummary = response.gasSummary;
+    if (gasSummary == null) {
+      throw StateError('Dry run completed without a gas summary.');
     }
 
     final safeOverhead = BigInt.from(1000) * tx.gasData.price;
-    final baseOverhead =
-        response.effects.gasUsed.computationCost + safeOverhead;
+    final baseOverhead = gasSummary.computationCost + safeOverhead;
     var gasBudget =
-        baseOverhead +
-        response.effects.gasUsed.storageCost -
-        response.effects.gasUsed.storageRebate;
+        baseOverhead + gasSummary.storageCost - gasSummary.storageRebate;
     if (gasBudget < baseOverhead) {
       gasBudget = baseOverhead;
     }
@@ -1093,16 +1056,14 @@ class PhotoAttestationService {
   }
 
   Future<SuiTransactionDataV1> _fillGasPayment(
-    SuiProvider provider,
+    String graphqlUrl,
     SuiTransactionDataV1 tx,
   ) async {
-    final coinResponse = await provider.request(
-      SuiRequestGetCoins(
-        owner: tx.gasData.owner,
-        coinType: SuiTransactionConst.suiTypeArgs,
-      ),
+    final ownedCoins = await _graphQlService.listOwnedObjectsByType(
+      graphqlUrl,
+      ownerAddress: tx.gasData.owner.address,
+      type: '0x2::coin::Coin<${SuiTransactionConst.suiTypeArgs}>',
     );
-    final coins = coinResponse.data;
     final kind = tx.kind.cast<SuiTransactionKindProgrammableTransaction>();
     final usedObjectIds = kind.transaction.inputs
         .whereType<SuiCallArgObject>()
@@ -1111,8 +1072,12 @@ class PhotoAttestationService {
         .map((arg) => arg.immOrOwnedObject.address.address)
         .toSet();
 
-    final gasCoins = coins
-        .where((coin) => !usedObjectIds.contains(coin.coinObjectId.address))
+    final gasCoins = ownedCoins
+        .map(
+          (object) =>
+              _GraphQlCoin(object: object, balance: _coinBalance(object)),
+        )
+        .where((coin) => !usedObjectIds.contains(coin.object.objectId))
         .toList(growable: false);
     if (gasCoins.isEmpty) {
       throw StateError('No SUI gas coins are available for this wallet.');
@@ -1121,7 +1086,7 @@ class PhotoAttestationService {
     BigInt total = BigInt.zero;
     final payment = <SuiObjectRef>[];
     for (final coin in gasCoins) {
-      payment.add(coin.toObjectRef());
+      payment.add(coin.object.toObjectRef());
       total += coin.balance;
       if (total >= tx.gasData.budget) {
         break;
@@ -1129,43 +1094,34 @@ class PhotoAttestationService {
     }
 
     if (total < tx.gasData.budget) {
-      throw StateError('Insufficient SUI balance to pay gas on testnet.');
+      throw StateError(
+        'Insufficient SUI balance to pay gas on testnet. Required ${tx.gasData.budget} MIST but only found $total MIST in spendable SUI coin objects.',
+      );
     }
 
     return tx.copyWith(gasData: tx.gasData.copyWith(payment: payment));
   }
 
-  Future<SuiApiTransactionBlockResponse> _execute(
-    SuiProvider provider,
+  Future<SuiGraphQlTransactionResult> _execute(
+    String graphqlUrl,
     SuiTransactionDataV1 tx,
     SuiED25519PrivateKey privateKey,
   ) async {
     final account = SuiEd25519Account(privateKey);
     final signature = account.signTransaction(tx.serializeSign());
-    final response = await provider.request(
-      SuiRequestExecuteTransactionBlock(
-        txBytes: tx.toVariantBcsBase64(),
-        signatures: [signature.toVariantBcsBase64()],
-        options: const SuiApiTransactionBlockResponseOptions(
-          showEffects: true,
-          showEvents: true,
-          showInput: true,
-          showObjectChanges: true,
-        ),
-      ),
+    final response = await _graphQlService.executeTransaction(
+      graphqlUrl,
+      transactionDataBcs: tx.toVariantBcsBase64(),
+      signatures: [signature.toVariantBcsBase64()],
     );
-    if (response.effects?.status.status != SuiApiExecutionStatusType.success) {
-      throw StateError(
-        response.effects?.status.error ??
-            response.errors?.join('\n') ??
-            'Sui transaction failed.',
-      );
+    if (response.status != 'SUCCESS') {
+      throw StateError(response.error ?? 'Sui transaction failed.');
     }
     return response;
   }
 
   PhotoAttestationVerificationResult? _buildImmediateVerificationResult({
-    required SuiApiTransactionBlockResponse response,
+    required SuiGraphQlTransactionResult response,
     required PhotoAttestationContractConfig config,
     required String walletAddress,
     required String imageSha256,
@@ -1178,12 +1134,10 @@ class PhotoAttestationService {
       return null;
     }
 
-    final parsedJson = event.parsedJson;
-    if (parsedJson is! Map) {
+    final eventJson = event.parsedJson;
+    if (eventJson == null) {
       return null;
     }
-
-    final eventJson = Map<String, dynamic>.from(parsedJson);
     final photoHash = _decodeMoveBytesValue(eventJson['photo_hash']);
     final eventGps = _decodeMoveBytesValue(eventJson['gps']);
     final eventAltitude = _decodeMoveBytesValue(eventJson['altitude']);
@@ -1192,7 +1146,8 @@ class PhotoAttestationService {
 
     final photoHashMatches = photoHash == imageSha256;
     final senderMatches =
-        _addressesMatch(response.transaction?.data.sender, walletAddress) &&
+        (response.sender == null ||
+            _addressesMatch(response.sender, walletAddress)) &&
         _addressesMatch(event.sender, walletAddress);
     final gpsMatches = eventGps == gps;
     final altitudeMatches = eventAltitude == altitude;
@@ -1200,8 +1155,7 @@ class PhotoAttestationService {
 
     return PhotoAttestationVerificationResult(
       transactionDigest: response.digest,
-      transactionStatus:
-          response.effects?.status.status.name.toUpperCase() ?? 'SUBMITTED',
+      transactionStatus: response.status,
       photoHashMatches: photoHashMatches,
       senderMatches: senderMatches,
       gpsMatches: gpsMatches,
@@ -1221,7 +1175,7 @@ class PhotoAttestationService {
   }
 
   FileAttestationVerificationResult? _buildImmediateFileVerificationResult({
-    required SuiApiTransactionBlockResponse response,
+    required SuiGraphQlTransactionResult response,
     required PhotoAttestationContractConfig config,
     required String walletAddress,
     required AttestationRecord record,
@@ -1233,12 +1187,10 @@ class PhotoAttestationService {
       return null;
     }
 
-    final parsedJson = event.parsedJson;
-    if (parsedJson is! Map) {
+    final eventJson = event.parsedJson;
+    if (eventJson == null) {
       return null;
     }
-
-    final eventJson = Map<String, dynamic>.from(parsedJson);
     final fileHash = _decodeMoveBytesValue(eventJson['file_hash']);
     final userWallet = _decodeMoveAddressValue(eventJson['user_wallet']);
     final fileId = _decodeMoveBytesValue(eventJson['file_id']);
@@ -1247,7 +1199,8 @@ class PhotoAttestationService {
 
     final fileHashMatches = fileHash == record.contentSha256;
     final senderMatches =
-        _addressesMatch(response.transaction?.data.sender, walletAddress) &&
+        (response.sender == null ||
+            _addressesMatch(response.sender, walletAddress)) &&
         _addressesMatch(event.sender, walletAddress) &&
         _addressesMatch(userWallet, walletAddress);
     final fileIdMatches = fileId == record.fileId;
@@ -1262,8 +1215,7 @@ class PhotoAttestationService {
 
     return FileAttestationVerificationResult(
       transactionDigest: response.digest,
-      transactionStatus:
-          response.effects?.status.status.name.toUpperCase() ?? 'SUBMITTED',
+      transactionStatus: response.status,
       fileHashMatches: fileHashMatches,
       senderMatches: senderMatches,
       fileIdMatches: fileIdMatches,
@@ -1280,15 +1232,11 @@ class PhotoAttestationService {
     );
   }
 
-  SuiProvider _provider(String rpcUrl) {
-    return SuiProvider(SuiHttpService(rpcUrl));
-  }
-
-  SuiApiEvent? _findPhotoAttestedEvent(
-    List<SuiApiEvent>? events,
+  SuiGraphQlEvent? _findPhotoAttestedEvent(
+    List<SuiGraphQlEvent>? events,
     PhotoAttestationContractConfig config,
   ) {
-    for (final event in events ?? const <SuiApiEvent>[]) {
+    for (final event in events ?? const <SuiGraphQlEvent>[]) {
       if (_matchesEventType(
         event,
         config: config,
@@ -1300,11 +1248,11 @@ class PhotoAttestationService {
     return null;
   }
 
-  SuiApiEvent? _findFileAttestedEvent(
-    List<SuiApiEvent>? events,
+  SuiGraphQlEvent? _findFileAttestedEvent(
+    List<SuiGraphQlEvent>? events,
     PhotoAttestationContractConfig config,
   ) {
-    for (final event in events ?? const <SuiApiEvent>[]) {
+    for (final event in events ?? const <SuiGraphQlEvent>[]) {
       if (_matchesEventType(event, config: config, eventName: 'FileAttested')) {
         return event;
       }
@@ -1313,7 +1261,7 @@ class PhotoAttestationService {
   }
 
   bool _matchesEventType(
-    SuiApiEvent event, {
+    SuiGraphQlEvent event, {
     required PhotoAttestationContractConfig config,
     required String eventName,
   }) {
@@ -1351,13 +1299,47 @@ class PhotoAttestationService {
 
   String _decodeMoveBytesValue(Object? value) {
     if (value is String) {
-      return value.trim();
+      final normalized = value.trim();
+      if (normalized.isEmpty) {
+        return normalized;
+      }
+
+      final decoded = _tryDecodeBase64Utf8(normalized);
+      return decoded ?? normalized;
     }
     if (value is List) {
       final bytes = value.whereType<num>().map((item) => item.toInt()).toList();
       return utf8.decode(bytes).trim();
     }
     return '';
+  }
+
+  String? _tryDecodeBase64Utf8(String value) {
+    final compact = value.replaceAll(RegExp(r'\s+'), '');
+    if (compact.isEmpty || compact.length % 4 != 0) {
+      return null;
+    }
+    if (!RegExp(r'^[A-Za-z0-9+/]+={0,2}$').hasMatch(compact)) {
+      return null;
+    }
+
+    try {
+      final decodedBytes = base64.decode(compact);
+      final decoded = utf8.decode(decodedBytes, allowMalformed: false).trim();
+      if (decoded.isEmpty) {
+        return null;
+      }
+      final printable = decoded.runes.every(
+        (rune) =>
+            rune == 9 ||
+            rune == 10 ||
+            rune == 13 ||
+            (rune >= 32 && rune <= 126),
+      );
+      return printable ? decoded : null;
+    } on FormatException {
+      return null;
+    }
   }
 
   String _decodeMoveAddressValue(Object? value) {
@@ -1418,19 +1400,18 @@ class PhotoAttestationService {
   }
 
   DateTime? _resolveChainTimestamp(
-    SuiApiTransactionBlockResponse response,
-    SuiApiEvent event,
+    SuiGraphQlTransactionResult response,
+    SuiGraphQlEvent event,
   ) {
-    final timestampMs = response.timestampMs ?? event.timestampMs;
-    if (timestampMs == null || timestampMs.trim().isEmpty) {
-      return null;
-    }
+    return response.timestamp ?? event.timestamp;
+  }
 
-    final milliseconds = int.tryParse(timestampMs.trim());
-    if (milliseconds == null) {
-      return null;
+  BigInt _coinBalance(SuiGraphQlObject object) {
+    final balance = object.json?['balance'];
+    if (balance == null) {
+      return BigInt.zero;
     }
-    return DateTime.fromMillisecondsSinceEpoch(milliseconds, isUtc: true);
+    return BigInt.parse(balance.toString());
   }
 
   bool _isTimestampWithinTolerance({

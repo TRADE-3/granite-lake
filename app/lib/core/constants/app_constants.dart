@@ -26,7 +26,8 @@ abstract final class AppConstants {
   static const String biometricStatus = 'BIOMETRIC_STEP';
   static const String biometricEncryptMode = 'SECURE_ENCLAVE';
 
-  static const String defaultSuiRpcUrl = 'https://fullnode.testnet.sui.io:443';
+  static const String defaultSuiRpcUrl =
+      'https://graphql.testnet.sui.io/graphql';
   static const String suiTestnetFaucetUrl =
       'https://faucet.sui.io/?network=testnet';
 

@@ -876,13 +876,13 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
     if (verification?.isVerified == true) {
       return 'ANCHORED';
     }
-    if (record.isAttestationAnchored) {
-      return 'ANCHORED';
-    }
     if (verification != null &&
         !verification.isVerified &&
         !verification.isPending) {
       return 'FAILED';
+    }
+    if (record.isAttestationAnchored) {
+      return 'ANCHORED';
     }
     if (verification?.isPending == true) {
       return 'PENDING';
@@ -899,6 +899,11 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
   ) {
     if (verification?.isVerified == true) {
       return 'ANCHORED';
+    }
+    if (verification != null &&
+        !verification.isVerified &&
+        !verification.isPending) {
+      return 'FAILED';
     }
     if (record.isAttestationAnchored) {
       return 'ANCHORED';
