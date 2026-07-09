@@ -663,13 +663,13 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
     if (verification?.isVerified == true) {
       return ('ANCHORED', AppColors.statusActive);
     }
-    if (record.isAttestationAnchored) {
-      return ('ANCHORED', AppColors.statusActive);
-    }
     if (verification != null &&
         !verification.isVerified &&
         !verification.isPending) {
       return ('FAILED', AppColors.statusError);
+    }
+    if (record.isAttestationAnchored) {
+      return ('ANCHORED', AppColors.statusActive);
     }
     if (verification?.isPending == true || record.isAttestationPending) {
       return ('PENDING', AppColors.primary);

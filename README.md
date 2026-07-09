@@ -67,10 +67,16 @@ Before using OTP verification, make sure the configured domain and admin wallet 
 ```bash
 cd app
 flutter pub get
-flutter run
+flutter run --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true
 ```
 
-The app targets Android. For an Android emulator, the bundled backend resolver tries common local endpoints including `http://10.0.2.2:8080`.
+The app targets Android. For local development, pass `--dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true` to enable localhost fallback to `http://10.0.2.2:8080` (Android emulator) or `http://127.0.0.1:8080` (localhost).
+
+For convenience, you can create `app/.env.local` (add to `.gitignore`) with:
+
+```
+GL_OTP_BACKEND_DEV_FALLBACKS=true
+```
 
 ### 4) Start verification API (optional)
 

@@ -73,10 +73,16 @@ async function vaultFetch<T = unknown>(env: AppEnv, path: string, init: RequestI
     headers.set("X-Vault-Namespace", env.VAULT_NAMESPACE);
   }
 
-  const res = await fetch(`${env.VAULT_ADDR}/v1/${path}`, {
-    ...init,
-    headers,
-  });
+  let res: Response;
+
+  try {
+    res = await fetch(`${env.VAULT_ADDR}/v1/${path}`, {
+      ...init,
+      headers,
+    });
+  } catch (error) {
+    throw new VaultConnectionError(env.VAULT_ADDR, error);
+  }
 
   if (!res.ok) {
     throw new VaultHttpError(path, res.status);
@@ -105,14 +111,20 @@ async function getVaultToken(env: AppEnv): Promise<string> {
     headers.set("X-Vault-Namespace", env.VAULT_NAMESPACE);
   }
 
-  const res = await fetch(`${env.VAULT_ADDR}/v1/auth/approle/login`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      role_id: env.VAULT_ROLE_ID,
-      secret_id: env.VAULT_SECRET_ID,
-    }),
-  });
+  let res: Response;
+
+  try {
+    res = await fetch(`${env.VAULT_ADDR}/v1/auth/approle/login`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        role_id: env.VAULT_ROLE_ID,
+        secret_id: env.VAULT_SECRET_ID,
+      }),
+    });
+  } catch (error) {
+    throw new VaultConnectionError(env.VAULT_ADDR, error);
+  }
 
   if (!res.ok) {
     throw new Error(`Vault AppRole login failed with HTTP ${res.status}`);
@@ -153,6 +165,15 @@ function toVaultPathPart(value: string): string {
 function assertVaultReady(env: AppEnv): void {
   if (!isVaultConfigured(env)) {
     throw new Error("Vault is not enabled. Set VAULT_ENABLED=true and VAULT_ADDR.");
+  }
+}
+
+export class VaultConnectionError extends Error {
+  constructor(
+    readonly address: string | undefined,
+    readonly cause: unknown
+  ) {
+    super(`Vault is unavailable at ${address ?? "<unset>"}.`);
   }
 }
 

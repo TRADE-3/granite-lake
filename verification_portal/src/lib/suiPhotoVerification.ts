@@ -14,6 +14,7 @@ import {
 type SuiEventCursor = {
   txDigest: string;
   eventSeq: string;
+  graphqlCursor?: string;
 };
 
 type SuiEvent = {
@@ -47,8 +48,8 @@ type SuiRpcError = {
 };
 
 type SuiRpcResponse<T> = {
-  result?: T;
-  error?: SuiRpcError;
+  data?: T;
+  errors?: SuiRpcError[];
 };
 
 export type ScanProgress = {
@@ -163,6 +164,20 @@ function parseVectorU8(value: unknown): Uint8Array | null {
   }
 
   if (typeof value === "string") {
+    const normalizedBase64 = value.trim().replace(/\s+/g, "");
+    if (
+      normalizedBase64.length > 0 &&
+      normalizedBase64.length % 4 === 0 &&
+      /^[A-Za-z0-9+/]+={0,2}$/.test(normalizedBase64)
+    ) {
+      try {
+        const binary = atob(normalizedBase64);
+        return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      } catch {
+        // Fall through to the existing hex / text handling.
+      }
+    }
+
     const normalized = normalizeHex(value);
     if (/^[a-f0-9]+$/i.test(normalized) && normalized.length % 2 === 0) {
       const bytes = normalized.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) ?? [];
@@ -236,34 +251,217 @@ function isAllowedPackageId(packageId: string): boolean {
 }
 
 async function suiRpcCall<T>(method: string, params: unknown[]): Promise<T> {
-  const response = await fetch(SUI_RPC_URL, {
+  const response = await fetch(normalizeGraphQlUrl(SUI_RPC_URL), {
     method: "POST",
     headers: {
       "content-type": "application/json",
     },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method,
-      params,
-    }),
+    body: JSON.stringify(buildGraphQlRequest(method, params)),
   });
 
   if (!response.ok) {
-    throw new Error(`Sui RPC request failed: ${response.status} ${response.statusText}`);
+    throw new Error(`Sui GraphQL request failed: ${response.status} ${response.statusText}`);
   }
 
   const payload = (await response.json()) as SuiRpcResponse<T>;
 
-  if (payload.error) {
-    throw new Error(payload.error.message ?? "Sui RPC returned an error");
+  if (payload.errors?.length) {
+    const message = payload.errors
+      .map((entry) => entry.message?.trim())
+      .filter((entry): entry is string => Boolean(entry))
+      .join("\n");
+    throw new Error(message || "Sui GraphQL returned an error");
   }
 
-  if (!payload.result) {
-    throw new Error("Sui RPC returned no result payload");
+  if (!payload.data) {
+    throw new Error("Sui GraphQL returned no result payload");
   }
 
-  return payload.result;
+  return extractGraphQlResult<T>(method, payload.data as Record<string, unknown>);
+}
+
+function normalizeGraphQlUrl(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return trimmed;
+
+  try {
+    const parsed = new URL(trimmed);
+    const host = parsed.host.toLowerCase();
+    if (host === "fullnode.testnet.sui.io" || host === "rpc.ankr.com") {
+      return "https://graphql.testnet.sui.io/graphql";
+    }
+    if (host === "fullnode.mainnet.sui.io") {
+      return "https://graphql.mainnet.sui.io/graphql";
+    }
+    if (host === "fullnode.devnet.sui.io") {
+      return "https://graphql.devnet.sui.io/graphql";
+    }
+    if (host.startsWith("graphql.") && !parsed.pathname.endsWith("/graphql")) {
+      parsed.pathname = "/graphql";
+      return parsed.toString();
+    }
+    return trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+function buildGraphQlRequest(method: string, params: unknown[]): { query: string; variables: Record<string, unknown> } {
+  switch (method) {
+    case "suix_getOwnedObjects": {
+      const [ownerAddress, queryOptions, cursor, limit] = params as [
+        string,
+        { filter?: { StructType?: string } },
+        string | null,
+        number | undefined,
+      ];
+      return {
+        query: `query($address:SuiAddress!,$type:String!,$first:Int!,$after:String){
+          address(address:$address){
+            objects(first:$first, after:$after, filter:{ type:$type }){
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                address
+                contents {
+                  type { repr }
+                  json
+                }
+              }
+            }
+          }
+        }`,
+        variables: {
+          address: ownerAddress,
+          type: queryOptions?.filter?.StructType ?? "",
+          first: typeof limit === "number" ? limit : 50,
+          after: cursor,
+        },
+      };
+    }
+    case "suix_queryEvents": {
+      const [filter, cursor, limit] = params as [
+        { MoveEventType?: string },
+        SuiEventCursor | null,
+        number | undefined,
+        boolean | undefined,
+      ];
+      return {
+        query: `query($type:String!,$first:Int!,$after:String){
+          events(first:$first, after:$after, filter:{ type:$type }){
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              sequenceNumber
+              timestamp
+              sender { address }
+              transaction { digest }
+              transactionModule { name package { address } }
+              contents {
+                type { repr }
+                json
+              }
+            }
+          }
+        }`,
+        variables: {
+          type: filter.MoveEventType ?? "",
+          first: typeof limit === "number" ? limit : 50,
+          after: encodeEventCursor(cursor),
+        },
+      };
+    }
+    default:
+      throw new Error(`Unsupported GraphQL migration path for method ${method}`);
+  }
+}
+
+function extractGraphQlResult<T>(method: string, data: Record<string, unknown>): T {
+  switch (method) {
+    case "suix_getOwnedObjects":
+      return mapOwnedObjectsGraphQlResult(data) as T;
+    case "suix_queryEvents":
+      return mapEventsGraphQlResult(data) as T;
+    default:
+      throw new Error(`Unsupported GraphQL result mapping for method ${method}`);
+  }
+}
+
+function mapOwnedObjectsGraphQlResult(data: Record<string, unknown>): { data?: OwnedObjectResponse[] } {
+  const address = asRecord(data.address);
+  const objects = asRecord(address?.objects);
+  const nodes = asArray(objects?.nodes);
+  return {
+    data: nodes.map((node) => {
+      const entry = asRecord(node);
+      const contents = asRecord(entry?.contents);
+      return {
+        data: {
+          content: {
+            fields: asRecord(contents?.json) ?? undefined,
+          },
+        },
+      };
+    }),
+  };
+}
+
+function mapEventsGraphQlResult(data: Record<string, unknown>): SuiEventPage {
+  const events = asRecord(data.events);
+  const pageInfo = asRecord(events?.pageInfo);
+  const nodes = asArray(events?.nodes);
+  return {
+    data: nodes.map((node) => {
+      const entry = asRecord(node);
+      const sender = asRecord(entry?.sender);
+      const transaction = asRecord(entry?.transaction);
+      const module = asRecord(entry?.transactionModule);
+      const modulePackage = asRecord(module?.package);
+      const contents = asRecord(entry?.contents);
+      return {
+        id: {
+          txDigest: asString(transaction?.digest),
+          eventSeq: String(entry?.sequenceNumber ?? ""),
+        },
+        packageId: asString(modulePackage?.address),
+        sender: asString(sender?.address),
+        timestampMs: toTimestampMs(asString(entry?.timestamp) || undefined),
+        parsedJson: asRecord(contents?.json) ?? undefined,
+      } satisfies SuiEvent;
+    }),
+    hasNextPage: pageInfo?.hasNextPage === true,
+    nextCursor: decodeEventCursor(asString(pageInfo?.endCursor) || null),
+  };
+}
+
+function encodeEventCursor(cursor: SuiEventCursor | null): string | null {
+  if (!cursor) return null;
+  return cursor.graphqlCursor ?? null;
+}
+
+function decodeEventCursor(cursor: string | null): SuiEventCursor | null {
+  if (!cursor) return null;
+  return {
+    txDigest: "",
+    eventSeq: "",
+    graphqlCursor: cursor,
+  };
+}
+
+function toTimestampMs(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? String(timestamp) : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 async function getDomainFromUserCap(userWallet: string): Promise<string | null> {

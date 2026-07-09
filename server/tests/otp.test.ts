@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
 
 process.env.DOMAIN = "acme.com";
 process.env.CLIENT_ID = "acme";
@@ -40,8 +40,11 @@ vi.mock("../src/db/repositories.js", () => ({
 const { buildApp } = await import("../src/app.js");
 
 describe("otp routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    // Reset rate limiters before each test
+    const { resetAllRateLimiters } = await import("../src/utils/rateLimit.js");
+    resetAllRateLimiters();
   });
 
   it("requests an OTP for a domain email without returning the OTP", async () => {
@@ -62,13 +65,12 @@ describe("otp routes", () => {
       userEmail: "alice@acme.com",
       ttlMs: 300000,
     });
-    expect(response.json()).toEqual({
-      userId: "user-id-1",
-      expiresAt: expect.any(String),
-      domain: "acme.com",
-      userEmail: "alice@acme.com",
-    });
-    expect(response.json()).not.toHaveProperty("otp");
+    const body = response.json();
+    expect(body).toHaveProperty("userId", "user-id-1");
+    expect(body).toHaveProperty("expiresAt");
+    expect(body).toHaveProperty("domain", "acme.com");
+    expect(body).toHaveProperty("userEmail", "alice@acme.com");
+    expect(body).not.toHaveProperty("otp");
 
     await app.close();
   });
@@ -185,6 +187,190 @@ describe("otp routes", () => {
     expect(response.json()).toEqual({
       error: "otp_already_used",
       message: "OTP already used.",
+    });
+
+    await app.close();
+  });
+
+  it("reports upstream Sui RPC HTTP failures as backend dependency errors", async () => {
+    const suiError = new Error("Unexpected status code: 404") as Error & {
+      status: number;
+      statusText: string;
+    };
+    suiError.status = 404;
+    suiError.statusText = "Not Found";
+    completeOtpSession.mockRejectedValueOnce(suiError);
+
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/otp/verify",
+      payload: {
+        userId: "user-id-1",
+        otp: "123456",
+        domain: "acme.com",
+        userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toEqual({
+      error: "sui_rpc_failed",
+      message: "Sui RPC request failed (404 Not Found). Check SUI_RPC_URL and SUI_NETWORK configuration.",
+    });
+
+    await app.close();
+  });
+
+  it("reports Vault connection failures as backend dependency errors", async () => {
+    const { VaultConnectionError } = await import("../src/services/VaultService.js");
+    completeOtpSession.mockRejectedValueOnce(
+      new VaultConnectionError("http://127.0.0.1:8200", new Error("ECONNREFUSED"))
+    );
+
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/otp/verify",
+      payload: {
+        userId: "user-id-1",
+        otp: "123456",
+        domain: "acme.com",
+        userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toEqual({
+      error: "vault_unavailable",
+      message:
+        "Vault is unavailable at http://127.0.0.1:8200. Check VAULT_ADDR and ensure the Vault service is running.",
+    });
+
+    await app.close();
+  });
+});
+
+describe("OTP rate limiting", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    // Reset rate limiters
+    const { resetAllRateLimiters } = await import("../src/utils/rateLimit.js");
+    resetAllRateLimiters();
+  });
+
+  it("should rate limit OTP requests from same IP", async () => {
+    const app = await buildApp();
+
+    // Make 5 requests (limit is 5 per minute)
+    const results = [];
+    for (let i = 0; i < 6; i++) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/otp/request",
+        payload: {
+          domain: "acme.com",
+          user_email: `user${i}@acme.com`,
+        },
+      });
+      results.push(response.statusCode);
+    }
+
+    // First 5 should succeed, 6th should be rate limited
+    expect(results.slice(0, 5)).toEqual([201, 201, 201, 201, 201]);
+    expect(results[5]).toBe(429);
+
+    await app.close();
+  });
+
+  it("should include Retry-After header when rate limited", async () => {
+    const app = await buildApp();
+
+    // Exhaust rate limit
+    for (let i = 0; i < 5; i++) {
+      await app.inject({
+        method: "POST",
+        url: "/otp/request",
+        payload: {
+          domain: "acme.com",
+          user_email: `user${i}@acme.com`,
+        },
+      });
+    }
+
+    // 6th request should be rate limited
+    const response = await app.inject({
+      method: "POST",
+      url: "/otp/request",
+      payload: {
+        domain: "acme.com",
+        user_email: "another@acme.com",
+      },
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.headers).toHaveProperty("retry-after");
+    expect(response.json()).toEqual({
+      error: "rate_limit_exceeded",
+      message: expect.stringContaining("Too many OTP requests"),
+    });
+
+    await app.close();
+  });
+
+  it("should rate limit OTP verify attempts per userId", async () => {
+    // Mock failed verification attempts
+    const { findOtpSession } = await import("../src/db/repositories.js");
+    vi.mocked(findOtpSession).mockResolvedValue({
+      userId: "user-verify-test",
+      domain: "acme.com",
+      userEmail: "alice@acme.com",
+      userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      adminWallet: "0xabc",
+      txDigest: null,
+      userCapId: null,
+      status: "pending_verification",
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date().toISOString(),
+      verifiedAt: null,
+      otpHash: "hash",
+      error: null,
+    });
+
+    const app = await buildApp();
+
+    // Make 10 failed verify attempts for same userId (limit is 10 per 15 min)
+    for (let i = 0; i < 10; i++) {
+      await app.inject({
+        method: "POST",
+        url: "/otp/verify",
+        payload: {
+          userId: "user-verify-test",
+          otp: "wrong-otp",
+          domain: "acme.com",
+          userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+        },
+      });
+    }
+
+    // 11th should be rate limited
+    const response = await app.inject({
+      method: "POST",
+      url: "/otp/verify",
+      payload: {
+        userId: "user-verify-test",
+        otp: "wrong-otp-2",
+        domain: "acme.com",
+        userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      },
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.json()).toEqual({
+      error: "rate_limit_exceeded",
+      message: expect.stringContaining("Too many OTP verification attempts"),
     });
 
     await app.close();

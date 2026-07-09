@@ -1,4 +1,4 @@
-export const SUI_RPC_URL = import.meta.env.VITE_SUI_RPC_URL?.trim() ?? "https://fullnode.testnet.sui.io:443";
+export const SUI_RPC_URL = import.meta.env.VITE_SUI_RPC_URL?.trim() ?? "https://graphql.testnet.sui.io/graphql";
 
 export const GRANITE_LAKE_PACKAGE_ID =
   import.meta.env.VITE_GRANITE_LAKE_PACKAGE_ID?.trim() ??

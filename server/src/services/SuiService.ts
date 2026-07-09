@@ -1,6 +1,6 @@
 import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
-import { SuiJsonRpcClient, type SuiObjectChange } from "@mysten/sui/jsonRpc";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Transaction } from "@mysten/sui/transactions";
 import type { AppEnv } from "../config/env.js";
 import { resolveSecretValue } from "./VaultService.js";
@@ -10,73 +10,117 @@ export type AddUserResult = {
   userCapId: string;
 };
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ExecuteTransactionResult = any;
+
 export class SuiService {
-  private readonly client: SuiJsonRpcClient;
+  private readonly client: SuiGrpcClient;
+  private keypair: Ed25519Keypair | null = null;
 
   constructor(private readonly appEnv: AppEnv) {
-    this.client = new SuiJsonRpcClient({
+    this.client = new SuiGrpcClient({
       network: appEnv.SUI_NETWORK,
-      url: appEnv.SUI_RPC_URL,
+      baseUrl: appEnv.SUI_RPC_URL,
     });
   }
 
-  async addUser(params: { domain: string; userWallet: string }): Promise<AddUserResult> {
-    const result = await this.executeDomainAdminCall({
-      functionName: "add_user",
-      domain: params.domain,
-      userWallet: params.userWallet,
-      showObjectChanges: true,
-    });
+  private async initializeKeypair(): Promise<Ed25519Keypair> {
+    if (this.keypair) return this.keypair;
 
-    const userCapId = findCreatedObjectId(result.objectChanges ?? [], "::photo_attestation::UserCap");
-
-    if (!userCapId) {
-      throw new Error("Sui add_user transaction did not create a UserCap.");
+    if (!this.appEnv.SUI_PRIVATE_KEY || !this.appEnv.SUI_PACKAGE_ID || !this.appEnv.SUI_REGISTRY_ID) {
+      throw new Error("Sui configuration is incomplete. Set SUI_PRIVATE_KEY, SUI_PACKAGE_ID, and SUI_REGISTRY_ID.");
     }
 
-    return {
-      txDigest: result.digest,
-      userCapId,
-    };
-  }
+    const privateKey = await resolveSecretValue(this.appEnv, this.appEnv.SUI_PRIVATE_KEY);
+    if (!privateKey) {
+      throw new Error("Sui private key could not be resolved from configuration.");
+    }
 
-  async disableUser(params: { domain: string; userWallet: string }): Promise<string> {
-    const result = await this.executeDomainAdminCall({
-      functionName: "disable_user",
-      domain: params.domain,
-      userWallet: params.userWallet,
-      showObjectChanges: false,
-    });
+    const decoded = decodeSuiPrivateKey(privateKey.trim());
+    if (decoded.scheme !== "ED25519") {
+      throw new Error(`Unsupported Sui private key scheme: ${decoded.scheme}. Expected ED25519.`);
+    }
 
-    return result.digest;
-  }
-
-  async enableUser(params: { domain: string; userWallet: string }): Promise<string> {
-    const result = await this.executeDomainAdminCall({
-      functionName: "enable_user",
-      domain: params.domain,
-      userWallet: params.userWallet,
-      showObjectChanges: false,
-    });
-
-    return result.digest;
-  }
-
-  private async executeDomainAdminCall(params: {
-    functionName: "add_user" | "disable_user" | "enable_user";
-    domain: string;
-    userWallet: string;
-    showObjectChanges: boolean;
-  }) {
-    const privateKey = await this.getPrivateKey();
-
-    const keypair = toEd25519Keypair(privateKey);
+    const keypair = Ed25519Keypair.fromSecretKey(decoded.secretKey);
     const signerAddress = keypair.toSuiAddress().toLowerCase();
     const expectedAddress = this.appEnv.ADMIN_WALLET.trim().toLowerCase();
 
     if (signerAddress !== expectedAddress) {
       throw new Error(`Sui signer ${signerAddress} does not match ADMIN_WALLET ${expectedAddress}.`);
     }
+
+    this.keypair = keypair;
+    return keypair;
+  }
+
+  async addUser(params: { domain: string; userWallet: string }): Promise<AddUserResult> {
+    const { digest, result } = await this.executeDomainAdminCall({
+      functionName: "add_user",
+      domain: params.domain,
+      userWallet: params.userWallet,
+    });
+
+    // Wait for transaction to be indexed
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await this.client.waitForTransaction({ result: result as any });
+
+    // Query the transaction to get created objects
+    // gRPC uses include.objectTypes + effects.changedObjects instead of objectChanges
+    const txDetails = await this.client.getTransaction({
+      digest,
+      include: {
+        objectTypes: true,
+        effects: true,
+      },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const txData: any = txDetails.$kind === "Transaction" ? txDetails.Transaction : txDetails;
+    const changedObjects = txData.effects?.changedObjects ?? [];
+    const objectTypes = txData.objectTypes ?? {};
+    const userCapId = findCreatedObjectId(changedObjects, objectTypes, "::photo_attestation::UserCap");
+
+    if (!userCapId) {
+      // Log for debugging
+      console.error(
+        "UserCap not found in changedObjects. Query result:",
+        JSON.stringify(txDetails, null, 2).slice(0, 2000)
+      );
+      throw new Error("Sui add_user transaction did not create a UserCap.");
+    }
+
+    return {
+      txDigest: digest,
+      userCapId,
+    };
+  }
+
+  async disableUser(params: { domain: string; userWallet: string }): Promise<string> {
+    const { digest } = await this.executeDomainAdminCall({
+      functionName: "disable_user",
+      domain: params.domain,
+      userWallet: params.userWallet,
+    });
+
+    return digest;
+  }
+
+  async enableUser(params: { domain: string; userWallet: string }): Promise<string> {
+    const { digest } = await this.executeDomainAdminCall({
+      functionName: "enable_user",
+      domain: params.domain,
+      userWallet: params.userWallet,
+    });
+
+    return digest;
+  }
+
+  private async executeDomainAdminCall(params: {
+    functionName: "add_user" | "disable_user" | "enable_user";
+    domain: string;
+    userWallet: string;
+  }): Promise<{ digest: string; result: ExecuteTransactionResult }> {
+    const keypair = await this.initializeKeypair();
 
     const tx = new Transaction();
 
@@ -91,49 +135,42 @@ export class SuiService {
 
     tx.setGasBudget(this.appEnv.SUI_GAS_BUDGET);
 
-    const result = await this.client.signAndExecuteTransaction({
-      signer: keypair,
+    // Use keypair's signAndExecuteTransaction
+    const result = await keypair.signAndExecuteTransaction({
       transaction: tx,
-      options: {
-        showEffects: true,
-        showObjectChanges: params.showObjectChanges,
-      },
+      client: this.client,
     });
 
-    if (result.effects?.status.status !== "success") {
-      throw new Error(result.effects?.status.error ?? "Sui transaction failed.");
+    // Check for failed transaction
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (result.$kind === "FailedTransaction") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const status = (result as any).FailedTransaction;
+      throw new Error(status?.error?.message ?? "Sui transaction failed.");
     }
 
-    return result;
-  }
-
-  private async getPrivateKey(): Promise<string> {
-    if (!this.appEnv.SUI_PRIVATE_KEY || !this.appEnv.SUI_PACKAGE_ID || !this.appEnv.SUI_REGISTRY_ID) {
-      throw new Error("Sui configuration is incomplete. Set SUI_PRIVATE_KEY, SUI_PACKAGE_ID, and SUI_REGISTRY_ID.");
+    // Get the digest - it could be in different places depending on result structure
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const digest = (result as any).digest ?? (result as any).Transaction?.digest;
+    if (!digest) {
+      console.error("No digest in result:", JSON.stringify(result, null, 2).slice(0, 1000));
+      throw new Error("Transaction executed but no digest found in response.");
     }
 
-    const privateKey = await resolveSecretValue(this.appEnv, this.appEnv.SUI_PRIVATE_KEY);
-
-    if (!privateKey) {
-      throw new Error("Sui private key could not be resolved from configuration.");
-    }
-
-    return privateKey;
+    return { digest, result };
   }
 }
 
-function toEd25519Keypair(privateKey: string): Ed25519Keypair {
-  const decoded = decodeSuiPrivateKey(privateKey.trim());
+function findCreatedObjectId(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  changes: any[],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  objectTypes: Record<string, any>,
+  objectTypeSuffix: string
+): string | null {
+  const created = changes.find(
+    (change) => change.idOperation === "Created" && objectTypes[change.objectId]?.endsWith(objectTypeSuffix)
+  );
 
-  if (decoded.scheme !== "ED25519") {
-    throw new Error(`Unsupported Sui private key scheme: ${decoded.scheme}. Expected ED25519.`);
-  }
-
-  return Ed25519Keypair.fromSecretKey(decoded.secretKey);
-}
-
-function findCreatedObjectId(changes: SuiObjectChange[], objectTypeSuffix: string): string | null {
-  const created = changes.find((change) => change.type === "created" && change.objectType.endsWith(objectTypeSuffix));
-
-  return created?.type === "created" ? created.objectId : null;
+  return created?.objectId ?? null;
 }

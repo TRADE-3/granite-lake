@@ -2,6 +2,11 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { env } from "../config/env.js";
 import { completeOtpSession, createOtpSession, findOtpSession } from "../db/repositories.js";
+import { VaultConnectionError } from "../services/VaultService.js";
+import { RateLimiter, otpRequestLimiter, otpVerifyLimiter, resetAllRateLimiters } from "../utils/rateLimit.js";
+
+// Export for testing
+export { resetAllRateLimiters };
 
 const otpRequestSchema = z.object({
   domain: z.string().min(1),
@@ -16,6 +21,47 @@ const otpVerifySchema = z.object({
 });
 
 export const otpRoutes: FastifyPluginAsync = async (app) => {
+  // Rate limiting via preHandler - apply to all OTP routes
+  app.addHook("preHandler", async (request, reply) => {
+    const path = request.url;
+
+    // Rate limit /otp/request by IP
+    if (path === "/otp/request") {
+      const ip = request.ip || (request.headers["x-forwarded-for"] as string) || "unknown";
+      const key = `otp_request:${ip}`;
+
+      if (!otpRequestLimiter.isAllowed(key)) {
+        const retryAfter = otpRequestLimiter.getRetryAfter(key);
+        reply.header("Retry-After", retryAfter);
+        return reply.status(429).send({
+          error: "rate_limit_exceeded",
+          message: `Too many OTP requests. Limit: 5 per minute. Try again in ${retryAfter} seconds.`,
+        });
+      }
+    }
+
+    // Rate limit /otp/verify by userId
+    if (path === "/otp/verify") {
+      if (request.body) {
+        const body = parseJsonStringBody(request.body) as Record<string, unknown> | undefined;
+        const userId = body?.userId as string | undefined;
+
+        if (userId) {
+          const key = `otp_verify:${userId}`;
+
+          if (!otpVerifyLimiter.isAllowed(key)) {
+            const retryAfter = otpVerifyLimiter.getRetryAfter(key);
+            reply.header("Retry-After", retryAfter);
+            return reply.status(429).send({
+              error: "rate_limit_exceeded",
+              message: `Too many OTP verification attempts. Limit: 10 per 15 minutes. Try again in ${retryAfter} seconds.`,
+            });
+          }
+        }
+      }
+    }
+  });
+
   app.post("/otp/request", async (request, reply) => {
     const parsedBody = otpRequestSchema.safeParse(parseJsonStringBody(request.body));
 
@@ -93,7 +139,24 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post("/otp/verify", async (request, reply) => {
-    const parsedBody = otpVerifySchema.safeParse(parseJsonStringBody(request.body));
+    // Rate limit verify attempts by userId (check before validation)
+    const rawBody = parseJsonStringBody(request.body) as Record<string, unknown> | undefined;
+    const userIdForRateLimit = rawBody?.userId as string | undefined;
+
+    if (userIdForRateLimit) {
+      const key = `otp_verify:${userIdForRateLimit}`;
+
+      if (!otpVerifyLimiter.isAllowed(key)) {
+        const retryAfter = otpVerifyLimiter.getRetryAfter(key);
+        reply.header("Retry-After", retryAfter);
+        return reply.status(429).send({
+          error: "rate_limit_exceeded",
+          message: `Too many OTP verification attempts. Limit: 10 per 15 minutes. Try again in ${retryAfter} seconds.`,
+        });
+      }
+    }
+
+    const parsedBody = otpVerifySchema.safeParse(rawBody);
 
     if (!parsedBody.success) {
       return reply.status(400).send({
@@ -136,6 +199,21 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
             message: error.message,
           });
         }
+
+        if (error instanceof VaultConnectionError) {
+          return reply.status(502).send({
+            error: "vault_unavailable",
+            message: `Vault is unavailable at ${error.address ?? "<unset>"}. Check VAULT_ADDR and ensure the Vault service is running.`,
+          });
+        }
+
+        const suiHttpStatus = readSuiHttpStatus(error);
+        if (suiHttpStatus != null) {
+          return reply.status(502).send({
+            error: "sui_rpc_failed",
+            message: `Sui RPC request failed (${suiHttpStatus.status} ${suiHttpStatus.statusText}). Check SUI_RPC_URL and SUI_NETWORK configuration.`,
+          });
+        }
       }
 
       throw error;
@@ -170,4 +248,17 @@ function parseJsonStringBody(body: unknown): unknown {
   } catch {
     return body;
   }
+}
+
+function readSuiHttpStatus(error: Error): { status: number; statusText: string } | null {
+  const candidate = error as Error & { status?: unknown; statusText?: unknown };
+
+  if (typeof candidate.status !== "number") {
+    return null;
+  }
+
+  return {
+    status: candidate.status,
+    statusText: typeof candidate.statusText === "string" ? candidate.statusText : "Unknown",
+  };
 }

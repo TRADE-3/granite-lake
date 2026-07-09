@@ -26,13 +26,34 @@ abstract final class AppConstants {
   static const String biometricStatus = 'BIOMETRIC_STEP';
   static const String biometricEncryptMode = 'SECURE_ENCLAVE';
 
-  static const String defaultSuiRpcUrl = 'https://fullnode.testnet.sui.io:443';
+  static const String defaultSuiRpcUrl =
+      'https://graphql.testnet.sui.io/graphql';
   static const String suiTestnetFaucetUrl =
       'https://faucet.sui.io/?network=testnet';
+
+  // OTP / UTC backend configuration.
+  //
+  // Production builds MUST set GL_OTP_BACKEND_URL. The resolver in
+  // `core/utils/utils.dart` will refuse to talk to any other host.
+  //
+  // Security: The connection is secured by TLS (HTTPS). Make sure the server
+  // uses a valid TLS certificate.
+  //
+  // For local development, enable dev fallbacks:
+  //   --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true
   static const String defaultOtpBackendBaseUrl = String.fromEnvironment(
     'GL_OTP_BACKEND_URL',
-    defaultValue: 'https://zoey-glorious-chanda.ngrok-free.dev',
+    defaultValue: '',
   );
+  static const bool otpBackendDevFallbacksEnabled = bool.fromEnvironment(
+    'GL_OTP_BACKEND_DEV_FALLBACKS',
+    defaultValue: false,
+  );
+
+  /// Bump this whenever the resolver contract changes. The resolver compares it
+  /// to a value stored in secure storage and forces a re-resolution on mismatch.
+  static const int otpBackendAppBuildVersion = 1;
+
   static String get otpBackendBaseUrl {
     return defaultOtpBackendBaseUrl.trim().replaceAll(
       RegExp(r'["}\s\u2060\uFEFF]+$'),
