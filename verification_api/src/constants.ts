@@ -3,7 +3,7 @@ import "dotenv/config";
 export const HOST = process.env.HOST?.trim() || "0.0.0.0";
 export const PORT = Number(process.env.PORT || 8081);
 
-export const SUI_RPC_URL = process.env.SUI_RPC_URL?.trim() || "https://fullnode.testnet.sui.io:443";
+export const SUI_RPC_URL = process.env.SUI_RPC_URL?.trim() || "https://graphql.testnet.sui.io/graphql";
 
 export const GRANITE_LAKE_PACKAGE_ID =
   process.env.GRANITE_LAKE_PACKAGE_ID?.trim() || "0x406cb3e27bca8260c8a5f52aa233e02c5e655a4c8c2c9009024c1f27084baffe";

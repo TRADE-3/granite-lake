@@ -50,7 +50,7 @@ Current testnet defaults:
 - registry id: `0xab1bf31ba2754b488f5c2b7abd1c20ef874f66fb8712778c13b2ac8c1f6b6821`
 - module: `photo_attestation`
 - faucet URL: `https://faucet.sui.io/?network=testnet`
-- OTP / UTC backend base URL: resolved dynamically at runtime (tries `GL_OTP_BACKEND_URL` first, then common local dev endpoints like `http://10.0.2.2:8080`, `http://172.26.0.3:8080`, `http://127.0.0.1:8080`, and `http://localhost:8080`)
+- OTP / UTC backend URL: resolved dynamically at runtime (see Backend URL Configuration below)
 
 Runtime behavior:
 
@@ -61,6 +61,42 @@ Runtime behavior:
 Config sync logic lives in:
 
 - `lib/core/database/controllers/config_data_controller.dart`
+
+## Backend URL Configuration
+
+The app needs to know the backend API URL to connect for OTP verification and UTC time.
+
+### Build Arguments
+
+| Argument                       | Required         | Description                                                   |
+| ------------------------------ | ---------------- | ------------------------------------------------------------- |
+| `GL_OTP_BACKEND_URL`           | Yes (production) | Backend API URL (e.g., `https://api.example.com`)             |
+| `GL_OTP_BACKEND_DEV_FALLBACKS` | No               | Enable localhost fallback for development (`true` or `false`) |
+
+### Build Examples
+
+```bash
+# Production build
+flutter build apk --dart-define=GL_OTP_BACKEND_URL=https://api.example.com
+
+# Development build with localhost fallback
+flutter build apk --dart-define=GL_OTP_BACKEND_URL=http://10.0.2.2:8080 --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true
+```
+
+### URL Resolution
+
+The app resolves the backend URL in this order:
+
+1. If `GL_OTP_BACKEND_URL` is set, use that URL
+2. In debug mode with `GL_OTP_BACKEND_DEV_FALLBACKS=true`, try:
+   - `http://10.0.2.2:8080` (Android emulator host machine)
+   - `http://127.0.0.1:8080` (localhost)
+
+### Security
+
+The connection is secured by TLS (HTTPS). Ensure your backend is configured with a valid TLS certificate.
+
+The app does not embed any secrets for backend communication. All security is provided by the TLS connection.
 
 ## Smart Contract Integration
 
@@ -613,6 +649,84 @@ The strongest next steps would be:
 2. move from wrapping an exportable Sui private key to signing with non-exportable hardware-backed key material
 3. add iOS secure storage / biometric gate support
 4. add server-side or operator-side verification tooling for attestation events
+
+## Development Setup
+
+### Running the App
+
+The app requires the backend API URL to be configured at build time.
+
+#### Quick Start
+
+```bash
+# With dev fallbacks (connects to localhost)
+flutter run --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true
+```
+
+#### VS Code Setup (Recommended for Development)
+
+Create `.vscode/launch.json` in the app folder:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Granite Lake (Dev)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "args": ["--dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true"]
+    }
+  ]
+}
+```
+
+Then simply press `F5` or run from the debug panel.
+
+#### Production Build
+
+```bash
+# Set your production API URL
+flutter build apk --dart-define=GL_OTP_BACKEND_URL=https://api.example.com
+```
+
+#### Running on Specific Device
+
+```bash
+# List available devices
+flutter devices
+
+# Run on a specific device/emulator
+flutter run -d <device-id> --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true
+```
+
+### Backend Connection
+
+When running with dev fallbacks enabled, the app will try these URLs in order:
+
+1. `http://10.0.2.2:8080` (Android emulator → host machine)
+2. `http://127.0.0.1:8080` (localhost)
+
+Make sure the server is running:
+
+```bash
+cd server
+docker compose up -d
+```
+
+### Troubleshooting
+
+**"Could not reach OTP backend"**
+
+- Ensure server is running: `docker compose ps`
+- Check server logs: `docker compose logs api`
+- Verify port 8080 is accessible
+
+**Connection refused**
+
+- Android emulator can't access localhost directly - use `10.0.2.2`
+- Physical device needs your machine's IP address
 
 ## Development Notes
 

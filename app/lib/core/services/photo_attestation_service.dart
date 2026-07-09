@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:on_chain/on_chain.dart';
 
@@ -363,7 +364,8 @@ class PhotoAttestationService {
   }) async {
     try {
       final baseUrl = await AppUtils.resolveOtpBackendBaseUrl();
-      final uri = Uri.parse(baseUrl).resolve('/otp/request');
+
+      final uri = AppUtils.otpBackendUri(baseUrl, 'otp/request');
       final response = await _httpClient.post(
         uri,
         headers: const {'Content-Type': 'application/json; charset=utf-8'},
@@ -372,10 +374,7 @@ class PhotoAttestationService {
       final payload = _decodeJsonPayload(response.body);
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        final message =
-            (payload['message'] as String?)?.trim().isNotEmpty == true
-            ? (payload['message'] as String).trim()
-            : 'OTP request failed.';
+        final message = _readBackendMessage(payload) ?? 'OTP request failed.';
         throw PhotoAttestationException(
           userMessage: message,
           rawMessage: message,
@@ -408,7 +407,8 @@ class PhotoAttestationService {
   }) async {
     try {
       final baseUrl = await AppUtils.resolveOtpBackendBaseUrl();
-      final uri = Uri.parse(baseUrl).resolve('/otp/verify');
+
+      final uri = AppUtils.otpBackendUri(baseUrl, 'otp/verify');
       final response = await _httpClient.post(
         uri,
         headers: const {'Content-Type': 'application/json; charset=utf-8'},
@@ -422,10 +422,11 @@ class PhotoAttestationService {
       final payload = _decodeJsonPayload(response.body);
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        final message =
-            (payload['message'] as String?)?.trim().isNotEmpty == true
-            ? (payload['message'] as String).trim()
-            : 'OTP verification failed.';
+        final message = _otpVerifyFailureMessage(
+          payload,
+          statusCode: response.statusCode,
+          uri: uri,
+        );
         throw PhotoAttestationException(
           userMessage: message,
           rawMessage: message,
@@ -1379,6 +1380,34 @@ class PhotoAttestationService {
       return Map<String, dynamic>.from(decoded);
     }
     throw const FormatException('Backend response body was not a JSON object.');
+  }
+
+  String? _readBackendMessage(Map<String, dynamic> payload) {
+    final message = (payload['message'] as String?)?.trim();
+    if (message != null && message.isNotEmpty) {
+      return message;
+    }
+    return null;
+  }
+
+  String _otpVerifyFailureMessage(
+    Map<String, dynamic> payload, {
+    required int statusCode,
+    required Uri uri,
+  }) {
+    final backendMessage = _readBackendMessage(payload);
+    final backendError = (payload['error'] as String?)?.trim();
+
+    if (statusCode == 404) {
+      if (backendError == 'not_found' && backendMessage != null) {
+        return 'OTP session was not found. Request a new OTP and try again.';
+      }
+
+      final targetHint = kDebugMode ? ' URL: $uri' : '';
+      return 'The OTP verification endpoint was not found on the configured backend. Check that GL_OTP_BACKEND_URL points to the Granite Lake API and that the latest API is deployed.$targetHint';
+    }
+
+    return backendMessage ?? 'OTP verification failed.';
   }
 
   bool _addressesMatch(String? left, String? right) {

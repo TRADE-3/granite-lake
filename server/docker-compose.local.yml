@@ -14,3 +14,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  api:
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200

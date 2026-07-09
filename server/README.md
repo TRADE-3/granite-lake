@@ -429,3 +429,35 @@ The database does not store `domain` or `admin_wallet`; those come from env beca
 5. Server verifies OTP and submits Sui `add_user`.
 6. Server stores the user as `active`.
 7. Admin can call disable/enable endpoints, which also submit Sui transactions.
+
+## Security
+
+### Rate Limiting
+
+The API implements rate limiting to prevent brute-force attacks:
+
+| Endpoint       | Limit       | Window     | Key        |
+| -------------- | ----------- | ---------- | ---------- |
+| `/otp/request` | 5 requests  | 1 minute   | IP address |
+| `/otp/verify`  | 10 attempts | 15 minutes | userId     |
+
+When rate limited, the API returns:
+
+- HTTP `429 Too Many Requests`
+- `Retry-After` header with seconds until reset
+- Error response:
+
+```json
+{
+  "error": "rate_limit_exceeded",
+  "message": "Too many OTP requests. Limit: 5 per minute. Try again in 45 seconds."
+}
+```
+
+### TLS/SSL
+
+For production deployments, always use TLS (HTTPS) to encrypt traffic between the app and server. The API itself does not handle TLS; terminate TLS at a reverse proxy or load balancer (e.g., nginx, Cloudflare).
+
+### Admin API Key
+
+Admin endpoints require the `x-admin-api-key` header. Keep this key secret and do not expose it in client-side code.
