@@ -1,5 +1,5 @@
 import {
-  DOMAIN_ADDED_EVENT_TYPE,
+  DOMAIN_ADDED_EVENT_TYPES,
   FILE_ATTESTED_EVENT_TYPES,
   GRANITE_LAKE_ORIGINAL_PACKAGE_ID,
   GRANITE_LAKE_PACKAGE_ID,
@@ -7,8 +7,9 @@ import {
   SUI_RPC_URL,
   USER_CAP_TYPE,
   USER_CAP_TYPE_ORIGINAL,
-  USER_DISABLED_EVENT_TYPE,
-  USER_ENABLED_EVENT_TYPE,
+  USER_ADDED_EVENT_TYPES,
+  USER_DISABLED_EVENT_TYPES,
+  USER_ENABLED_EVENT_TYPES,
 } from "../constants.js";
 import { AttestationRecord, AttestType } from "../types.js";
 
@@ -24,6 +25,7 @@ type SuiEvent = {
   sender: string;
   timestampMs?: string;
   parsedJson?: Record<string, unknown>;
+  typeRepr?: string;
 };
 
 type SuiEventPage = {
@@ -36,6 +38,16 @@ type GraphQlResponse<T> = {
   data?: T;
   errors?: Array<{ message?: string }>;
 };
+
+function getEventTypeSuffix(eventType: string): string {
+  return eventType.split("::").pop()?.toLowerCase() ?? "";
+}
+
+function matchesExpectedEventType(event: SuiEvent, eventType: string): boolean {
+  const expected = getEventTypeSuffix(eventType);
+  if (!expected) return false;
+  return event.typeRepr?.toLowerCase().endsWith(`::${expected}`) ?? false;
+}
 
 type OwnedObjectsResult = {
   data?: Array<{
@@ -233,9 +245,13 @@ function buildGraphQlRequest(method: string, params: unknown[]): { query: string
         number | undefined,
         boolean | undefined,
       ];
+      const moveEventType = filter.MoveEventType ?? "";
+      const moduleFilter = moveEventType.includes("::")
+        ? moveEventType.substring(0, moveEventType.lastIndexOf("::"))
+        : moveEventType;
       return {
-        query: `query($type:String!,$first:Int!,$after:String){
-          events(first:$first, after:$after, filter:{ type:$type }){
+        query: `query($module:String!,$first:Int!,$after:String){
+          events(first:$first, after:$after, filter:{ module:$module }){
             pageInfo { hasNextPage endCursor }
             nodes {
               sequenceNumber
@@ -251,7 +267,7 @@ function buildGraphQlRequest(method: string, params: unknown[]): { query: string
           }
         }`,
         variables: {
-          type: filter.MoveEventType ?? "",
+          module: moduleFilter,
           first: typeof limit === "number" ? limit : 50,
           after: encodeEventCursor(cursor),
         },
@@ -305,6 +321,7 @@ function mapEventsGraphQlResult(data: Record<string, unknown>): SuiEventPage {
       const module = asRecord(entry?.transactionModule);
       const modulePackage = asRecord(module?.package);
       const contents = asRecord(entry?.contents);
+      const contentType = asRecord(contents?.type);
       return {
         id: {
           txDigest: asString(transaction?.digest),
@@ -314,6 +331,7 @@ function mapEventsGraphQlResult(data: Record<string, unknown>): SuiEventPage {
         sender: asString(sender?.address),
         timestampMs: toTimestampMs(asString(entry?.timestamp) || undefined),
         parsedJson: asRecord(contents?.json) ?? undefined,
+        typeRepr: asString(contentType?.repr),
       } satisfies SuiEvent;
     }),
     hasNextPage: pageInfo?.hasNextPage === true,
@@ -396,72 +414,95 @@ async function getUserCapInfo(
 async function getDomainAdminWallet(domain: string | null, rpcUrl: string): Promise<string | null> {
   if (!domain) return null;
 
-  let cursor: SuiEventCursor | null = null;
+  const domainAdminEventTypes = [...DOMAIN_ADDED_EVENT_TYPES, ...USER_ADDED_EVENT_TYPES];
 
-  do {
-    const page: SuiEventPage = await suiRpcCall<SuiEventPage>(
-      "suix_queryEvents",
-      [{ MoveEventType: DOMAIN_ADDED_EVENT_TYPE }, cursor, 50, true],
-      rpcUrl
-    );
+  for (const eventType of domainAdminEventTypes) {
+    let cursor: SuiEventCursor | null = null;
 
-    for (const event of page.data ?? []) {
-      const parsed = event.parsedJson;
-      if (!parsed) continue;
+    do {
+      const page: SuiEventPage = await suiRpcCall<SuiEventPage>(
+        "suix_queryEvents",
+        [{ MoveEventType: eventType }, cursor, 50, true],
+        rpcUrl
+      );
 
-      if (decodeVector(parsed.domain).decoded === domain) {
-        const adminWallet = safeAddress(parsed.admin_wallet);
-        return adminWallet || null;
+      for (const event of page.data ?? []) {
+        const packageId = event.packageId.toLowerCase();
+        const allowedPackageIds = new Set([
+          GRANITE_LAKE_PACKAGE_ID.toLowerCase(),
+          GRANITE_LAKE_ORIGINAL_PACKAGE_ID.toLowerCase(),
+        ]);
+        if (!allowedPackageIds.has(packageId) || !matchesExpectedEventType(event, eventType)) continue;
+
+        const parsed = event.parsedJson;
+        if (!parsed) continue;
+
+        if (decodeVector(parsed.domain).decoded.toLowerCase() === domain.toLowerCase()) {
+          const adminWallet = safeAddress(parsed.admin_wallet);
+          return adminWallet || null;
+        }
       }
-    }
 
-    cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-  } while (cursor);
+      cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
+    } while (cursor);
+  }
 
   return null;
 }
 
 async function latestStatusTimestamp(params: {
-  eventType: string;
+  eventTypes: string[];
   userWallet: string;
   domain: string;
   attestationTimestampMs: number;
   rpcUrl: string;
 }): Promise<number | null> {
-  let cursor: SuiEventCursor | null = null;
   let latest: number | null = null;
+  const allowedPackageIds = new Set([
+    GRANITE_LAKE_PACKAGE_ID.toLowerCase(),
+    GRANITE_LAKE_ORIGINAL_PACKAGE_ID.toLowerCase(),
+  ]);
 
-  do {
-    const page: SuiEventPage = await suiRpcCall<SuiEventPage>(
-      "suix_queryEvents",
-      [{ MoveEventType: params.eventType }, cursor, 50, true],
-      params.rpcUrl
-    );
+  for (const eventType of params.eventTypes) {
+    let cursor: SuiEventCursor | null = null;
 
-    for (const event of page.data ?? []) {
-      const parsed = event.parsedJson;
-      if (!parsed) continue;
+    do {
+      const page: SuiEventPage = await suiRpcCall<SuiEventPage>(
+        "suix_queryEvents",
+        [{ MoveEventType: eventType }, cursor, 50, true],
+        params.rpcUrl
+      );
 
-      const timestamp = Number(event.timestampMs ?? 0);
-      if (!Number.isFinite(timestamp) || timestamp <= 0 || timestamp > params.attestationTimestampMs) {
-        continue;
+      for (const event of page.data ?? []) {
+        const packageId = event.packageId.toLowerCase();
+        if (!allowedPackageIds.has(packageId) || !matchesExpectedEventType(event, eventType)) {
+          continue;
+        }
+
+        const parsed = event.parsedJson;
+        if (!parsed) continue;
+
+        const timestamp = Number(event.timestampMs ?? 0);
+        if (!Number.isFinite(timestamp) || timestamp <= 0 || timestamp > params.attestationTimestampMs) {
+          continue;
+        }
+
+        const wallet = safeAddress(parsed.user_wallet).toLowerCase();
+        if (wallet !== params.userWallet.toLowerCase()) {
+          continue;
+        }
+
+        const eventDomain = decodeVector(parsed.domain).decoded;
+        if (eventDomain.toLowerCase() !== params.domain.toLowerCase()) {
+          continue;
+        }
+
+        latest = latest === null ? timestamp : Math.max(latest, timestamp);
       }
 
-      const wallet = safeAddress(parsed.user_wallet).toLowerCase();
-      if (wallet !== params.userWallet.toLowerCase()) {
-        continue;
-      }
-
-      const eventDomain = decodeVector(parsed.domain).decoded;
-      if (eventDomain !== params.domain) {
-        continue;
-      }
-
-      latest = latest === null ? timestamp : Math.max(latest, timestamp);
-    }
-
-    cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-  } while (cursor);
+      cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
+    } while (cursor);
+  }
 
   return latest;
 }
@@ -486,14 +527,14 @@ async function getEnabledAtAttestation(params: {
 
   const [latestEnabledTimestampMs, latestDisabledTimestampMs] = await Promise.all([
     latestStatusTimestamp({
-      eventType: USER_ENABLED_EVENT_TYPE,
+      eventTypes: USER_ENABLED_EVENT_TYPES,
       userWallet: params.userWallet,
       domain: params.domain,
       attestationTimestampMs: params.attestationTimestampMs,
       rpcUrl: params.rpcUrl,
     }),
     latestStatusTimestamp({
-      eventType: USER_DISABLED_EVENT_TYPE,
+      eventTypes: USER_DISABLED_EVENT_TYPES,
       userWallet: params.userWallet,
       domain: params.domain,
       attestationTimestampMs: params.attestationTimestampMs,
@@ -577,6 +618,8 @@ export async function verifyAttestationHashDetailed(
           GRANITE_LAKE_ORIGINAL_PACKAGE_ID.toLowerCase(),
         ]);
         if (!allowedPackageIds.has(packageId)) continue;
+
+        if (!matchesExpectedEventType(event, eventType)) continue;
 
         const parsed = event.parsedJson;
         if (!parsed) continue;
@@ -713,6 +756,8 @@ export async function getAttestationsByWallet(
         for (const event of page.data ?? []) {
           const packageId = event.packageId.toLowerCase();
           if (!allowedPackageIds.has(packageId)) continue;
+
+          if (!matchesExpectedEventType(event, eventType)) continue;
 
           const parsed = event.parsedJson;
           if (!parsed) continue;

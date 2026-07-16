@@ -25,4 +25,20 @@ export const USER_CAP_TYPE = `${GRANITE_LAKE_PACKAGE_ID}::photo_attestation::Use
 export const USER_CAP_TYPE_ORIGINAL = `${GRANITE_LAKE_ORIGINAL_PACKAGE_ID}::photo_attestation::UserCap`;
 export const USER_ENABLED_EVENT_TYPE = `${GRANITE_LAKE_ORIGINAL_PACKAGE_ID}::photo_attestation::UserEnabled`;
 export const USER_DISABLED_EVENT_TYPE = `${GRANITE_LAKE_ORIGINAL_PACKAGE_ID}::photo_attestation::UserDisabled`;
+export const USER_ENABLED_EVENT_TYPES = [
+  `${GRANITE_LAKE_PACKAGE_ID}::photo_attestation::UserEnabled`,
+  `${GRANITE_LAKE_ORIGINAL_PACKAGE_ID}::photo_attestation::UserEnabled`,
+];
+export const USER_DISABLED_EVENT_TYPES = [
+  `${GRANITE_LAKE_PACKAGE_ID}::photo_attestation::UserDisabled`,
+  `${GRANITE_LAKE_ORIGINAL_PACKAGE_ID}::photo_attestation::UserDisabled`,
+];
 export const DOMAIN_ADDED_EVENT_TYPE = `${GRANITE_LAKE_ORIGINAL_PACKAGE_ID}::photo_attestation::DomainAdded`;
+export const DOMAIN_ADDED_EVENT_TYPES = [
+  `${GRANITE_LAKE_PACKAGE_ID}::photo_attestation::DomainAdded`,
+  `${GRANITE_LAKE_ORIGINAL_PACKAGE_ID}::photo_attestation::DomainAdded`,
+];
+export const USER_ADDED_EVENT_TYPES = [
+  `${GRANITE_LAKE_PACKAGE_ID}::photo_attestation::UserAdded`,
+  `${GRANITE_LAKE_ORIGINAL_PACKAGE_ID}::photo_attestation::UserAdded`,
+];

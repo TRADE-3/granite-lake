@@ -1,14 +1,15 @@
 import {
   FILE_ATTESTED_EVENT_TYPES,
-  DOMAIN_ADDED_EVENT_TYPE,
+  DOMAIN_ADDED_EVENT_TYPES,
   GRANITE_LAKE_PACKAGE_ID,
   GRANITE_LAKE_ORIGINAL_PACKAGE_ID,
   PHOTO_ATTESTED_EVENT_TYPES,
   SUI_RPC_URL,
   USER_CAP_TYPE,
   USER_CAP_TYPE_ORIGINAL,
-  USER_DISABLED_EVENT_TYPE,
-  USER_ENABLED_EVENT_TYPE,
+  USER_ADDED_EVENT_TYPES,
+  USER_DISABLED_EVENT_TYPES,
+  USER_ENABLED_EVENT_TYPES,
 } from "../constants";
 
 type SuiEventCursor = {
@@ -23,6 +24,7 @@ type SuiEvent = {
   sender: string;
   timestampMs?: string;
   parsedJson?: Record<string, unknown>;
+  typeRepr?: string;
 };
 
 type SuiEventPage = {
@@ -51,6 +53,16 @@ type SuiRpcResponse<T> = {
   data?: T;
   errors?: SuiRpcError[];
 };
+
+function getEventTypeSuffix(eventType: string): string {
+  return eventType.split("::").pop()?.toLowerCase() ?? "";
+}
+
+function matchesExpectedEventType(event: SuiEvent, eventType: string): boolean {
+  const expected = getEventTypeSuffix(eventType);
+  if (!expected) return false;
+  return event.typeRepr?.toLowerCase().endsWith(`::${expected}`) ?? false;
+}
 
 export type ScanProgress = {
   pagesScanned: number;
@@ -345,9 +357,13 @@ function buildGraphQlRequest(method: string, params: unknown[]): { query: string
         number | undefined,
         boolean | undefined,
       ];
+      const moveEventType = filter.MoveEventType ?? "";
+      const moduleFilter = moveEventType.includes("::")
+        ? moveEventType.substring(0, moveEventType.lastIndexOf("::"))
+        : moveEventType;
       return {
-        query: `query($type:String!,$first:Int!,$after:String){
-          events(first:$first, after:$after, filter:{ type:$type }){
+        query: `query($module:String!,$first:Int!,$after:String){
+          events(first:$first, after:$after, filter:{ module:$module }){
             pageInfo { hasNextPage endCursor }
             nodes {
               sequenceNumber
@@ -363,7 +379,7 @@ function buildGraphQlRequest(method: string, params: unknown[]): { query: string
           }
         }`,
         variables: {
-          type: filter.MoveEventType ?? "",
+          module: moduleFilter,
           first: typeof limit === "number" ? limit : 50,
           after: encodeEventCursor(cursor),
         },
@@ -416,6 +432,7 @@ function mapEventsGraphQlResult(data: Record<string, unknown>): SuiEventPage {
       const module = asRecord(entry?.transactionModule);
       const modulePackage = asRecord(module?.package);
       const contents = asRecord(entry?.contents);
+      const contentType = asRecord(contents?.type);
       return {
         id: {
           txDigest: asString(transaction?.digest),
@@ -425,6 +442,7 @@ function mapEventsGraphQlResult(data: Record<string, unknown>): SuiEventPage {
         sender: asString(sender?.address),
         timestampMs: toTimestampMs(asString(entry?.timestamp) || undefined),
         parsedJson: asRecord(contents?.json) ?? undefined,
+        typeRepr: asString(contentType?.repr),
       } satisfies SuiEvent;
     }),
     hasNextPage: pageInfo?.hasNextPage === true,
@@ -502,33 +520,41 @@ async function getDomainAdminWallet(domain: string | null): Promise<string | nul
     return null;
   }
 
-  let cursor: SuiEventCursor | null = null;
+  const domainAdminEventTypes = [...DOMAIN_ADDED_EVENT_TYPES, ...USER_ADDED_EVENT_TYPES];
 
-  do {
-    const page: SuiEventPage = await suiRpcCall<SuiEventPage>("suix_queryEvents", [
-      {
-        MoveEventType: DOMAIN_ADDED_EVENT_TYPE,
-      },
-      cursor,
-      50,
-      true,
-    ]);
+  for (const eventType of domainAdminEventTypes) {
+    let cursor: SuiEventCursor | null = null;
 
-    for (const event of page.data ?? []) {
-      const parsed = event.parsedJson;
-      if (!parsed) {
-        continue;
+    do {
+      const page: SuiEventPage = await suiRpcCall<SuiEventPage>("suix_queryEvents", [
+        {
+          MoveEventType: eventType,
+        },
+        cursor,
+        50,
+        true,
+      ]);
+
+      for (const event of page.data ?? []) {
+        if (!isAllowedPackageId(event.packageId) || !matchesExpectedEventType(event, eventType)) {
+          continue;
+        }
+
+        const parsed = event.parsedJson;
+        if (!parsed) {
+          continue;
+        }
+
+        const eventDomain = decodeVector(parsed.domain).decoded;
+        if (eventDomain.toLowerCase() === domain.toLowerCase()) {
+          const adminWallet = safeAddress(parsed.admin_wallet);
+          return adminWallet || null;
+        }
       }
 
-      const eventDomain = decodeVector(parsed.domain).decoded;
-      if (eventDomain === domain) {
-        const adminWallet = safeAddress(parsed.admin_wallet);
-        return adminWallet || null;
-      }
-    }
-
-    cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-  } while (cursor);
+      cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
+    } while (cursor);
+  }
 
   return null;
 }
@@ -541,58 +567,68 @@ type StatusPoint = {
 function sameDomain(eventDomainValue: unknown, domain: string | null): boolean {
   if (!domain) return false;
   const fromEvent = decodeVector(eventDomainValue).decoded;
-  return fromEvent === domain;
+  return fromEvent.toLowerCase() === domain.toLowerCase();
 }
 
 async function findLatestStatusPoint(params: {
-  eventType: string;
+  eventTypes: string[];
   userWallet: string;
   domain: string | null;
   attestationTimestampMs: number;
   enabled: boolean;
 }): Promise<StatusPoint | null> {
-  let cursor: SuiEventCursor | null = null;
+  let latest: StatusPoint | null = null;
 
-  do {
-    const page: SuiEventPage = await suiRpcCall<SuiEventPage>("suix_queryEvents", [
-      {
-        MoveEventType: params.eventType,
-      },
-      cursor,
-      50,
-      true,
-    ]);
+  for (const eventType of params.eventTypes) {
+    let cursor: SuiEventCursor | null = null;
 
-    for (const event of page.data ?? []) {
-      const parsed = event.parsedJson;
-      const timestamp = Number(event.timestampMs ?? 0);
-      if (!parsed || !Number.isFinite(timestamp) || timestamp <= 0) {
-        continue;
+    do {
+      const page: SuiEventPage = await suiRpcCall<SuiEventPage>("suix_queryEvents", [
+        {
+          MoveEventType: eventType,
+        },
+        cursor,
+        50,
+        true,
+      ]);
+
+      for (const event of page.data ?? []) {
+        if (!isAllowedPackageId(event.packageId) || !matchesExpectedEventType(event, eventType)) {
+          continue;
+        }
+
+        const parsed = event.parsedJson;
+        const timestamp = Number(event.timestampMs ?? 0);
+        if (!parsed || !Number.isFinite(timestamp) || timestamp <= 0) {
+          continue;
+        }
+
+        if (timestamp > params.attestationTimestampMs) {
+          continue;
+        }
+
+        const userWallet = safeAddress(parsed.user_wallet);
+        if (userWallet.toLowerCase() !== params.userWallet.toLowerCase()) {
+          continue;
+        }
+
+        if (!sameDomain(parsed.domain, params.domain)) {
+          continue;
+        }
+
+        if (!latest || timestamp > latest.timestampMs) {
+          latest = {
+            enabled: params.enabled,
+            timestampMs: timestamp,
+          };
+        }
       }
 
-      if (timestamp > params.attestationTimestampMs) {
-        continue;
-      }
+      cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
+    } while (cursor);
+  }
 
-      const userWallet = safeAddress(parsed.user_wallet);
-      if (userWallet.toLowerCase() !== params.userWallet.toLowerCase()) {
-        continue;
-      }
-
-      if (!sameDomain(parsed.domain, params.domain)) {
-        continue;
-      }
-
-      return {
-        enabled: params.enabled,
-        timestampMs: timestamp,
-      };
-    }
-
-    cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-  } while (cursor);
-
-  return null;
+  return latest;
 }
 
 async function getEnabledAtAttestation(params: {
@@ -606,14 +642,14 @@ async function getEnabledAtAttestation(params: {
 
   const [enabledPoint, disabledPoint] = await Promise.all([
     findLatestStatusPoint({
-      eventType: USER_ENABLED_EVENT_TYPE,
+      eventTypes: USER_ENABLED_EVENT_TYPES,
       userWallet: params.userWallet,
       domain: params.domain,
       attestationTimestampMs: params.attestationTimestampMs,
       enabled: true,
     }),
     findLatestStatusPoint({
-      eventType: USER_DISABLED_EVENT_TYPE,
+      eventTypes: USER_DISABLED_EVENT_TYPES,
       userWallet: params.userWallet,
       domain: params.domain,
       attestationTimestampMs: params.attestationTimestampMs,
@@ -842,6 +878,9 @@ export async function getWalletAttestationsByWallet(options: {
         if (!isAllowedPackageId(event.packageId)) {
           continue;
         }
+        if (!matchesExpectedEventType(event, eventType)) {
+          continue;
+        }
         if (!matchesWallet(event, wallet)) {
           continue;
         }
@@ -931,6 +970,9 @@ export async function verifyPhotoHash(options: {
         if (!isAllowedPackageId(event.packageId)) {
           continue;
         }
+        if (!matchesExpectedEventType(event, eventType)) {
+          continue;
+        }
 
         const parsed = event.parsedJson;
         const eventPhotoHash = decodePhotoHash(parsed?.photo_hash);
@@ -1000,6 +1042,9 @@ export async function verifyFileHash(options: {
 
       for (const event of page.data ?? []) {
         if (!isAllowedPackageId(event.packageId)) {
+          continue;
+        }
+        if (!matchesExpectedEventType(event, eventType)) {
           continue;
         }
 
