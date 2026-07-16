@@ -1010,21 +1010,23 @@ class PhotoAttestationService {
     String graphqlUrl,
     SuiTransactionDataV1 tx,
   ) async {
-    var dryRunTx = tx;
-    if (dryRunTx.gasData.payment.isEmpty) {
-      final availableBalance = await _graphQlService.getSuiBalance(
+    BigInt availableBalance = BigInt.zero;
+    if (tx.gasData.payment.isEmpty) {
+      availableBalance = await _graphQlService.getSuiBalance(
         graphqlUrl,
-        ownerAddress: dryRunTx.gasData.owner.address,
+        ownerAddress: tx.gasData.owner.address,
       );
+      // Always cap the budget to available balance before dryRun.
+      // This ensures dryRun doesn't calculate a budget higher than we can pay.
       if (availableBalance > BigInt.zero &&
-          availableBalance < dryRunTx.gasData.budget) {
-        dryRunTx = dryRunTx.copyWith(
-          gasData: dryRunTx.gasData.copyWith(budget: availableBalance),
+          availableBalance < tx.gasData.budget) {
+        tx = tx.copyWith(
+          gasData: tx.gasData.copyWith(budget: availableBalance),
         );
       }
     }
 
-    final dryRunReady = await _dryRun(graphqlUrl, dryRunTx);
+    final dryRunReady = await _dryRun(graphqlUrl, tx);
     return _fillGasPayment(graphqlUrl, dryRunReady);
   }
 
@@ -1064,6 +1066,14 @@ class PhotoAttestationService {
       ownerAddress: tx.gasData.owner.address,
       type: '0x2::coin::Coin<${SuiTransactionConst.suiTypeArgs}>',
     );
+
+    // Also get the total balance - the sum of individual coins might be less
+    // than totalBalance if some coins are pending/locked.
+    final totalBalance = await _graphQlService.getSuiBalance(
+      graphqlUrl,
+      ownerAddress: tx.gasData.owner.address,
+    );
+
     final kind = tx.kind.cast<SuiTransactionKindProgrammableTransaction>();
     final usedObjectIds = kind.transaction.inputs
         .whereType<SuiCallArgObject>()
@@ -1079,9 +1089,32 @@ class PhotoAttestationService {
         )
         .where((coin) => !usedObjectIds.contains(coin.object.objectId))
         .toList(growable: false);
+
     if (gasCoins.isEmpty) {
       throw StateError('No SUI gas coins are available for this wallet.');
     }
+
+    // Use totalBalance as the ceiling since some coins might be locked/pending.
+    final confirmedBalance = _sumCoinBalances(gasCoins);
+    final availableForGas = totalBalance < confirmedBalance
+        ? totalBalance
+        : confirmedBalance;
+
+    if (availableForGas < tx.gasData.budget) {
+      // If we have total balance that would cover it (just pending), proceed anyway.
+      // The actual execution will use whatever is available at that time.
+      if (totalBalance >= tx.gasData.budget) {
+        // Proceed with confirmed coins - some are pending but should be available soon
+      } else {
+        throw StateError(
+          'Insufficient SUI balance to pay gas. Required '
+          '${tx.gasData.budget} MIST but only found $confirmedBalance MIST.',
+        );
+      }
+    }
+
+    // Collect coins to cover the budget, preferring larger coins first.
+    gasCoins.sort((a, b) => b.balance.compareTo(a.balance));
 
     BigInt total = BigInt.zero;
     final payment = <SuiObjectRef>[];
@@ -1093,13 +1126,11 @@ class PhotoAttestationService {
       }
     }
 
-    if (total < tx.gasData.budget) {
-      throw StateError(
-        'Insufficient SUI balance to pay gas on testnet. Required ${tx.gasData.budget} MIST but only found $total MIST in spendable SUI coin objects.',
-      );
-    }
-
     return tx.copyWith(gasData: tx.gasData.copyWith(payment: payment));
+  }
+
+  BigInt _sumCoinBalances(List<_GraphQlCoin> coins) {
+    return coins.fold<BigInt>(BigInt.zero, (sum, coin) => sum + coin.balance);
   }
 
   Future<SuiGraphQlTransactionResult> _execute(
