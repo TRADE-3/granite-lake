@@ -1278,6 +1278,7 @@ class EmployeeRecord {
     required this.createdAt,
     required this.updatedAt,
     required this.isPlaceholder,
+    required this.walletAddress,
   });
 
   factory EmployeeRecord.fromJson(Map<String, dynamic> json) {
@@ -1291,6 +1292,7 @@ class EmployeeRecord {
       createdAt: DateTime.parse(json['createdAt'] as String).toUtc(),
       updatedAt: DateTime.parse(json['updatedAt'] as String).toUtc(),
       isPlaceholder: json['isPlaceholder'] as bool? ?? false,
+      walletAddress: json['walletAddress'] as String? ?? '',
     );
   }
 
@@ -1303,6 +1305,7 @@ class EmployeeRecord {
   final DateTime createdAt;
   final DateTime updatedAt;
   final bool isPlaceholder;
+  final String walletAddress;
 }
 
 class DeviceRegistrationRecord {

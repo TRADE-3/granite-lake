@@ -38,6 +38,9 @@ class Migrations {
         case 8:
           await _upgradeToVersionEight(db);
           break;
+        case 9:
+          await _upgradeToVersionNine(db);
+          break;
         default:
           throw UnsupportedError(
             'No migration registered for database version $version.',
@@ -261,6 +264,12 @@ class Migrations {
       FROM ${GraniteLakeDatabaseService.capturesTable}
       WHERE lower(COALESCE(asset_type, 'photo')) = 'file'
     ''');
+  }
+
+  static Future<void> _upgradeToVersionNine(Database db) async {
+    await db.execute(
+      "ALTER TABLE ${GraniteLakeDatabaseService.employeesTable} ADD COLUMN wallet_address TEXT NOT NULL DEFAULT ''",
+    );
   }
 
   static Future<void> _createPhotoCapturesTable(Database db) async {

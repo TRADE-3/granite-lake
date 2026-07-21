@@ -35,6 +35,7 @@ class EmployeeDataController {
   Future<void> saveClaimedEmployee({
     required String employeeId,
     required String companyDomain,
+    required String walletAddress,
   }) async {
     final normalizedEmployeeId = employeeId.trim();
     final normalizedDomain = companyDomain.trim();
@@ -55,11 +56,16 @@ class EmployeeDataController {
       'is_placeholder': 0,
       'created_at': createdAt,
       'updated_at': now,
+      'wallet_address': walletAddress,
     });
   }
 
   Future<void> clear() {
     return _employeeDao.deleteAll();
+  }
+
+  Future<void> updateWalletAddress(String walletAddress) {
+    return _employeeDao.updateWalletAddress(walletAddress);
   }
 
   Map<String, dynamic> _toAppShape(Map<String, dynamic> row) {
@@ -73,6 +79,7 @@ class EmployeeDataController {
       'createdAt': row['created_at'],
       'updatedAt': row['updated_at'],
       'isPlaceholder': (row['is_placeholder'] as int? ?? 0) == 1,
+      'walletAddress': row['wallet_address'] as String? ?? '',
     };
   }
 

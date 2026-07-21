@@ -43,4 +43,11 @@ class EmployeeDao {
     final database = await _databaseService.database;
     await database.delete(GraniteLakeDatabaseService.employeesTable);
   }
+
+  Future<void> updateWalletAddress(String walletAddress) async {
+    final database = await _databaseService.database;
+    await database.update(GraniteLakeDatabaseService.employeesTable, {
+      'wallet_address': walletAddress,
+    });
+  }
 }

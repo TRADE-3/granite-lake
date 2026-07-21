@@ -278,6 +278,7 @@ class GraniteLakeController extends ChangeNotifier {
       await _dataControllers.employee.saveClaimedEmployee(
         employeeId: normalizedUserId,
         companyDomain: normalizedDomain,
+        walletAddress: identity.walletAddress,
       );
       _photoAttestationClaim = claim;
       _employee = EmployeeRecord.fromJson(
@@ -859,6 +860,19 @@ class GraniteLakeController extends ChangeNotifier {
     _employee = employeeRow == null
         ? null
         : EmployeeRecord.fromJson(employeeRow);
+
+    // Sync wallet address for existing employees if identity exists but employee doesn't have wallet
+    if (_employee != null &&
+        _identity != null &&
+        _employee!.walletAddress.isEmpty) {
+      await _dataControllers.employee.updateWalletAddress(
+        _identity!.walletAddress,
+      );
+      final updatedRow = await _dataControllers.employee.loadPrimaryEmployee();
+      _employee = updatedRow == null
+          ? null
+          : EmployeeRecord.fromJson(updatedRow);
+    }
     _projects = projectRows.map(ProjectRecord.fromJson).toList(growable: false)
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     _photoCaptureHistory =
