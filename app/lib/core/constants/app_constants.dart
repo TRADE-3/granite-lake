@@ -1,3 +1,14 @@
+import 'dart:convert';
+
+/// A single domain's backend routing + credential, resolved from
+/// [AppConstants.otpBackendConfigs].
+class DomainBackendConfig {
+  const DomainBackendConfig({required this.url, required this.apiKey});
+
+  final String url;
+  final String apiKey;
+}
+
 abstract final class AppConstants {
   // ── App meta ───────────────────────────────────────────────────────────────
   static const String appName = 'GRANITE LAKE';
@@ -33,32 +44,83 @@ abstract final class AppConstants {
 
   // OTP / UTC backend configuration.
   //
-  // Production builds MUST set GL_OTP_BACKEND_URL. The resolver in
-  // `core/utils/utils.dart` will refuse to talk to any other host.
+  // One backend stack is deployed per domain, so production builds embed a
+  // per-domain map of {url, apiKey} rather than a single URL. Production
+  // builds MUST set GL_OTP_BACKEND_MAP. The resolver in
+  // `core/utils/utils.dart` will refuse to talk to any domain not present in
+  // this map.
   //
-  // Security: The connection is secured by TLS (HTTPS). Make sure the server
-  // uses a valid TLS certificate.
+  // Security: Phase 1 only. The connection is secured by TLS (HTTPS), and
+  // apiKey stops opportunistic/scripted callers, but a value embedded in a
+  // compiled app is extractable via decompilation or by proxying the app's
+  // own traffic \u2014 it does not prove a request came from an unmodified,
+  // legitimate copy of the app. See granite-lake-app-auth-design.md at the
+  // repo root for the Phase 2 (device attestation) follow-up.
+  //
+  // Pass this via `--dart-define-from-file=<gitignored-json>` rather than
+  // inline on the command line, so the values don't land in shell history,
+  // `ps aux` output, or CI logs.
   //
   // For local development, enable dev fallbacks:
   //   --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true
-  static const String defaultOtpBackendBaseUrl = String.fromEnvironment(
-    'GL_OTP_BACKEND_URL',
+  //   --dart-define=GL_OTP_BACKEND_DEV_API_KEY=<key matching local server .env>
+  static const String _rawOtpBackendMap = String.fromEnvironment(
+    'GL_OTP_BACKEND_MAP',
     defaultValue: '',
   );
   static const bool otpBackendDevFallbacksEnabled = bool.fromEnvironment(
     'GL_OTP_BACKEND_DEV_FALLBACKS',
     defaultValue: false,
   );
+  static const String otpBackendDevApiKey = String.fromEnvironment(
+    'GL_OTP_BACKEND_DEV_API_KEY',
+    defaultValue: '',
+  );
 
   /// Bump this whenever the resolver contract changes. The resolver compares it
   /// to a value stored in secure storage and forces a re-resolution on mismatch.
-  static const int otpBackendAppBuildVersion = 1;
+  static const int otpBackendAppBuildVersion = 2;
 
-  static String get otpBackendBaseUrl {
-    return defaultOtpBackendBaseUrl.trim().replaceAll(
-      RegExp(r'["}\s\u2060\uFEFF]+$'),
-      '',
-    );
+  /// Per-domain backend config parsed from [_rawOtpBackendMap], keyed by
+  /// lowercased, trimmed domain. Example shape:
+  /// `{"acme.com":{"url":"https://acme-api.example.com","apiKey":"..."}}`.
+  static Map<String, DomainBackendConfig> get otpBackendConfigs {
+    final cleaned = _rawOtpBackendMap.trim();
+    if (cleaned.isEmpty) {
+      return const {};
+    }
+
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(cleaned);
+    } on FormatException {
+      return const {};
+    }
+
+    if (decoded is! Map<String, dynamic>) {
+      return const {};
+    }
+
+    final result = <String, DomainBackendConfig>{};
+    for (final entry in decoded.entries) {
+      final value = entry.value;
+      if (value is! Map<String, dynamic>) {
+        continue;
+      }
+
+      final url = (value['url'] as String? ?? '').trim();
+      final apiKey = (value['apiKey'] as String? ?? '').trim();
+      if (url.isEmpty || apiKey.isEmpty) {
+        continue;
+      }
+
+      result[entry.key.trim().toLowerCase()] = DomainBackendConfig(
+        url: url,
+        apiKey: apiKey,
+      );
+    }
+
+    return result;
   }
 
   static const String defaultPhotoAttestationModule = 'photo_attestation';

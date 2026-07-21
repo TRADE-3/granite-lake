@@ -4,6 +4,7 @@ process.env.DOMAIN = "acme.com";
 process.env.CLIENT_ID = "acme";
 process.env.ADMIN_WALLET = "0xabc";
 process.env.ADMIN_API_KEY = "admin-key";
+process.env.APP_API_KEY = "app-key";
 process.env.SUI_NETWORK = "testnet";
 process.env.SUI_RPC_URL = "https://fullnode.testnet.sui.io:443";
 process.env.SUI_PRIVATE_KEY = "suiprivkey-test";

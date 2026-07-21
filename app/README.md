@@ -64,39 +64,45 @@ Config sync logic lives in:
 
 ## Backend URL Configuration
 
-The app needs to know the backend API URL to connect for OTP verification and UTC time.
+The app needs to know the backend API URL and app API key to connect for OTP verification and UTC time. Because each domain is deployed as its own backend stack (see `server/README.md`), the app is built with a per-domain map rather than a single URL, keyed by the company domain the user enters at registration.
 
 ### Build Arguments
 
-| Argument                       | Required         | Description                                                   |
-| ------------------------------ | ---------------- | ------------------------------------------------------------- |
-| `GL_OTP_BACKEND_URL`           | Yes (production) | Backend API URL (e.g., `https://api.example.com`)             |
-| `GL_OTP_BACKEND_DEV_FALLBACKS` | No               | Enable localhost fallback for development (`true` or `false`) |
+| Argument                       | Required         | Description                                                                                                                            |
+| ------------------------------ | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `GL_OTP_BACKEND_MAP`           | Yes (production) | JSON object mapping domain to `{"url": ..., "apiKey": ...}`, e.g. `{"acme.com":{"url":"https://acme-api.example.com","apiKey":"..."}}` |
+| `GL_OTP_BACKEND_DEV_FALLBACKS` | No               | Enable localhost fallback for development (`true` or `false`)                                                                          |
+| `GL_OTP_BACKEND_DEV_API_KEY`   | No               | App API key to send with localhost fallback requests, matching the local server's `APP_API_KEY`                                        |
+
+Pass `GL_OTP_BACKEND_MAP` via `--dart-define-from-file=<path>` pointing at a **gitignored** JSON file, not inline on the command line — inline values land in shell history, `ps aux` output during the build, and CI logs. The file just needs a top-level `GL_OTP_BACKEND_MAP` key whose value is the JSON string above.
 
 ### Build Examples
 
 ```bash
-# Production build
-flutter build apk --dart-define=GL_OTP_BACKEND_URL=https://api.example.com
+# Production build (secrets.json is gitignored, contains
+# {"GL_OTP_BACKEND_MAP": "{\"acme.com\":{\"url\":\"https://acme-api.example.com\",\"apiKey\":\"...\"}}"})
+flutter build apk --dart-define-from-file=secrets.json
 
 # Development build with localhost fallback
-flutter build apk --dart-define=GL_OTP_BACKEND_URL=http://10.0.2.2:8080 --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true
+flutter build apk --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true --dart-define=GL_OTP_BACKEND_DEV_API_KEY=<key matching local server APP_API_KEY>
 ```
 
 ### URL Resolution
 
-The app resolves the backend URL in this order:
+For the company domain entered at registration, the app resolves candidates in this order:
 
-1. If `GL_OTP_BACKEND_URL` is set, use that URL
-2. In debug mode with `GL_OTP_BACKEND_DEV_FALLBACKS=true`, try:
+1. If the domain has an entry in `GL_OTP_BACKEND_MAP`, use its `url`/`apiKey`
+2. In debug mode with `GL_OTP_BACKEND_DEV_FALLBACKS=true`, also try (paired with `GL_OTP_BACKEND_DEV_API_KEY`):
    - `http://10.0.2.2:8080` (Android emulator host machine)
    - `http://127.0.0.1:8080` (localhost)
+
+A domain with no map entry and no working dev fallback is refused — the app will not talk to an unconfigured backend.
 
 ### Security
 
 The connection is secured by TLS (HTTPS). Ensure your backend is configured with a valid TLS certificate.
 
-The app does not embed any secrets for backend communication. All security is provided by the TLS connection.
+The app sends `apiKey` as an `x-app-api-key` header on every OTP/UTC request, gating out opportunistic/scripted callers. This is a Phase 1, dev/staging-appropriate control, not a durable production one: any value embedded in a compiled app is extractable via decompilation or by proxying the app's own traffic, so it does not prove a request came from an unmodified, legitimate copy of the app, and a decompiled build exposes every domain's key at once. See `granite-lake-app-auth-design.md` at the repo root for the full design and the Phase 2 (device attestation + short-lived session tokens) follow-up.
 
 ## Smart Contract Integration
 
@@ -654,13 +660,31 @@ The strongest next steps would be:
 
 ### Running the App
 
-The app requires the backend API URL to be configured at build time.
+The app requires the backend API URL and app API key to be configured at build time, via `--dart-define-from-file`. **Always run/build through `secrets.json`, even for local development** — it's the same file and the same flag whether you're pointing at your local server or a deployed one, so there's no separate "dev mode" config path to keep in sync with `GL_OTP_BACKEND_MAP`'s per-domain shape.
+
+`secrets.json` lives at `app/secrets.json`, is gitignored (see `.gitignore`), and is never committed. See "Backend URL Configuration" above for its shape. For local development, point the `url` for your domain at your local server instead of a real one:
+
+```json
+{
+  "GL_OTP_BACKEND_MAP": "{\"acme.com\":{\"url\":\"http://10.0.2.2:8080\",\"apiKey\":\"<matches local server APP_API_KEY>\"}}"
+}
+```
+
+- `http://10.0.2.2:8080` — Android emulator (this is the standard alias the emulator uses to reach the host machine's `localhost`; this app is Android-only today, no iOS/desktop targets exist)
+- For a **physical device** on the same network, use your machine's LAN IP instead (e.g. `http://192.168.1.23:8080`), since `10.0.2.2` only resolves inside the emulator
+- `apiKey` must match the `APP_API_KEY` value in `server/.env` for the stack you're pointing at
+
+Make sure the server is running first:
+
+```bash
+cd server
+docker compose --env-file .env up --build -d
+```
 
 #### Quick Start
 
 ```bash
-# With dev fallbacks (connects to localhost)
-flutter run --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true
+flutter run --dart-define-from-file=secrets.json
 ```
 
 #### VS Code Setup (Recommended for Development)
@@ -676,7 +700,7 @@ Create `.vscode/launch.json` in the app folder:
       "request": "launch",
       "type": "dart",
       "program": "lib/main.dart",
-      "args": ["--dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true"]
+      "args": ["--dart-define-from-file=secrets.json"]
     }
   ]
 }
@@ -687,8 +711,10 @@ Then simply press `F5` or run from the debug panel.
 #### Production Build
 
 ```bash
-# Set your production API URL
-flutter build apk --dart-define=GL_OTP_BACKEND_URL=https://api.example.com
+# Before building, swap the url in secrets.json back to the real backend
+# for that domain — it's the same file used for local dev, so it's easy
+# to forget to swap it back.
+flutter build apk --dart-define-from-file=secrets.json
 ```
 
 #### Running on Specific Device
@@ -698,21 +724,7 @@ flutter build apk --dart-define=GL_OTP_BACKEND_URL=https://api.example.com
 flutter devices
 
 # Run on a specific device/emulator
-flutter run -d <device-id> --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true
-```
-
-### Backend Connection
-
-When running with dev fallbacks enabled, the app will try these URLs in order:
-
-1. `http://10.0.2.2:8080` (Android emulator → host machine)
-2. `http://127.0.0.1:8080` (localhost)
-
-Make sure the server is running:
-
-```bash
-cd server
-docker compose up -d
+flutter run -d <device-id> --dart-define-from-file=secrets.json
 ```
 
 ### Troubleshooting
@@ -722,11 +734,18 @@ docker compose up -d
 - Ensure server is running: `docker compose ps`
 - Check server logs: `docker compose logs api`
 - Verify port 8080 is accessible
+- Verify `secrets.json` has an entry for the exact domain you typed at registration (matching is case-insensitive but must be the same domain string)
 
 **Connection refused**
 
-- Android emulator can't access localhost directly - use `10.0.2.2`
-- Physical device needs your machine's IP address
+- Android emulator can't access localhost directly - use `10.0.2.2` in `secrets.json`
+- Physical device needs your machine's LAN IP in `secrets.json`, not `10.0.2.2` or `127.0.0.1`
+
+**401 Unauthorized**
+
+- `apiKey` in `secrets.json` doesn't match `APP_API_KEY` in `server/.env` for the stack you're pointing at — after changing either, rebuild/rerun the app (dart-define values are baked in at build time) and restart the server (see "Environment" in `server/README.md`)
+
+There is still a `GL_OTP_BACKEND_DEV_FALLBACKS=true` / `GL_OTP_BACKEND_DEV_API_KEY=<key>` dart-define pair available as a fallback that tries `10.0.2.2:8080` then `127.0.0.1:8080` automatically in debug builds without needing a `secrets.json` entry for your domain — useful for a quick one-off run, but `secrets.json` is the recommended day-to-day path since it's identical to how the app is actually built for real deployments.
 
 ## Development Notes
 

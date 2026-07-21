@@ -27,6 +27,7 @@ const envSchema = z.object({
   DOMAIN: z.string().min(1),
   ADMIN_WALLET: z.string().min(1),
   ADMIN_API_KEY: z.string().min(1),
+  APP_API_KEY: z.string().min(1),
   POSTGRES_USER: z.string().min(1).default("postgres"),
   POSTGRES_PASSWORD: z.string().min(1).default("postgres"),
   POSTGRES_HOST: z.string().min(1).default("db"),
