@@ -35,6 +35,7 @@ services:
       DOMAIN: ${DOMAIN:-domain.com}
       ADMIN_WALLET: ${ADMIN_WALLET:-0xadmin}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-replace-with-a-long-random-admin-key}
+      APP_API_KEY: ${APP_API_KEY:-replace-with-a-long-random-app-key}
       OTP_TTL_MS: ${OTP_TTL_MS:-300000}
       GOOGLE_CHAT_WEBHOOK_URL: ${GOOGLE_CHAT_WEBHOOK_URL:-}
       SUI_NETWORK: ${SUI_NETWORK:-testnet}
@@ -73,6 +74,7 @@ services:
       DOMAIN: ${DOMAIN:-domain.com}
       ADMIN_WALLET: ${ADMIN_WALLET:-0xadmin}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-replace-with-a-long-random-admin-key}
+      APP_API_KEY: ${APP_API_KEY:-replace-with-a-long-random-app-key}
       OTP_TTL_MS: ${OTP_TTL_MS:-300000}
       GOOGLE_CHAT_WEBHOOK_URL: ${GOOGLE_CHAT_WEBHOOK_URL:-}
       SUI_NETWORK: ${SUI_NETWORK:-testnet}

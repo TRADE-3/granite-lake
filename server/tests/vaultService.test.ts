@@ -10,6 +10,7 @@ const env = {
   DOMAIN: "domain.com",
   ADMIN_WALLET: "0xadmin",
   ADMIN_API_KEY: "admin-key",
+  APP_API_KEY: "app-key",
   POSTGRES_USER: "postgres",
   POSTGRES_PASSWORD: "postgres",
   POSTGRES_HOST: "db",

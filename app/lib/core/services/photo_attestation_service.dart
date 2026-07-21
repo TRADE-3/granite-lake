@@ -144,7 +144,7 @@ class PhotoAttestationException implements Exception {
     }
 
     if (operation == 'claim') {
-      return 'Could not reach the OTP backend. Tried: ${AppUtils.otpBackendTargetsSummary}. Check that the API is running and build with --dart-define=GL_OTP_BACKEND_URL=<reachable_url> when needed.';
+      return 'Could not reach the OTP backend. Check that the API is running and that this app build has a backend configured for your company domain.';
     }
 
     return 'Network access failed. Check your connection and try again.';
@@ -365,12 +365,17 @@ class PhotoAttestationService {
     required String userEmail,
   }) async {
     try {
-      final baseUrl = await AppUtils.resolveOtpBackendBaseUrl();
+      final backendConfig = await AppUtils.resolveOtpBackendConfig(
+        domain: domain,
+      );
 
-      final uri = AppUtils.otpBackendUri(baseUrl, 'otp/request');
+      final uri = AppUtils.otpBackendUri(backendConfig.url, 'otp/request');
       final response = await _httpClient.post(
         uri,
-        headers: const {'Content-Type': 'application/json; charset=utf-8'},
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          AppUtils.appApiKeyHeader: backendConfig.apiKey,
+        },
         body: jsonEncode({'domain': domain, 'user_email': userEmail}),
       );
       final payload = _decodeJsonPayload(response.body);
@@ -408,12 +413,17 @@ class PhotoAttestationService {
     required PhotoAttestationClaimInput input,
   }) async {
     try {
-      final baseUrl = await AppUtils.resolveOtpBackendBaseUrl();
+      final backendConfig = await AppUtils.resolveOtpBackendConfig(
+        domain: input.domain,
+      );
 
-      final uri = AppUtils.otpBackendUri(baseUrl, 'otp/verify');
+      final uri = AppUtils.otpBackendUri(backendConfig.url, 'otp/verify');
       final response = await _httpClient.post(
         uri,
-        headers: const {'Content-Type': 'application/json; charset=utf-8'},
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          AppUtils.appApiKeyHeader: backendConfig.apiKey,
+        },
         body: jsonEncode({
           'userId': input.userId,
           'otp': input.otp,
@@ -1417,7 +1427,7 @@ class PhotoAttestationService {
       }
 
       final targetHint = kDebugMode ? ' URL: $uri' : '';
-      return 'The OTP verification endpoint was not found on the configured backend. Check that GL_OTP_BACKEND_URL points to the Granite Lake API and that the latest API is deployed.$targetHint';
+      return 'The OTP verification endpoint was not found on the configured backend. Check that GL_OTP_BACKEND_MAP has an entry pointing to the Granite Lake API for this domain and that the latest API is deployed.$targetHint';
     }
 
     return backendMessage ?? 'OTP verification failed.';

@@ -1,7 +1,18 @@
 import type { FastifyPluginAsync } from "fastify";
 import { pool } from "../db/pool.js";
+import { requireAppApiKey } from "../utils/auth.js";
 
 export const healthRoutes: FastifyPluginAsync = async (app) => {
+  app.addHook("onRequest", async (request, reply) => {
+    if (!request.url.startsWith("/utc")) {
+      return;
+    }
+
+    if (!requireAppApiKey(request, reply)) {
+      return;
+    }
+  });
+
   app.get("/health", async (_request, reply) => {
     try {
       await pool.query("select 1");

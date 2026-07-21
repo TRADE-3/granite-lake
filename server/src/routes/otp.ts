@@ -3,6 +3,7 @@ import { z } from "zod";
 import { env } from "../config/env.js";
 import { completeOtpSession, createOtpSession, findOtpSession } from "../db/repositories.js";
 import { VaultConnectionError } from "../services/VaultService.js";
+import { requireAppApiKey } from "../utils/auth.js";
 import { RateLimiter, otpRequestLimiter, otpVerifyLimiter, resetAllRateLimiters } from "../utils/rateLimit.js";
 
 // Export for testing
@@ -21,6 +22,12 @@ const otpVerifySchema = z.object({
 });
 
 export const otpRoutes: FastifyPluginAsync = async (app) => {
+  app.addHook("onRequest", async (request, reply) => {
+    if (!requireAppApiKey(request, reply)) {
+      return;
+    }
+  });
+
   // Rate limiting via preHandler - apply to all OTP routes
   app.addHook("preHandler", async (request, reply) => {
     const path = request.url;

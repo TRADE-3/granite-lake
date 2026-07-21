@@ -97,9 +97,18 @@ class _CaptureScreenState extends State<CaptureScreen> {
   @override
   void initState() {
     super.initState();
+    debugPrint('[READINESS] initState @${DateTime.now().toIso8601String()}');
     _startClock();
     unawaited(_loadBuildInfo());
-    unawaited(_refreshCaptureReadiness());
+    // Deferred to a microtask: _refreshCaptureReadiness -> _refreshBackendStatus
+    // calls GraniteLakeScope.of(context), an inherited-widget lookup that
+    // Flutter forbids calling synchronously before initState() returns.
+    // Future.wait's list literal evaluates both branches synchronously, so
+    // calling this directly here throws every time the screen opens
+    // (silently, since nothing awaits it) and only ever succeeds once
+    // something else re-triggers the check later (the 30s timer or a manual
+    // retry) — which read as "network always fails on first load."
+    unawaited(Future.microtask(_refreshCaptureReadiness));
     _prepareCamera();
   }
 
@@ -150,6 +159,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   Future<_LocationSnapshot?> _refreshLocation() async {
+    final sw = Stopwatch()..start();
+    debugPrint(
+      '[READINESS] _refreshLocation start @${DateTime.now().toIso8601String()}',
+    );
     try {
       if (mounted) {
         setState(() {
@@ -160,6 +173,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
       }
 
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      debugPrint(
+        '[READINESS] isLocationServiceEnabled=$serviceEnabled elapsed=${sw.elapsedMilliseconds}ms',
+      );
       if (!serviceEnabled) {
         if (!mounted) {
           return null;
@@ -173,8 +189,14 @@ class _CaptureScreenState extends State<CaptureScreen> {
       }
 
       var permission = await Geolocator.checkPermission();
+      debugPrint(
+        '[READINESS] checkPermission=$permission elapsed=${sw.elapsedMilliseconds}ms',
+      );
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
+        debugPrint(
+          '[READINESS] requestPermission=$permission elapsed=${sw.elapsedMilliseconds}ms',
+        );
       }
 
       if (permission == LocationPermission.denied) {
@@ -201,10 +223,16 @@ class _CaptureScreenState extends State<CaptureScreen> {
         return null;
       }
 
+      debugPrint(
+        '[READINESS] calling getCurrentPosition elapsed=${sw.elapsedMilliseconds}ms',
+      );
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
         ),
+      );
+      debugPrint(
+        '[READINESS] getCurrentPosition -> lat=${position.latitude} lng=${position.longitude} elapsed=${sw.elapsedMilliseconds}ms',
       );
       final snapshot = _LocationSnapshot(
         gpsLabel: _formatPosition(position),
@@ -222,8 +250,14 @@ class _CaptureScreenState extends State<CaptureScreen> {
         _altitudeStatusLabel = snapshot.altitudeLabel;
         _isMockLocationDetected = isMockLocationDetected;
       });
+      debugPrint(
+        '[READINESS] _refreshLocation DONE (success) totalElapsed=${sw.elapsedMilliseconds}ms',
+      );
       return snapshot;
-    } catch (_) {
+    } catch (error, stack) {
+      debugPrint(
+        '[READINESS] _refreshLocation FAILED error=$error (${error.runtimeType}) totalElapsed=${sw.elapsedMilliseconds}ms\n$stack',
+      );
       if (!mounted) {
         return null;
       }
@@ -237,21 +271,47 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   Future<DateTime?> _fetchBackendUtcTimestamp() async {
-    return await AppUtils.fetchBackendUtcTimestamp();
+    final domain = GraniteLakeScope.of(context).employee?.companyDomain;
+    if (domain == null || domain.isEmpty) {
+      return null;
+    }
+    return await AppUtils.fetchBackendUtcTimestamp(domain: domain);
   }
 
   Future<void> _refreshBackendStatus() async {
+    final sw = Stopwatch()..start();
+    debugPrint(
+      '[READINESS] _refreshBackendStatus start @${DateTime.now().toIso8601String()}',
+    );
     if (mounted) {
       setState(() => _networkStatusLabel = 'Checking...');
     }
 
+    final domain = GraniteLakeScope.of(context).employee?.companyDomain;
+    debugPrint(
+      '[READINESS] domain="$domain" elapsed=${sw.elapsedMilliseconds}ms',
+    );
+    if (domain == null || domain.isEmpty) {
+      debugPrint('[READINESS] _refreshBackendStatus: no domain, bailing');
+      if (mounted) {
+        setState(() => _networkStatusLabel = 'Offline');
+      }
+      return;
+    }
+
     try {
-      final connected = await AppUtils.hasBackendConnectivity();
+      final connected = await AppUtils.hasBackendConnectivity(domain: domain);
+      debugPrint(
+        '[READINESS] _refreshBackendStatus DONE connected=$connected totalElapsed=${sw.elapsedMilliseconds}ms',
+      );
       if (!mounted) return;
       setState(() {
         _networkStatusLabel = connected ? 'Connected' : 'Offline';
       });
-    } catch (_) {
+    } catch (error, stack) {
+      debugPrint(
+        '[READINESS] _refreshBackendStatus FAILED error=$error (${error.runtimeType}) totalElapsed=${sw.elapsedMilliseconds}ms\n$stack',
+      );
       if (!mounted) return;
       setState(() {
         _networkStatusLabel = 'Offline';
@@ -260,7 +320,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   Future<void> _refreshCaptureReadiness() async {
+    debugPrint(
+      '[READINESS] _refreshCaptureReadiness start @${DateTime.now().toIso8601String()}',
+    );
     await Future.wait([_refreshLocation(), _refreshBackendStatus()]);
+    debugPrint(
+      '[READINESS] _refreshCaptureReadiness ALL DONE @${DateTime.now().toIso8601String()}',
+    );
   }
 
   Future<void> _prepareCamera() async {

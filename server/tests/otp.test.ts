@@ -4,11 +4,14 @@ process.env.DOMAIN = "acme.com";
 process.env.CLIENT_ID = "acme";
 process.env.ADMIN_WALLET = "0xabc";
 process.env.ADMIN_API_KEY = "admin-key";
+process.env.APP_API_KEY = "app-key";
 process.env.SUI_NETWORK = "testnet";
 process.env.SUI_RPC_URL = "https://fullnode.testnet.sui.io:443";
 process.env.SUI_PRIVATE_KEY = "suiprivkey-test";
 process.env.SUI_PACKAGE_ID = "0xpackage";
 process.env.SUI_REGISTRY_ID = "0xregistry";
+
+const APP_API_KEY_HEADERS = { "x-app-api-key": "app-key" };
 
 const createOtpSession = vi.fn(async (input) => ({
   userId: "user-id-1",
@@ -47,12 +50,60 @@ describe("otp routes", () => {
     resetAllRateLimiters();
   });
 
+  it("rejects requests without an app API key", async () => {
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/otp/request",
+      payload: {
+        domain: "acme.com",
+        user_email: "alice@acme.com",
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({
+      error: "unauthorized",
+      message: "Invalid app API key.",
+    });
+    expect(createOtpSession).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it("rejects requests with an invalid app API key", async () => {
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/otp/verify",
+      headers: { "x-app-api-key": "wrong-key" },
+      payload: {
+        userId: "user-id-1",
+        otp: "123456",
+        domain: "acme.com",
+        userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({
+      error: "unauthorized",
+      message: "Invalid app API key.",
+    });
+    expect(completeOtpSession).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
   it("requests an OTP for a domain email without returning the OTP", async () => {
     const app = await buildApp();
 
     const response = await app.inject({
       method: "POST",
       url: "/otp/request",
+      headers: APP_API_KEY_HEADERS,
       payload: {
         domain: "acme.com",
         user_email: "alice@acme.com",
@@ -82,6 +133,7 @@ describe("otp routes", () => {
       method: "POST",
       url: "/otp/request",
       headers: {
+        ...APP_API_KEY_HEADERS,
         "content-type": "text/plain",
       },
       payload: JSON.stringify({
@@ -107,6 +159,7 @@ describe("otp routes", () => {
       method: "POST",
       url: "/otp/request",
       headers: {
+        ...APP_API_KEY_HEADERS,
         "content-type": "text/plain",
       },
       payload: "not json",
@@ -128,6 +181,7 @@ describe("otp routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/otp/request",
+      headers: APP_API_KEY_HEADERS,
       payload: {
         domain: "acme.com",
         user_email: "alice@example.com",
@@ -152,6 +206,7 @@ describe("otp routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/otp/request",
+      headers: APP_API_KEY_HEADERS,
       payload: {
         domain: "acme.com",
         user_email: "alice@acme.com",
@@ -175,6 +230,7 @@ describe("otp routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/otp/verify",
+      headers: APP_API_KEY_HEADERS,
       payload: {
         userId: "user-id-1",
         otp: "123456",
@@ -206,6 +262,7 @@ describe("otp routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/otp/verify",
+      headers: APP_API_KEY_HEADERS,
       payload: {
         userId: "user-id-1",
         otp: "123456",
@@ -234,6 +291,7 @@ describe("otp routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/otp/verify",
+      headers: APP_API_KEY_HEADERS,
       payload: {
         userId: "user-id-1",
         otp: "123456",
@@ -270,6 +328,7 @@ describe("OTP rate limiting", () => {
       const response = await app.inject({
         method: "POST",
         url: "/otp/request",
+        headers: APP_API_KEY_HEADERS,
         payload: {
           domain: "acme.com",
           user_email: `user${i}@acme.com`,
@@ -293,6 +352,7 @@ describe("OTP rate limiting", () => {
       await app.inject({
         method: "POST",
         url: "/otp/request",
+        headers: APP_API_KEY_HEADERS,
         payload: {
           domain: "acme.com",
           user_email: `user${i}@acme.com`,
@@ -304,6 +364,7 @@ describe("OTP rate limiting", () => {
     const response = await app.inject({
       method: "POST",
       url: "/otp/request",
+      headers: APP_API_KEY_HEADERS,
       payload: {
         domain: "acme.com",
         user_email: "another@acme.com",
@@ -346,6 +407,7 @@ describe("OTP rate limiting", () => {
       await app.inject({
         method: "POST",
         url: "/otp/verify",
+        headers: APP_API_KEY_HEADERS,
         payload: {
           userId: "user-verify-test",
           otp: "wrong-otp",
@@ -359,6 +421,7 @@ describe("OTP rate limiting", () => {
     const response = await app.inject({
       method: "POST",
       url: "/otp/verify",
+      headers: APP_API_KEY_HEADERS,
       payload: {
         userId: "user-verify-test",
         otp: "wrong-otp-2",

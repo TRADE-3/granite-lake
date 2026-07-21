@@ -40,6 +40,7 @@ CLIENT_ID=acme
 DOMAIN=acme.com
 ADMIN_WALLET=0x...
 ADMIN_API_KEY=<admin-api-key>
+APP_API_KEY=<app-api-key>
 GOOGLE_CHAT_WEBHOOK_URL=<google-chat-webhook-url>
 SUI_RPC_URL=https://fullnode.testnet.sui.io:443
 SUI_PRIVATE_KEY=<domain-admin-suiprivkey-or-vault-ref>
@@ -72,6 +73,18 @@ VAULT_SECRET_PREFIX=
 ### OTP Delivery
 
 OTP codes are currently posted to a Google Chat incoming webhook using `GOOGLE_CHAT_WEBHOOK_URL`. This is a temporary delivery path until the paid email service is available. The API still requires `user_email` so it can validate the user belongs to the configured domain and record the verified user identity.
+
+## App Authentication
+
+`APP_API_KEY` gates `/otp/request`, `/otp/verify`, `/otp/:userId`, and `/utc` via an `x-app-api-key` header. It is separate from `ADMIN_API_KEY`, which protects the operator-only `/admin/*` routes. `/health` stays public and requires no credential, so deployment/uptime checks keep working.
+
+Requests missing the header, or sending the wrong value, get a `401`:
+
+```json
+{ "error": "unauthorized", "message": "Invalid app API key." }
+```
+
+This is a Phase 1, dev/staging-appropriate control: it stops opportunistic and scripted abuse, but a static key embedded in the mobile app is extractable from a decompiled build or by proxying the app's own traffic, so it does not prove a request came from an unmodified, legitimate copy of the app. Each per-domain stack should get its own distinct `APP_API_KEY`, matching the corresponding entry in the app's build-time domain configuration. See `granite-lake-app-auth-design.md` at the repo root for the full design, including the Phase 2 (device attestation + short-lived session tokens) follow-up and why it requires Play Store distribution to provide its full guarantee.
 
 ## HashiCorp Vault Secrets
 
