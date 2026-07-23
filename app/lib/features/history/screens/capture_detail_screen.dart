@@ -668,10 +668,13 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
         !verification.isPending) {
       return ('FAILED', AppColors.statusError);
     }
+    if (verification?.isPending == true) {
+      return ('PENDING', AppColors.primary);
+    }
     if (record.isAttestationAnchored) {
       return ('ANCHORED', AppColors.statusActive);
     }
-    if (verification?.isPending == true || record.isAttestationPending) {
+    if (record.isAttestationPending) {
       return ('PENDING', AppColors.primary);
     }
     return ('FAILED', AppColors.statusError);

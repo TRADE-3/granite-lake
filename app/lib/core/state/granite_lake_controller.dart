@@ -1235,14 +1235,25 @@ class GraniteLakeController extends ChangeNotifier {
         return;
       }
       _clearVerificationRetry(capture.captureId);
+      // Reaching this catch block means the verification round-trip itself
+      // never completed (network error, timeout, indexer lag, etc.) — it is
+      // not evidence the on-chain attestation failed. A genuine on-chain
+      // failure comes back as a normal (non-throwing) result with
+      // transactionStatus != 'SUCCESS', handled separately above. So we
+      // leave this as pending rather than flipping it to a hard "failed",
+      // which previously caused the status to flash failed on every
+      // exhausted retry even when the device simply had no connection.
       _attestationVerifications = {
         ..._attestationVerifications,
         capture.captureId: AttestationChainVerificationRecord(
-          state: AttestationChainVerificationState.failed,
+          state: AttestationChainVerificationState.pending,
           checkedAt: DateTime.now().toUtc(),
           transactionDigest: capture.suiTxDigest,
           transactionStatus: capture.suiSubmissionStatus,
-          failureReason: '$error',
+          failureReason:
+              'Could not reach the network to verify this attestation. '
+              'It will be re-checked automatically once a connection is '
+              'available. ($error)',
         ),
       };
     }
@@ -1267,7 +1278,7 @@ class GraniteLakeController extends ChangeNotifier {
   bool _scheduleVerificationRetry(AttestationRecord capture) {
     final captureId = capture.captureId;
     final attempt = (_verificationRetryCounts[captureId] ?? 0) + 1;
-    const maxAttempts = 3;
+    const maxAttempts = 5;
     if (attempt > maxAttempts) {
       return false;
     }
@@ -1276,7 +1287,7 @@ class GraniteLakeController extends ChangeNotifier {
       captureId: attempt,
     };
 
-    final delay = Duration(seconds: attempt * 2);
+    final delay = Duration(seconds: attempt * 3);
     Future<void>.delayed(delay, () async {
       final latest = _attestationHistory
           .where((item) => item.captureId == captureId)
