@@ -358,7 +358,13 @@ class SuiGraphQlService {
       variables: {'digest': digest},
     );
 
-    return _parseTransactionNode(_asMap(data['transaction']));
+    final transactionNode = data['transaction'];
+    if (transactionNode == null) {
+      throw StateError(
+        'Transaction not found for digest $digest. It may not be indexed yet.',
+      );
+    }
+    return _parseTransactionNode(_asMap(transactionNode));
   }
 
   Future<SuiGraphQlTransactionResult> simulateTransaction(
