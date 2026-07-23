@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -18,6 +20,22 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   bool _isDeletingAccount = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Deferred to a microtask: GraniteLakeScope.of(context) is an
+    // inherited-widget lookup that Flutter forbids calling synchronously
+    // before initState() returns.
+    unawaited(Future.microtask(_refreshWalletBalance));
+  }
+
+  Future<void> _refreshWalletBalance() async {
+    if (!mounted) {
+      return;
+    }
+    await GraniteLakeScope.of(context).refreshWalletSuiBalance();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -78,6 +96,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
             createdAt: createdAt,
             biometricLabel:
                 binding?.modalitiesLabel ?? 'Awaiting biometric bind',
+          ),
+          const SizedBox(height: 22),
+          const _SectionLabel('Wallet Balance'),
+          const SizedBox(height: 10),
+          _Panel(
+            child: _WalletBalanceTile(
+              suiBalance: controller.walletSuiBalanceSui,
+              isRefreshing: controller.isRefreshingWalletSuiBalance,
+              hasEnoughForAttestation: controller.hasEnoughSuiForAttestation,
+              hasWallet: identity != null,
+              onRefresh: () => controller.refreshWalletSuiBalance(force: true),
+            ),
           ),
           const SizedBox(height: 22),
           const _SectionLabel('Session Protocol'),
@@ -504,6 +534,108 @@ class _ProfileHeaderCard extends StatelessWidget {
   }
 }
 
+class _WalletBalanceTile extends StatelessWidget {
+  const _WalletBalanceTile({
+    required this.suiBalance,
+    required this.isRefreshing,
+    required this.hasEnoughForAttestation,
+    required this.hasWallet,
+    required this.onRefresh,
+  });
+
+  final double? suiBalance;
+  final bool isRefreshing;
+  final bool hasEnoughForAttestation;
+  final bool hasWallet;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final showLowBalanceWarning =
+        hasWallet && suiBalance != null && !hasEnoughForAttestation;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: AppColors.statusActive.withAlpha(18),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(
+                Icons.account_balance_wallet_outlined,
+                color: AppColors.statusActive,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'SUI Balance',
+                    style: AppTextStyles.headlineMedium.copyWith(fontSize: 18),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    hasWallet
+                        ? _formatSuiBalance(suiBalance)
+                        : 'Wallet not provisioned',
+                    style: AppTextStyles.labelLarge.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (isRefreshing)
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            else
+              IconButton(
+                onPressed: hasWallet ? onRefresh : null,
+                icon: const Icon(Icons.refresh_rounded),
+                color: AppColors.textSecondary,
+                tooltip: 'Refresh balance',
+                visualDensity: VisualDensity.compact,
+              ),
+          ],
+        ),
+        if (showLowBalanceWarning) ...[
+          const SizedBox(height: 16),
+          Divider(height: 1, color: AppColors.border),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              const Icon(
+                Icons.warning_amber_rounded,
+                color: Color(0xFFFFB347),
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Balance is too low to cover attestation gas fees.',
+                  style: AppTextStyles.labelLarge.copyWith(
+                    color: const Color(0xFFFFB347),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+}
+
 class _ThemePreferenceTile extends StatelessWidget {
   const _ThemePreferenceTile({
     required this.isDarkMode,
@@ -813,6 +945,13 @@ String _formatRemainingSession(Duration value) {
   final minutes = bounded.inMinutes;
   final seconds = bounded.inSeconds.remainder(60);
   return '${minutes.toString().padLeft(2, '0')}m ${seconds.toString().padLeft(2, '0')}s';
+}
+
+String _formatSuiBalance(double? sui) {
+  if (sui == null) {
+    return 'Fetching balance…';
+  }
+  return '${sui.toStringAsFixed(4)} SUI';
 }
 
 String _employeeId(IdentityRecord? identity) {
