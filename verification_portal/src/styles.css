@@ -1,38 +1,38 @@
-@import url('https://fonts.googleapis.com/css2?family=Raleway:wght@600;700;800&family=Karla:wght@400;500;600;700&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Raleway:wght@600;700;800&family=Karla:wght@400;500;600;700&display=swap");
 
 :root {
   /* Cream Scale (Light Background) */
-  --bg: #FDF5EF;
-  --panel: #FFFFFF;
-  --panel-soft: #FAE9DA;
+  --bg: #fdf5ef;
+  --panel: #ffffff;
+  --panel-soft: #fae9da;
   /* Navy Scale (Text) */
   --text: #060430;
-  --muted: #4A4870;
+  --muted: #4a4870;
   /* Brand Accents */
-  --accent: #3B128D;
-  --accent-strong: #6A35C5;
+  --accent: #3b128d;
+  --accent-strong: #6a35c5;
   --ok: #059669;
-  --warn: #F75835;
-  --error: #DC2626;
-  --edge: #F5D7BF;
+  --warn: #f75835;
+  --error: #dc2626;
+  --edge: #f5d7bf;
   --shadow: 0 14px 40px rgba(6, 4, 48, 0.06);
 }
 
 :root[data-theme="dark"] {
   /* Navy Scale (Dark Background) */
   --bg: #060430;
-  --panel: #0B0840;
-  --panel-soft: #10093A;
+  --panel: #0b0840;
+  --panel-soft: #10093a;
   /* Light Text */
-  --text: #EEEDF8;
-  --muted: #9997C5;
+  --text: #eeedf8;
+  --muted: #9997c5;
   /* Brand Accents */
-  --accent: #8F61D9;
-  --accent-strong: #B898E9;
-  --ok: #10B981;
-  --warn: #FB6E4C;
-  --error: #EF4444;
-  --edge: #1A1660;
+  --accent: #8f61d9;
+  --accent-strong: #b898e9;
+  --ok: #10b981;
+  --warn: #fb6e4c;
+  --error: #ef4444;
+  --edge: #1a1660;
   --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
 }
 
@@ -65,7 +65,7 @@ code {
 .shell {
   width: min(100%, 1040px);
   margin-inline: auto;
-  padding: 28px 18px 34px;
+  padding: 18px 18px 20px;
 }
 
 .panel {
@@ -76,11 +76,23 @@ code {
 }
 
 .hero {
-  padding: 24px 24px 20px;
-  margin-bottom: 18px;
+  padding: 16px 24px 14px;
+  margin-bottom: 12px;
 }
 
-.hero-top {
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--panel);
+  border-bottom: 1px solid var(--edge);
+}
+
+.site-header-inner {
+  width: min(100%, 1040px);
+  margin-inline: auto;
+  padding: 0 18px;
+  height: 64px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -132,19 +144,36 @@ code {
   transform: translateX(18px);
 }
 
-.eyebrow {
-  margin: 0;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  color: var(--warn);
-  font-size: 0.74rem;
-  font-weight: 700;
+.logo-wordmark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: "Raleway", sans-serif;
+  font-weight: 800;
+  font-size: 1.1rem;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+
+.logo-mark {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  font-family: "Raleway", sans-serif;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: -0.05em;
 }
 
 .hero h1 {
-  margin: 10px 0;
+  margin: 6px 0;
   font-family: "Raleway", sans-serif;
-  font-size: clamp(1.8rem, 4vw, 2.5rem);
+  font-size: clamp(1.6rem, 3.2vw, 2.1rem);
   font-weight: 800;
   letter-spacing: -0.04em;
   line-height: 1.05;
@@ -153,14 +182,14 @@ code {
 .hero p {
   margin: 0;
   color: var(--muted);
-  line-height: 1.65;
-  font-size: 1rem;
+  line-height: 1.5;
+  font-size: 0.95rem;
 }
 
 .tab-switcher {
   display: inline-flex;
   gap: 8px;
-  margin-top: 16px;
+  margin-top: 10px;
   padding: 6px;
   border: 1px solid var(--edge);
   border-radius: 999px;
@@ -175,7 +204,7 @@ code {
   color: var(--muted);
   font: inherit;
   font-weight: 700;
-  padding: 10px 16px;
+  padding: 8px 14px;
   cursor: pointer;
   letter-spacing: 0.01em;
   transition: all 0.2s ease;
@@ -200,7 +229,7 @@ code {
 
 .form-panel,
 .result-panel {
-  padding: 24px;
+  padding: 18px;
 }
 
 .form-panel {
@@ -218,8 +247,8 @@ code {
 .field {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 20px;
+  gap: 6px;
+  margin-bottom: 12px;
 }
 
 .field-hash code {
@@ -238,8 +267,8 @@ code {
   border: 1.5px dashed var(--edge);
   background: var(--panel-soft);
   border-radius: 12px;
-  min-height: 98px;
-  padding: 12px;
+  min-height: 64px;
+  padding: 10px;
   display: grid;
   place-items: center;
   text-align: center;
@@ -264,7 +293,9 @@ code {
   font: inherit;
   font-size: 0.95rem;
   min-height: 48px;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .verification-select:focus,
@@ -311,7 +342,7 @@ code {
   width: 100%;
   border: 0;
   border-radius: 8px;
-  padding: 14px;
+  padding: 12px;
   font-size: 0.95rem;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -332,9 +363,9 @@ code {
 
 .config-strip {
   display: grid;
-  gap: 6px;
-  margin-top: 16px;
-  padding: 12px;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 8px 12px;
   border-radius: 8px;
   border: 1px solid var(--edge);
   background: color-mix(in oklab, var(--panel-soft) 55%, var(--panel) 45%);
@@ -574,9 +605,8 @@ code {
     padding: 18px 12px 22px;
   }
 
-  .hero-top {
-    align-items: flex-start;
-    flex-direction: column;
+  .site-header-inner {
+    padding: 0 12px;
   }
 
   .workspace {

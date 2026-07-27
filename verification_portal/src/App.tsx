@@ -69,7 +69,7 @@ export default function App() {
   const [photoHash, setPhotoHash] = useState("");
   const [status, setStatus] = useState<VerificationState>("idle");
   const [message, setMessage] = useState(
-    "Select an attestation type and upload a file to verify it against Granite Lake."
+    "Select an attestation type and upload a file to verify it against public attestation ledger."
   );
   const [record, setRecord] = useState<VerificationRecord | null>(null);
   const [dnsDiscovery, setDnsDiscovery] = useState<GraniteDnsDiscovery | null>(null);
@@ -110,7 +110,7 @@ export default function App() {
     setSelectedFile(null);
     setPhotoHash("");
     setStatus("idle");
-    setMessage("Select an attestation type and upload a file to verify it against Granite Lake.");
+    setMessage("Select an attestation type and upload a file to verify it against public attestation ledger.");
     setRecord(null);
     setDnsDiscovery(null);
     setDnsMessage("Not checked");
@@ -260,10 +260,13 @@ export default function App() {
   }
 
   return (
-    <main className="shell">
-      <section className="hero panel">
-        <div className="hero-top">
-          <p className="eyebrow">Granite Lake</p>
+    <>
+      <header className="site-header">
+        <div className="site-header-inner">
+          <div className="logo-wordmark">
+            <div className="logo-mark">T3</div>
+            Trade3
+          </div>
           <button
             type="button"
             className="theme-toggle"
@@ -276,118 +279,123 @@ export default function App() {
             </span>
           </button>
         </div>
+      </header>
 
-        <h1>Public Verification Portal</h1>
-        <p>Verify attested photos, uploaded files, or list all attestations for a wallet from Sui testnet.</p>
-        <div className="tab-switcher" role="tablist" aria-label="Verification mode">
-          <button
-            type="button"
-            className={portalTab === "verify" ? "tab-button is-active" : "tab-button"}
-            aria-selected={portalTab === "verify"}
-            onClick={() => setPortalTab("verify")}
-          >
-            Verify attestation
-          </button>
-          <button
-            type="button"
-            className={portalTab === "wallets" ? "tab-button is-active" : "tab-button"}
-            aria-selected={portalTab === "wallets"}
-            onClick={() => setPortalTab("wallets")}
-          >
-            Wallet attestations
-          </button>
-        </div>
-      </section>
+      <main className="shell">
+        <section className="hero panel">
+          <h1>Public Verification Portal</h1>
+          <p>Verify attested photos, uploaded files, or list all attestations for a wallet from Sui testnet.</p>
+          <div className="tab-switcher" role="tablist" aria-label="Verification mode">
+            <button
+              type="button"
+              className={portalTab === "verify" ? "tab-button is-active" : "tab-button"}
+              aria-selected={portalTab === "verify"}
+              onClick={() => setPortalTab("verify")}
+            >
+              Verify attestation
+            </button>
+            <button
+              type="button"
+              className={portalTab === "wallets" ? "tab-button is-active" : "tab-button"}
+              aria-selected={portalTab === "wallets"}
+              onClick={() => setPortalTab("wallets")}
+            >
+              Wallet attestations
+            </button>
+          </div>
+        </section>
 
-      {portalTab === "verify" ? (
-        <section className="workspace">
-          <form className="panel form-panel" onSubmit={onSubmit}>
-            <div className="form-stack">
-              <div className="field">
-                <span>Attestation Type</span>
-                <select className="verification-select" value={verificationKind} onChange={onVerificationKindChange}>
-                  <option value="field_photo">Field photo (attested photo)</option>
-                  <option value="uploaded_file">Uploaded file (attested file)</option>
-                </select>
-              </div>
-
-              <div className="field">
-                <span>{verificationKind === "field_photo" ? "Photo File" : "File"}</span>
-                <label className={`upload-zone${selectedFile ? " has-file" : ""}`}>
-                  <input
-                    type="file"
-                    className="upload-input"
-                    accept={verificationKind === "field_photo" ? "image/*" : undefined}
-                    onChange={onFileChange}
-                  />
-                  {selectedFile ? (
-                    <>
-                      <span className="upload-file-icon">✓</span>
-                      <span className="upload-file-name">{selectedFile.name}</span>
-                      <small className="upload-hint">Click to replace</small>
-                    </>
-                  ) : (
-                    <>
-                      <span className="upload-trigger">
-                        {verificationKind === "field_photo" ? "Choose Photo" : "Choose File"}
-                      </span>
-                      <small className="upload-hint">
-                        {verificationKind === "field_photo" ? "No photo selected" : "No file selected"}
-                      </small>
-                    </>
-                  )}
-                </label>
-              </div>
-
-              <div className="field field-hash">
-                <span>Computed SHA-256</span>
-                <code>{photoHash || "Pending"}</code>
-              </div>
-
-              <button className="primary-button" type="submit" disabled={status === "working"}>
-                {status === "working"
-                  ? "Verifying..."
-                  : verificationKind === "field_photo"
-                    ? "Verify Photo"
-                    : "Verify File"}
-              </button>
-            </div>
-
-            <div className="config-strip">
-              <small>RPC: {SUI_RPC_URL}</small>
-              <small>Package: {shorten(GRANITE_LAKE_PACKAGE_ID)}</small>
-              <small>Original: {shorten(GRANITE_LAKE_ORIGINAL_PACKAGE_ID)}</small>
-              <small>Registry: {shorten(GRANITE_LAKE_REGISTRY_ID)}</small>
-            </div>
-          </form>
-
-          <section className="panel result-panel">
-            {status === "idle" ? (
-              <div className="result-idle">
-                <span className="idle-icon">🔍</span>
-                <p>
-                  {verificationKind === "field_photo"
-                    ? "Upload a photo and click Verify Photo to check the Granite Lake attestation ledger."
-                    : "Upload a file and click Verify File to check the Granite Lake attestation ledger."}
-                </p>
-              </div>
-            ) : status === "working" ? (
-              <div className="result-idle">
-                <span className="idle-icon">⏳</span>
-                <p>{message}</p>
-              </div>
-            ) : (
-              <>
-                <div className="status-line">
-                  <strong className={status === "verified" ? "is-match" : status === "unconfirmed" ? "is-nomatch" : ""}>
-                    {status === "verified"
-                      ? "has_match: true"
-                      : status === "unconfirmed"
-                        ? "has_match: false"
-                        : "has_match: error"}
-                  </strong>
-                  <span>{message}</span>
+        {portalTab === "verify" ? (
+          <section className="workspace">
+            <form className="panel form-panel" onSubmit={onSubmit}>
+              <div className="form-stack">
+                <div className="field">
+                  <span>Attestation Type</span>
+                  <select className="verification-select" value={verificationKind} onChange={onVerificationKindChange}>
+                    <option value="field_photo">Field photo (attested photo)</option>
+                    <option value="uploaded_file">Uploaded file (attested file)</option>
+                  </select>
                 </div>
+
+                <div className="field">
+                  <span>{verificationKind === "field_photo" ? "Photo File" : "File"}</span>
+                  <label className={`upload-zone${selectedFile ? " has-file" : ""}`}>
+                    <input
+                      type="file"
+                      className="upload-input"
+                      accept={verificationKind === "field_photo" ? "image/*" : undefined}
+                      onChange={onFileChange}
+                    />
+                    {selectedFile ? (
+                      <>
+                        <span className="upload-file-icon">✓</span>
+                        <span className="upload-file-name">{selectedFile.name}</span>
+                        <small className="upload-hint">Click to replace</small>
+                      </>
+                    ) : (
+                      <>
+                        <span className="upload-trigger">
+                          {verificationKind === "field_photo" ? "Choose Photo" : "Choose File"}
+                        </span>
+                        <small className="upload-hint">
+                          {verificationKind === "field_photo" ? "No photo selected" : "No file selected"}
+                        </small>
+                      </>
+                    )}
+                  </label>
+                </div>
+
+                <div className="field field-hash">
+                  <span>Computed SHA-256</span>
+                  <code>{photoHash || "Pending"}</code>
+                </div>
+
+                <button className="primary-button" type="submit" disabled={status === "working"}>
+                  {status === "working"
+                    ? "Verifying..."
+                    : verificationKind === "field_photo"
+                      ? "Verify Photo"
+                      : "Verify File"}
+                </button>
+              </div>
+
+              <div className="config-strip">
+                <small>RPC: {SUI_RPC_URL}</small>
+                <small>Package: {shorten(GRANITE_LAKE_PACKAGE_ID)}</small>
+                <small>Original: {shorten(GRANITE_LAKE_ORIGINAL_PACKAGE_ID)}</small>
+                <small>Registry: {shorten(GRANITE_LAKE_REGISTRY_ID)}</small>
+              </div>
+            </form>
+
+            <section className="panel result-panel">
+              {status === "idle" ? (
+                <div className="result-idle">
+                  <span className="idle-icon">🔍</span>
+                  <p>
+                    {verificationKind === "field_photo"
+                      ? "Upload a photo and click Verify Photo to check the public attestation ledger."
+                      : "Upload a file and click Verify File to check the public attestation ledger."}
+                  </p>
+                </div>
+              ) : status === "working" ? (
+                <div className="result-idle">
+                  <span className="idle-icon">⏳</span>
+                  <p>{message}</p>
+                </div>
+              ) : (
+                <>
+                  <div className="status-line">
+                    <strong
+                      className={status === "verified" ? "is-match" : status === "unconfirmed" ? "is-nomatch" : ""}
+                    >
+                      {status === "verified"
+                        ? "has_match: true"
+                        : status === "unconfirmed"
+                          ? "has_match: false"
+                          : "has_match: error"}
+                    </strong>
+                    <span>{message}</span>
+                  </div>
 
                 <div className="summary-grid">
                   <div className="summary-item">
@@ -423,265 +431,272 @@ export default function App() {
                   </div>
                 )}
 
-                {record && (
-                  <div className="detail-grid">
-                    {isFileRecord(record) ? (
-                      <>
-                        <div className="detail-card detail-card-wide">
-                          <span>File Hash</span>
-                          <code>{record.fileHashHex}</code>
-                        </div>
-                        <div className="detail-card detail-card-wide">
-                          <span>File ID</span>
-                          <code>{displayDecodedOrHex(record.fileIdDecoded, record.fileIdRawHex)}</code>
-                        </div>
-                        <div className="detail-card detail-card-wide">
-                          <span>Project ID</span>
-                          <code>{displayDecodedOrHex(record.projectIdDecoded, record.projectIdRawHex)}</code>
-                        </div>
-                        <div className="detail-card detail-card-wide">
-                          <span>Attesting Wallet</span>
-                          <code>{record.userWallet}</code>
-                        </div>
-                        <div className="detail-card">
-                          <span>Domain (from UserCap)</span>
-                          <code>{record.domain ?? "Unavailable"}</code>
-                        </div>
-                        <div className="detail-card">
-                          <span>Domain Admin Wallet (on-chain)</span>
-                          <code>{record.domainAdminWallet ?? "Unavailable"}</code>
-                        </div>
-                        <div className="detail-card detail-card-wide">
-                          <span>DNS TXT Attester Wallet</span>
-                          <code>{dnsDiscovery?.record.attester ?? "Unavailable"}</code>
-                        </div>
-                        <div className="detail-card">
-                          <span>DNS Chain ID</span>
-                          <code>{dnsDiscovery?.record.chainId ?? "Unavailable"}</code>
-                        </div>
-                        <div className="detail-card">
-                          <span>DNS Revoked</span>
-                          <code>{dnsDiscovery ? String(dnsDiscovery.record.revoked) : "Unavailable"}</code>
-                        </div>
-                        <div className="detail-card detail-card-wide">
-                          <span>Transaction</span>
-                          <a
-                            href={`https://suiscan.xyz/testnet/tx/${record.txDigest}`}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            View on explorer
-                          </a>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="detail-card detail-card-wide">
-                          <span>Project ID</span>
-                          <code>{displayDecodedOrHex(record.projectIdDecoded, record.projectIdRawHex)}</code>
-                        </div>
-                        <div className="detail-card">
-                          <span>GPS</span>
-                          <code>{displayDecodedOrHex(record.gpsDecoded, record.gpsRawHex)}</code>
-                        </div>
-                        <div className="detail-card">
-                          <span>Altitude</span>
-                          <code>{displayDecodedOrHex(record.altitudeDecoded, record.altitudeRawHex)}</code>
-                        </div>
-                        <div className="detail-card detail-card-wide">
-                          <span>Attesting Wallet</span>
-                          <code>{record.userWallet}</code>
-                        </div>
-                        <div className="detail-card">
-                          <span>Domain (from UserCap)</span>
-                          <code>{record.domain ?? "Unavailable"}</code>
-                        </div>
-                        <div className="detail-card">
-                          <span>Domain Admin Wallet (on-chain)</span>
-                          <code>{record.domainAdminWallet ?? "Unavailable"}</code>
-                        </div>
-                        <div className="detail-card detail-card-wide">
-                          <span>DNS TXT Attester Wallet</span>
-                          <code>{dnsDiscovery?.record.attester ?? "Unavailable"}</code>
-                        </div>
-                        <div className="detail-card">
-                          <span>DNS Chain ID</span>
-                          <code>{dnsDiscovery?.record.chainId ?? "Unavailable"}</code>
-                        </div>
-                        <div className="detail-card">
-                          <span>DNS Revoked</span>
-                          <code>{dnsDiscovery ? String(dnsDiscovery.record.revoked) : "Unavailable"}</code>
-                        </div>
-                        <div className="detail-card detail-card-wide">
-                          <span>Transaction</span>
-                          <a
-                            href={`https://suiscan.xyz/testnet/tx/${record.txDigest}`}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            View on explorer
-                          </a>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
+                  {record && (
+                    <div className="detail-grid">
+                      {isFileRecord(record) ? (
+                        <>
+                          <div className="detail-card detail-card-wide">
+                            <span>File Hash</span>
+                            <code>{record.fileHashHex}</code>
+                          </div>
+                          <div className="detail-card detail-card-wide">
+                            <span>File ID</span>
+                            <code>{displayDecodedOrHex(record.fileIdDecoded, record.fileIdRawHex)}</code>
+                          </div>
+                          <div className="detail-card detail-card-wide">
+                            <span>Project ID</span>
+                            <code>{displayDecodedOrHex(record.projectIdDecoded, record.projectIdRawHex)}</code>
+                          </div>
+                          <div className="detail-card detail-card-wide">
+                            <span>Attesting Wallet</span>
+                            <code>{record.userWallet}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>Domain (from UserCap)</span>
+                            <code>{record.domain ?? "Unavailable"}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>Domain Admin Wallet (on-chain)</span>
+                            <code>{record.domainAdminWallet ?? "Unavailable"}</code>
+                          </div>
+                          <div className="detail-card detail-card-wide">
+                            <span>DNS TXT Attester Wallet</span>
+                            <code>{dnsDiscovery?.record.attester ?? "Unavailable"}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>DNS Chain ID</span>
+                            <code>{dnsDiscovery?.record.chainId ?? "Unavailable"}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>DNS Revoked</span>
+                            <code>{dnsDiscovery ? String(dnsDiscovery.record.revoked) : "Unavailable"}</code>
+                          </div>
+                          <div className="detail-card detail-card-wide">
+                            <span>Transaction</span>
+                            <a
+                              href={`https://suiscan.xyz/testnet/tx/${record.txDigest}`}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              View on explorer
+                            </a>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="detail-card detail-card-wide">
+                            <span>Project ID</span>
+                            <code>{displayDecodedOrHex(record.projectIdDecoded, record.projectIdRawHex)}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>GPS</span>
+                            <code>{displayDecodedOrHex(record.gpsDecoded, record.gpsRawHex)}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>Altitude</span>
+                            <code>{displayDecodedOrHex(record.altitudeDecoded, record.altitudeRawHex)}</code>
+                          </div>
+                          <div className="detail-card detail-card-wide">
+                            <span>Attesting Wallet</span>
+                            <code>{record.userWallet}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>Domain (from UserCap)</span>
+                            <code>{record.domain ?? "Unavailable"}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>Domain Admin Wallet (on-chain)</span>
+                            <code>{record.domainAdminWallet ?? "Unavailable"}</code>
+                          </div>
+                          <div className="detail-card detail-card-wide">
+                            <span>DNS TXT Attester Wallet</span>
+                            <code>{dnsDiscovery?.record.attester ?? "Unavailable"}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>DNS Chain ID</span>
+                            <code>{dnsDiscovery?.record.chainId ?? "Unavailable"}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>DNS Revoked</span>
+                            <code>{dnsDiscovery ? String(dnsDiscovery.record.revoked) : "Unavailable"}</code>
+                          </div>
+                          <div className="detail-card detail-card-wide">
+                            <span>Transaction</span>
+                            <a
+                              href={`https://suiscan.xyz/testnet/tx/${record.txDigest}`}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              View on explorer
+                            </a>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
           </section>
-        </section>
-      ) : (
-        <section className="workspace wallet-workspace">
-          <form className="panel form-panel" onSubmit={onWalletSubmit}>
-            <div className="form-stack">
-              <div className="field">
-                <span>Wallet Address</span>
-                <input
-                  className="verification-input"
-                  value={walletAddress}
-                  onChange={onWalletAddressChange}
-                  placeholder="0x..."
-                  inputMode="text"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-
-              <button className="primary-button" type="submit" disabled={walletStatus === "working"}>
-                {walletStatus === "working" ? "Scanning..." : "Load Wallet Attestations"}
-              </button>
-            </div>
-
-            <div className="config-strip">
-              <small>RPC: {SUI_RPC_URL}</small>
-              <small>Package: {shorten(GRANITE_LAKE_PACKAGE_ID)}</small>
-              <small>Original: {shorten(GRANITE_LAKE_ORIGINAL_PACKAGE_ID)}</small>
-              <small>Registry: {shorten(GRANITE_LAKE_REGISTRY_ID)}</small>
-            </div>
-          </form>
-
-          <section className="panel result-panel wallet-result-panel">
-            {walletStatus === "idle" ? (
-              <div className="result-idle">
-                <span className="idle-icon">🔍</span>
-                <p>{walletMessage}</p>
-              </div>
-            ) : walletStatus === "working" ? (
-              <div className="result-idle">
-                <span className="idle-icon">⏳</span>
-                <p>{walletMessage}</p>
-              </div>
-            ) : (
-              <>
-                <div className="status-line">
-                  <strong
-                    className={
-                      walletStatus === "verified" ? "is-match" : walletStatus === "unconfirmed" ? "is-nomatch" : ""
-                    }
-                  >
-                    {walletStatus === "verified"
-                      ? "has_match: true"
-                      : walletStatus === "unconfirmed"
-                        ? "has_match: false"
-                        : "has_match: error"}
-                  </strong>
-                  <span>{walletMessage}</span>
+        ) : (
+          <section className="workspace wallet-workspace">
+            <form className="panel form-panel" onSubmit={onWalletSubmit}>
+              <div className="form-stack">
+                <div className="field">
+                  <span>Wallet Address</span>
+                  <input
+                    className="verification-input"
+                    value={walletAddress}
+                    onChange={onWalletAddressChange}
+                    placeholder="0x..."
+                    inputMode="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
                 </div>
 
-                <div className="summary-grid">
-                  <div className="summary-item">
-                    <span>Pages Scanned</span>
-                    <strong>{walletPagesScanned}</strong>
-                  </div>
-                  <div className="summary-item">
-                    <span>Events Scanned</span>
-                    <strong>{walletEventsScanned}</strong>
-                  </div>
-                  <div className="summary-item">
-                    <span>Photo Attestations</span>
-                    <strong>{walletRecords.filter((entry) => entry.attestType === "attest_photo").length}</strong>
-                  </div>
-                  <div className="summary-item">
-                    <span>File Attestations</span>
-                    <strong>{walletRecords.filter((entry) => entry.attestType === "attest_file").length}</strong>
-                  </div>
+                <button className="primary-button" type="submit" disabled={walletStatus === "working"}>
+                  {walletStatus === "working" ? "Scanning..." : "Load Wallet Attestations"}
+                </button>
+              </div>
+
+              <div className="config-strip">
+                <small>RPC: {SUI_RPC_URL}</small>
+                <small>Package: {shorten(GRANITE_LAKE_PACKAGE_ID)}</small>
+                <small>Original: {shorten(GRANITE_LAKE_ORIGINAL_PACKAGE_ID)}</small>
+                <small>Registry: {shorten(GRANITE_LAKE_REGISTRY_ID)}</small>
+              </div>
+            </form>
+
+            <section className="panel result-panel wallet-result-panel">
+              {walletStatus === "idle" ? (
+                <div className="result-idle">
+                  <span className="idle-icon">🔍</span>
+                  <p>{walletMessage}</p>
                 </div>
-
-                {walletRecords.length > 0 ? (
-                  <div className="wallet-event-list">
-                    {walletRecords.map((entry) => (
-                      <article
-                        key={`${entry.txDigest}:${entry.eventSeq}:${entry.attestType}`}
-                        className="wallet-event-card"
-                      >
-                        <div className="wallet-event-card-top">
-                          <span
-                            className={`wallet-event-chip ${entry.attestType === "attest_photo" ? "is-photo" : "is-file"}`}
-                          >
-                            {attestationTypeLabel(entry)}
-                          </span>
-                          <a href={`https://suiscan.xyz/testnet/tx/${entry.txDigest}`} target="_blank" rel="noreferrer">
-                            View transaction
-                          </a>
-                        </div>
-
-                        <div className="wallet-event-title">{entry.checkpointTime}</div>
-                        <div className="wallet-event-grid">
-                          <div>
-                            <span>Hash</span>
-                            <code>{entry.hashHex}</code>
-                          </div>
-                          <div>
-                            <span>Project</span>
-                            <code>{displayDecodedOrHex(entry.projectIdDecoded, entry.projectIdRawHex)}</code>
-                          </div>
-                          <div>
-                            <span>Wallet</span>
-                            <code>{entry.userWallet}</code>
-                          </div>
-                          <div>
-                            <span>Domain</span>
-                            <code>{entry.domain ?? "Unavailable"}</code>
-                          </div>
-                          {entry.attestType === "attest_photo" ? (
-                            <>
-                              <div>
-                                <span>GPS</span>
-                                <code>{displayDecodedOrHex(entry.gpsDecoded ?? "", entry.gpsRawHex ?? "")}</code>
-                              </div>
-                              <div>
-                                <span>Altitude</span>
-                                <code>
-                                  {displayDecodedOrHex(entry.altitudeDecoded ?? "", entry.altitudeRawHex ?? "")}
-                                </code>
-                              </div>
-                            </>
-                          ) : (
-                            <>
-                              <div>
-                                <span>File ID</span>
-                                <code>{displayDecodedOrHex(entry.fileIdDecoded ?? "", entry.fileIdRawHex ?? "")}</code>
-                              </div>
-                              <div>
-                                <span>Enabled At Attestation</span>
-                                <code>
-                                  {entry.userEnabledAtAttestation === null
-                                    ? "Unavailable"
-                                    : String(entry.userEnabledAtAttestation)}
-                                </code>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      </article>
-                    ))}
+              ) : walletStatus === "working" ? (
+                <div className="result-idle">
+                  <span className="idle-icon">⏳</span>
+                  <p>{walletMessage}</p>
+                </div>
+              ) : (
+                <>
+                  <div className="status-line">
+                    <strong
+                      className={
+                        walletStatus === "verified" ? "is-match" : walletStatus === "unconfirmed" ? "is-nomatch" : ""
+                      }
+                    >
+                      {walletStatus === "verified"
+                        ? "has_match: true"
+                        : walletStatus === "unconfirmed"
+                          ? "has_match: false"
+                          : "has_match: error"}
+                    </strong>
+                    <span>{walletMessage}</span>
                   </div>
-                ) : null}
-              </>
-            )}
+
+                  <div className="summary-grid">
+                    <div className="summary-item">
+                      <span>Pages Scanned</span>
+                      <strong>{walletPagesScanned}</strong>
+                    </div>
+                    <div className="summary-item">
+                      <span>Events Scanned</span>
+                      <strong>{walletEventsScanned}</strong>
+                    </div>
+                    <div className="summary-item">
+                      <span>Photo Attestations</span>
+                      <strong>{walletRecords.filter((entry) => entry.attestType === "attest_photo").length}</strong>
+                    </div>
+                    <div className="summary-item">
+                      <span>File Attestations</span>
+                      <strong>{walletRecords.filter((entry) => entry.attestType === "attest_file").length}</strong>
+                    </div>
+                  </div>
+
+                  {walletRecords.length > 0 ? (
+                    <div className="wallet-event-list">
+                      {walletRecords.map((entry) => (
+                        <article
+                          key={`${entry.txDigest}:${entry.eventSeq}:${entry.attestType}`}
+                          className="wallet-event-card"
+                        >
+                          <div className="wallet-event-card-top">
+                            <span
+                              className={`wallet-event-chip ${entry.attestType === "attest_photo" ? "is-photo" : "is-file"}`}
+                            >
+                              {attestationTypeLabel(entry)}
+                            </span>
+                            <a
+                              href={`https://suiscan.xyz/testnet/tx/${entry.txDigest}`}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              View transaction
+                            </a>
+                          </div>
+
+                          <div className="wallet-event-title">{entry.checkpointTime}</div>
+                          <div className="wallet-event-grid">
+                            <div>
+                              <span>Hash</span>
+                              <code>{entry.hashHex}</code>
+                            </div>
+                            <div>
+                              <span>Project</span>
+                              <code>{displayDecodedOrHex(entry.projectIdDecoded, entry.projectIdRawHex)}</code>
+                            </div>
+                            <div>
+                              <span>Wallet</span>
+                              <code>{entry.userWallet}</code>
+                            </div>
+                            <div>
+                              <span>Domain</span>
+                              <code>{entry.domain ?? "Unavailable"}</code>
+                            </div>
+                            {entry.attestType === "attest_photo" ? (
+                              <>
+                                <div>
+                                  <span>GPS</span>
+                                  <code>{displayDecodedOrHex(entry.gpsDecoded ?? "", entry.gpsRawHex ?? "")}</code>
+                                </div>
+                                <div>
+                                  <span>Altitude</span>
+                                  <code>
+                                    {displayDecodedOrHex(entry.altitudeDecoded ?? "", entry.altitudeRawHex ?? "")}
+                                  </code>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div>
+                                  <span>File ID</span>
+                                  <code>
+                                    {displayDecodedOrHex(entry.fileIdDecoded ?? "", entry.fileIdRawHex ?? "")}
+                                  </code>
+                                </div>
+                                <div>
+                                  <span>Enabled At Attestation</span>
+                                  <code>
+                                    {entry.userEnabledAtAttestation === null
+                                      ? "Unavailable"
+                                      : String(entry.userEnabledAtAttestation)}
+                                  </code>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </section>
           </section>
-        </section>
-      )}
-    </main>
+        )}
+      </main>
+    </>
   );
 }
