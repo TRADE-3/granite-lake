@@ -204,3 +204,7 @@ See:
 - `contracts/README.md` for Move package behavior
 - `server/README.md` for API configuration and OTP routes
 - `app/README.md` for app storage, onboarding, and photo/file attestation flow
+
+## License
+
+Granite Lake is licensed under the [Apache License, Version 2.0](LICENSE).
