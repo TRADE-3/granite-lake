@@ -59,23 +59,30 @@ const DNS_HEADER_LENGTH = 12;
 const TXT_RECORD_TYPE = 16;
 const textDecoder = new TextDecoder();
 
-export const GRANITE_DOH_PROVIDERS: DoHProvider[] = [
-  {
-    name: "AliDNS",
-    ip: "223.5.5.5",
-    endpoints: [{ url: "https://dns.alidns.com/resolve", format: "json" }],
-  },
-  {
-    name: "Cloudflare",
-    ip: "1.1.1.1",
-    endpoints: [{ url: "https://cloudflare-dns.com/dns-query", format: "json" }],
-  },
-  {
-    name: "Google",
-    ip: "8.8.8.8",
-    endpoints: [{ url: "https://dns.google/resolve", format: "json" }],
-  },
-];
+const ALIDNS_DOH_PROVIDER: DoHProvider = {
+  name: "AliDNS",
+  ip: "223.5.5.5",
+  endpoints: [{ url: "https://dns.alidns.com/resolve", format: "json" }],
+};
+
+const CLOUDFLARE_DOH_PROVIDER: DoHProvider = {
+  name: "Cloudflare",
+  ip: "1.1.1.1",
+  endpoints: [{ url: "https://cloudflare-dns.com/dns-query", format: "json" }],
+};
+
+const GOOGLE_DOH_PROVIDER: DoHProvider = {
+  name: "Google",
+  ip: "8.8.8.8",
+  endpoints: [{ url: "https://dns.google/resolve", format: "json" }],
+};
+
+export const GRANITE_DOH_PROVIDERS: DoHProvider[] = [ALIDNS_DOH_PROVIDER, CLOUDFLARE_DOH_PROVIDER, GOOGLE_DOH_PROVIDER];
+
+// AliDNS's public resolver never sets the AD flag, even for correctly signed
+// zones, so its result is excluded here; Cloudflare and Google reliably
+// reflect DNSSEC validation status in AD.
+const DNSSEC_AD_PROVIDER_NAMES = new Set([CLOUDFLARE_DOH_PROVIDER.name, GOOGLE_DOH_PROVIDER.name]);
 
 function normalizeDomainName(domain: string): string {
   return domain.trim().replace(/\.+$/, "").toLowerCase();
@@ -576,6 +583,8 @@ export async function lookupGraniteTxtRecord(
   return {
     record: parseGraniteTxtRecord(lookupHost, attesterAnswers[0].data),
     providers: results,
-    dnssecValidated: results.every((result) => result.response.AD === true),
+    dnssecValidated: results
+      .filter((result) => DNSSEC_AD_PROVIDER_NAMES.has(result.provider.name))
+      .every((result) => result.response.AD === true),
   };
 }

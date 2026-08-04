@@ -120,5 +120,7 @@ Top-level response includes:
 - `attestation` (full public record on match, otherwise `null`)
 - `userEnabledAtAttestation`
 - `dnsVerification` (provider-by-provider evidence and wallet match checks)
+  - `dnssecValidated`: `true` only when Cloudflare and Google both report the `AD` (Authenticated Data) flag on the `_attest.<domain>` TXT lookup; AliDNS is excluded from this check since its public resolver never sets `AD`, even for correctly signed zones. `null` if DNS verification wasn't attempted.
+  - `providerResults[].ad`: raw per-provider `AD` flag (`true`/`false`/`null` on error)
 - `warnings`
 - `durationMs`
