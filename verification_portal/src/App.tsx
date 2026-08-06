@@ -382,9 +382,22 @@ export default function App() {
                     <span>Admin Wallet Check</span>
                     <strong>{walletMatchLabel(record, dnsDiscovery)}</strong>
                   </div>
+                  <div className="summary-item">
+                    <span>DNSSEC</span>
+                    <strong className={dnsDiscovery?.dnssecValidated ? "status-success" : "status-warning"}>
+                      {dnsDiscovery ? (dnsDiscovery.dnssecValidated ? "Validated" : "Not Validated") : "Unavailable"}
+                    </strong>
+                  </div>
                 </div>
 
                 <div className="dns-status">{dnsMessage}</div>
+
+                {dnsDiscovery && !dnsDiscovery.dnssecValidated && (
+                  <div className="dns-status is-warning">
+                    DNSSEC could not be validated for this domain. The DNS lookup itself was not cryptographically
+                    authenticated, so treat this verification with slightly reduced confidence.
+                  </div>
+                )}
 
                 {record && (
                   <div className="detail-grid">

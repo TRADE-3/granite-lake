@@ -9,6 +9,7 @@ export type DnsProviderResult = {
   provider: string;
   endpoint: string;
   status: number | null;
+  ad: boolean | null;
   answers: DnsAnswer[];
   error: string | null;
 };

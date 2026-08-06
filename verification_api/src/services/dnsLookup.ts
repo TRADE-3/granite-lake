@@ -27,6 +27,11 @@ const PROVIDERS: DoHProvider[] = [
   { name: "Google", endpoint: "https://dns.google/resolve" },
 ];
 
+// AliDNS's public resolver never sets the AD flag, even for correctly signed
+// zones, so its result is excluded here; Cloudflare and Google reliably
+// reflect DNSSEC validation status in AD.
+const DNSSEC_AD_PROVIDER_NAMES = new Set(["Cloudflare", "Google"]);
+
 function normalizeDomainName(domain: string): string {
   return domain.trim().replace(/\.+$/, "").toLowerCase();
 }
@@ -106,6 +111,7 @@ async function lookupProvider(provider: DoHProvider, lookupHost: string): Promis
         provider: provider.name,
         endpoint: provider.endpoint,
         status: null,
+        ad: null,
         answers: [],
         error: `${response.status} ${response.statusText}`,
       };
@@ -125,6 +131,7 @@ async function lookupProvider(provider: DoHProvider, lookupHost: string): Promis
       provider: provider.name,
       endpoint: provider.endpoint,
       status: payload.Status,
+      ad: payload.AD === true,
       answers,
       error: null,
     };
@@ -133,6 +140,7 @@ async function lookupProvider(provider: DoHProvider, lookupHost: string): Promis
       provider: provider.name,
       endpoint: provider.endpoint,
       status: null,
+      ad: null,
       answers: [],
       error: error instanceof Error ? error.message : String(error),
     };
@@ -190,6 +198,10 @@ export async function lookupGraniteTxtConsensus(domain: string): Promise<{
   const sortedCandidates = Array.from(keyCounts.values()).sort((a, b) => b.count - a.count);
   const record = sortedCandidates[0].record;
 
+  const dnssecProviderResults = providerResults.filter((result) => DNSSEC_AD_PROVIDER_NAMES.has(result.provider));
+  const dnssecValidated =
+    dnssecProviderResults.length > 0 && dnssecProviderResults.every((result) => result.ad === true);
+
   const providerAnswerSets = providerResults
     .filter((result) => !result.error)
     .map((result) =>
@@ -216,7 +228,7 @@ export async function lookupGraniteTxtConsensus(domain: string): Promise<{
     lookupHost,
     providerResults,
     consensusMatched,
-    dnssecValidated: false,
+    dnssecValidated,
     record,
   };
 }

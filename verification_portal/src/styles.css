@@ -414,6 +414,24 @@ code {
   font-size: 0.9rem;
 }
 
+.dns-status.is-warning {
+  border-color: color-mix(in oklab, var(--warn) 45%, var(--edge) 55%);
+  background: color-mix(in oklab, var(--warn) 12%, var(--panel-soft) 88%);
+  color: var(--warn);
+}
+
+.status-success {
+  color: var(--ok);
+}
+
+.status-warning {
+  color: var(--warn);
+}
+
+.status-error {
+  color: var(--error);
+}
+
 .detail-grid {
   margin-top: 14px;
   border-top: 1px solid var(--edge);
