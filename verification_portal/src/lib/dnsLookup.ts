@@ -1,3 +1,5 @@
+import { SUI_RPC_URL } from "../constants";
+
 export type DnsAnswer = {
   name: string;
   type: number;
@@ -50,6 +52,7 @@ export type GraniteDnsDiscovery = {
   record: GraniteDnsRecord;
   providers: ProviderLookupResult[];
   dnssecValidated: boolean;
+  network: string;
 };
 
 const EXPECTED_CHAIN_NAMESPACE = "sui:";
@@ -90,6 +93,22 @@ function normalizeDomainName(domain: string): string {
 
 function ensureTrailingDot(name: string): string {
   return name.endsWith(".") ? name : `${name}.`;
+}
+
+// A record's chain_id (e.g. "sui:testnet") identifies which network it
+// applies to. A domain legitimately publishing separate testnet and mainnet
+// attester records is normal; two records for the *same* network is not —
+// see lookupGraniteTxtRecord.
+function chainNetwork(chainId: string): string {
+  return chainId.slice(EXPECTED_CHAIN_NAMESPACE.length).toLowerCase();
+}
+
+function currentSuiNetwork(rpcUrl: string): string {
+  const lower = rpcUrl.toLowerCase();
+  if (lower.includes("mainnet")) return "mainnet";
+  if (lower.includes("devnet")) return "devnet";
+  if (lower.includes("localnet") || lower.includes("127.0.0.1") || lower.includes("localhost")) return "localnet";
+  return "testnet";
 }
 
 function encodeDomainName(domain: string): Uint8Array {
@@ -555,7 +574,8 @@ function parseGraniteTxtRecord(lookupHost: string, rawRecord: string): GraniteDn
 
 export async function lookupGraniteTxtRecord(
   domain: string,
-  providers: DoHProvider[] = GRANITE_DOH_PROVIDERS
+  providers: DoHProvider[] = GRANITE_DOH_PROVIDERS,
+  rpcUrl: string = SUI_RPC_URL
 ): Promise<GraniteDnsDiscovery> {
   const normalizedDomain = normalizeDomainName(domain);
   if (!normalizedDomain) {
@@ -576,15 +596,42 @@ export async function lookupGraniteTxtRecord(
     throw new Error(`No Granite attester TXT record found for ${lookupHost}`);
   }
 
-  if (attesterAnswers.length > 1) {
-    throw new Error(`Expected exactly one Granite TXT record for ${lookupHost}, found ${attesterAnswers.length}`);
+  // Every provider already agrees byte-for-byte (assertConsensus above), so
+  // grouping by network here only has to guard against the domain itself
+  // publishing more than one attester= record for the same network — a
+  // real misconfiguration or DNS tampering signal, not resolved by picking
+  // one. Different networks (a domain publishing separate testnet and
+  // mainnet records) legitimately coexist; the one for the network this
+  // deployment actually runs on is selected below.
+  const recordsByNetwork = new Map<string, GraniteDnsRecord[]>();
+  for (const answer of attesterAnswers) {
+    const record = parseGraniteTxtRecord(lookupHost, answer.data);
+    const network = chainNetwork(record.chainId);
+    const existing = recordsByNetwork.get(network) ?? [];
+    existing.push(record);
+    recordsByNetwork.set(network, existing);
+  }
+
+  const duplicateNetwork = Array.from(recordsByNetwork.entries()).find(([, records]) => records.length > 1);
+  if (duplicateNetwork) {
+    const [network, records] = duplicateNetwork;
+    throw new Error(
+      `Security: found ${records.length} distinct Granite TXT records for ${lookupHost} on network "${network}". Exactly one is expected per network — treat this as a possible DNS tampering.`
+    );
+  }
+
+  const network = currentSuiNetwork(rpcUrl);
+  const recordsForNetwork = recordsByNetwork.get(network);
+  if (!recordsForNetwork || recordsForNetwork.length === 0) {
+    throw new Error(`No Granite TXT record found for ${lookupHost} on network "${network}".`);
   }
 
   return {
-    record: parseGraniteTxtRecord(lookupHost, attesterAnswers[0].data),
+    record: recordsForNetwork[0],
     providers: results,
     dnssecValidated: results
       .filter((result) => DNSSEC_AD_PROVIDER_NAMES.has(result.provider.name))
       .every((result) => result.response.AD === true),
+    network,
   };
 }
