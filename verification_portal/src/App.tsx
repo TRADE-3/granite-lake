@@ -163,6 +163,16 @@ export default function App() {
         return;
       }
 
+      if (result.collision) {
+        const distinctWallets = Array.from(new Set(result.records.map((record) => record.userWallet)));
+        setStatus("unconfirmed");
+        setMessage(
+          `${distinctWallets.length} different wallets have attested this exact hash (${distinctWallets.join(", ")}). ` +
+            "This is not resolved automatically — the file cannot be attributed to a single attester."
+        );
+        return;
+      }
+
       setRecord(result.record);
 
       let trustFailureReason: string | null = null;
