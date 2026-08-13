@@ -1,3 +1,4 @@
+import { SUI_RPC_URL } from "../constants.js";
 import { DnsProviderResult, GraniteDnsRecord } from "../types.js";
 
 type JsonDoHAnswer = {
@@ -40,11 +41,37 @@ function normalizeJsonTxtData(data: string): string {
   return data.replace(/^"|"$/g, "").replace(/""/g, "");
 }
 
+// DoH providers are inconsistent about whether a JSON "name" field carries a
+// trailing dot. The portal forces every name through this same
+// normalization before comparing, so two identical answers that differ only
+// in trailing-dot formatting must be treated as identical here too — the
+// prior unnormalized comparison made exact consensus permanently false
+// against real records that in fact agreed (see F-14).
+function ensureTrailingDot(name: string): string {
+  return name.endsWith(".") ? name : `${name}.`;
+}
+
 function normalizeAnswers(answers: JsonDoHAnswer[] | undefined): string[] {
   return (answers ?? [])
     .filter((answer) => answer.type === TXT_RECORD_TYPE)
-    .map((answer) => `${answer.name.toLowerCase()}|TXT|${normalizeJsonTxtData(answer.data).trim()}`)
+    .map((answer) => `${ensureTrailingDot(answer.name.toLowerCase())}|TXT|${normalizeJsonTxtData(answer.data).trim()}`)
     .sort();
+}
+
+// A record's chain_id (e.g. "sui:testnet") identifies which network it
+// applies to. A domain legitimately publishing separate testnet and mainnet
+// attester records is normal; two records for the *same* network is not —
+// see lookupGraniteTxtConsensus.
+function chainNetwork(chainId: string): string {
+  return chainId.slice(EXPECTED_CHAIN_NAMESPACE.length).toLowerCase();
+}
+
+function currentSuiNetwork(rpcUrl: string): string {
+  const lower = rpcUrl.toLowerCase();
+  if (lower.includes("mainnet")) return "mainnet";
+  if (lower.includes("devnet")) return "devnet";
+  if (lower.includes("localnet") || lower.includes("127.0.0.1") || lower.includes("localhost")) return "localnet";
+  return "testnet";
 }
 
 function parseBoolean(value: string): boolean {
@@ -95,6 +122,8 @@ function recordKey(record: GraniteDnsRecord): string {
   return `${record.chainId.toLowerCase()}|${record.attester.toLowerCase()}|${record.revoked ? "true" : "false"}`;
 }
 
+const DOH_TIMEOUT_MS = 5_000;
+
 async function lookupProvider(provider: DoHProvider, lookupHost: string): Promise<DnsProviderResult> {
   const url = new URL(provider.endpoint);
   url.searchParams.set("name", lookupHost);
@@ -104,6 +133,7 @@ async function lookupProvider(provider: DoHProvider, lookupHost: string): Promis
     const response = await fetch(url, {
       method: "GET",
       headers: { accept: "application/dns-json" },
+      signal: AbortSignal.timeout(DOH_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -147,12 +177,16 @@ async function lookupProvider(provider: DoHProvider, lookupHost: string): Promis
   }
 }
 
-export async function lookupGraniteTxtConsensus(domain: string): Promise<{
+export async function lookupGraniteTxtConsensus(
+  domain: string,
+  rpcUrl: string = SUI_RPC_URL
+): Promise<{
   domain: string;
   lookupHost: string;
   providerResults: DnsProviderResult[];
   consensusMatched: boolean;
   dnssecValidated: boolean;
+  network: string;
   record: GraniteDnsRecord;
 }> {
   const normalizedDomain = normalizeDomainName(domain);
@@ -163,7 +197,15 @@ export async function lookupGraniteTxtConsensus(domain: string): Promise<{
   const lookupHost = `_attest.${normalizedDomain}`;
   const providerResults = await Promise.all(PROVIDERS.map((provider) => lookupProvider(provider, lookupHost)));
 
-  const parsedRecords: GraniteDnsRecord[] = [];
+  // Parse every attester= TXT answer, per provider, grouped by network
+  // (chain_id). More than one record from a single provider for the same
+  // network is a same-network duplicate — a real misconfiguration or a sign
+  // the zone has been tampered with — and is rejected outright rather than
+  // picked between. Different networks legitimately coexist (a domain can
+  // publish both a testnet and a mainnet attester record) and are not an
+  // error; the record for the network this deployment actually runs on is
+  // selected below (see F-15).
+  const recordsByNetwork = new Map<string, GraniteDnsRecord[]>();
 
   for (const providerResult of providerResults) {
     if (providerResult.error) {
@@ -171,32 +213,59 @@ export async function lookupGraniteTxtConsensus(domain: string): Promise<{
     }
 
     const attesterAnswers = providerResult.answers.filter((answer) => answer.data.includes("attester="));
+    const parsedForProvider: GraniteDnsRecord[] = [];
+
     for (const answer of attesterAnswers) {
       try {
-        parsedRecords.push(parseGraniteTxtRecord(lookupHost, answer.data));
+        parsedForProvider.push(parseGraniteTxtRecord(lookupHost, answer.data));
       } catch {
         // Ignore malformed TXT answers from one resolver and continue with others.
       }
     }
-  }
 
-  if (parsedRecords.length === 0) {
-    throw new Error(`No valid Granite attester TXT record found for ${lookupHost}`);
-  }
+    const countsForProvider = new Map<string, number>();
+    for (const record of parsedForProvider) {
+      const network = chainNetwork(record.chainId);
+      countsForProvider.set(network, (countsForProvider.get(network) ?? 0) + 1);
+    }
 
-  const keyCounts = new Map<string, { record: GraniteDnsRecord; count: number }>();
-  for (const record of parsedRecords) {
-    const key = recordKey(record);
-    const existing = keyCounts.get(key);
-    if (existing) {
-      existing.count += 1;
-    } else {
-      keyCounts.set(key, { record, count: 1 });
+    const duplicateNetwork = Array.from(countsForProvider.entries()).find(([, count]) => count > 1);
+    if (duplicateNetwork) {
+      const [network, count] = duplicateNetwork;
+      throw new Error(
+        `Security: ${providerResult.provider} returned ${count} distinct Granite TXT records for ${lookupHost} on network "${network}". Exactly one is expected per network — treat this as a possible DNS tampering.`
+      );
+    }
+
+    for (const record of parsedForProvider) {
+      const network = chainNetwork(record.chainId);
+      const existing = recordsByNetwork.get(network) ?? [];
+      existing.push(record);
+      recordsByNetwork.set(network, existing);
     }
   }
 
-  const sortedCandidates = Array.from(keyCounts.values()).sort((a, b) => b.count - a.count);
-  const record = sortedCandidates[0].record;
+  if (recordsByNetwork.size === 0) {
+    throw new Error(`No valid Granite attester TXT record found for ${lookupHost}`);
+  }
+
+  // Cross-provider disagreement about the record for a given network is the
+  // same kind of breach signal, just observed a different way.
+  for (const [network, records] of recordsByNetwork) {
+    const distinctKeys = new Set(records.map((record) => recordKey(record)));
+    if (distinctKeys.size > 1) {
+      throw new Error(
+        `Security: DNS providers disagree on the Granite TXT record for ${lookupHost} on network "${network}". Treat this as a possible DNS tampering or stale resolver path.`
+      );
+    }
+  }
+
+  const network = currentSuiNetwork(rpcUrl);
+  const recordsForNetwork = recordsByNetwork.get(network);
+  if (!recordsForNetwork || recordsForNetwork.length === 0) {
+    throw new Error(`No Granite TXT record found for ${lookupHost} on network "${network}".`);
+  }
+  const record = recordsForNetwork[0];
 
   const dnssecProviderResults = providerResults.filter((result) => DNSSEC_AD_PROVIDER_NAMES.has(result.provider));
   const dnssecValidated =
@@ -220,8 +289,10 @@ export async function lookupGraniteTxtConsensus(domain: string): Promise<{
 
   const providerErrors = providerResults.some((result) => Boolean(result.error));
   const exactAnswerConsensus = providerAnswerSets.length > 0 && new Set(providerAnswerSets).size === 1;
-  const parsedRecordConsensus = keyCounts.size === 1;
-  const consensusMatched = exactAnswerConsensus || (!providerErrors && parsedRecordConsensus);
+  // Any same-network duplicate or cross-provider disagreement already threw
+  // above, so reaching here with no provider errors means every provider
+  // that answered agrees on substance even if exact byte formatting differs.
+  const consensusMatched = exactAnswerConsensus || !providerErrors;
 
   return {
     domain: normalizedDomain,
@@ -229,6 +300,7 @@ export async function lookupGraniteTxtConsensus(domain: string): Promise<{
     providerResults,
     consensusMatched,
     dnssecValidated,
+    network,
     record,
   };
 }

@@ -148,11 +148,18 @@ function safeAddress(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+const SUI_RPC_TIMEOUT_MS = 10_000;
+// A single verify-attestation request can trigger many suix_queryEvents
+// pages while scanning for matches; without a ceiling, one request could
+// force an unbounded number of upstream RPC calls (see F-21).
+export const MAX_EVENT_PAGES = 200;
+
 async function suiRpcCall<T>(method: string, params: unknown[], rpcUrl: string): Promise<T> {
   const response = await fetch(normalizeGraphQlUrl(rpcUrl), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(buildGraphQlRequest(method, params)),
+    signal: AbortSignal.timeout(SUI_RPC_TIMEOUT_MS),
   });
 
   if (!response.ok) {
@@ -412,6 +419,7 @@ async function getDomainAdminWallet(domain: string | null, rpcUrl: string): Prom
 
   for (const eventType of domainAdminEventTypes) {
     let cursor: SuiEventCursor | null = null;
+    let pages = 0;
 
     do {
       const page: SuiEventPage = await suiRpcCall<SuiEventPage>(
@@ -419,6 +427,7 @@ async function getDomainAdminWallet(domain: string | null, rpcUrl: string): Prom
         [{ MoveEventType: eventType }, cursor, 50, true],
         rpcUrl
       );
+      pages += 1;
 
       for (const event of page.data ?? []) {
         const packageId = event.packageId.toLowerCase();
@@ -438,7 +447,7 @@ async function getDomainAdminWallet(domain: string | null, rpcUrl: string): Prom
       }
 
       cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-    } while (cursor);
+    } while (cursor && pages < MAX_EVENT_PAGES);
   }
 
   return null;
@@ -459,6 +468,7 @@ async function latestStatusTimestamp(params: {
 
   for (const eventType of params.eventTypes) {
     let cursor: SuiEventCursor | null = null;
+    let pages = 0;
 
     do {
       const page: SuiEventPage = await suiRpcCall<SuiEventPage>(
@@ -466,6 +476,7 @@ async function latestStatusTimestamp(params: {
         [{ MoveEventType: eventType }, cursor, 50, true],
         params.rpcUrl
       );
+      pages += 1;
 
       for (const event of page.data ?? []) {
         const packageId = event.packageId.toLowerCase();
@@ -495,7 +506,7 @@ async function latestStatusTimestamp(params: {
       }
 
       cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-    } while (cursor);
+    } while (cursor && pages < MAX_EVENT_PAGES);
   }
 
   return latest;
@@ -632,7 +643,7 @@ export async function verifyAttestationHashDetailed(
       }
 
       cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-    } while (cursor);
+    } while (cursor && pagesScanned < MAX_EVENT_PAGES);
   }
 
   // Cache domain/admin-wallet lookups per wallet: several matched events can
@@ -832,7 +843,7 @@ export async function getAttestationsByWallet(
         }
 
         cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-      } while (cursor);
+      } while (cursor && pagesScanned < MAX_EVENT_PAGES);
     }
   }
 
