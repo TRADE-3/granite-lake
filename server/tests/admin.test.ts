@@ -100,6 +100,18 @@ describe("admin routes", () => {
     await app.close();
   });
 
+  it("requires the admin API key on a percent-encoded path", async () => {
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/%61dmin/users",
+    });
+
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
   it("lists users when authorized", async () => {
     const app = await buildApp();
 

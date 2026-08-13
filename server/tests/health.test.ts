@@ -69,6 +69,19 @@ describe("health routes", () => {
     await app.close();
   });
 
+  it("rejects a percent-encoded /utc path without an app API key", async () => {
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/%75tc",
+    });
+
+    expect(response.statusCode).toBe(401);
+
+    await app.close();
+  });
+
   it("serves /utc with a valid app API key", async () => {
     const app = await buildApp();
 
