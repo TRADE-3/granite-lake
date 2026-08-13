@@ -83,6 +83,8 @@ export async function registerVerifyPhotoRoute(app: FastifyInstance): Promise<vo
       error: null,
     };
 
+    let trustFailed = false;
+
     if (scan.record?.domain) {
       try {
         const dnsResult = await lookupGraniteTxtConsensus(scan.record.domain);
@@ -94,13 +96,13 @@ export async function registerVerifyPhotoRoute(app: FastifyInstance): Promise<vo
         dnsVerification.record = dnsResult.record;
 
         if (!dnsResult.consensusMatched) {
-          warnings.push(
-            "DNS TXT responses were not identical across all providers; using best available attester record."
-          );
+          trustFailed = true;
+          warnings.push("DNS TXT responses were not identical across all providers; treating verification as failed.");
         }
 
         const providerErrors = dnsResult.providerResults.filter((provider) => provider.error);
         if (providerErrors.length > 0) {
+          trustFailed = true;
           warnings.push(
             `DNS provider errors observed: ${providerErrors.map((provider) => `${provider.provider}: ${provider.error}`).join("; ")}`
           );
@@ -111,14 +113,20 @@ export async function registerVerifyPhotoRoute(app: FastifyInstance): Promise<vo
             dnsResult.record.attester.toLowerCase() === scan.record.domainAdminWallet.toLowerCase();
 
           if (!dnsVerification.attesterMatchesDomainAdminWallet) {
+            trustFailed = true;
             warnings.push("DNS attester wallet does not match on-chain domain admin wallet.");
           }
+        } else {
+          trustFailed = true;
+          warnings.push("No on-chain domain admin wallet was resolved for comparison.");
         }
 
         if (dnsResult.record.revoked) {
+          trustFailed = true;
           warnings.push("DNS record indicates this attester is revoked.");
         }
       } catch (error) {
+        trustFailed = true;
         dnsVerification.error = error instanceof Error ? error.message : String(error);
         warnings.push(`DNS verification unavailable: ${dnsVerification.error}`);
       }
@@ -126,11 +134,15 @@ export async function registerVerifyPhotoRoute(app: FastifyInstance): Promise<vo
       warnings.push("Domain could not be resolved from UserCap; DNS verification skipped.");
     }
 
+    const hasMatch = Boolean(scan.record) && !trustFailed;
+
     const response: VerificationResponse = {
-      hasMatch: Boolean(scan.record),
-      summary: scan.record
-        ? `${attestationLabel} hash matched and metadata was resolved.`
-        : `No ${attestationLabel} event matched the provided file hash.`,
+      hasMatch,
+      summary: !scan.record
+        ? `No ${attestationLabel} event matched the provided file hash.`
+        : trustFailed
+          ? `${attestationLabel} hash matched, but the trust check failed. See warnings.`
+          : `${attestationLabel} hash matched and metadata was resolved.`,
       request: {
         attestType,
         fileName: upload.fileName,

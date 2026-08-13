@@ -165,28 +165,42 @@ export default function App() {
 
       setRecord(result.record);
 
+      let trustFailureReason: string | null = null;
+
       if (result.record.domain) {
         try {
           setDnsMessage(`Checking DNS TXT consensus for _attest.${result.record.domain} ...`);
           const discovery = await lookupGraniteTxtRecord(result.record.domain);
           setDnsDiscovery(discovery);
 
-          if (result.record.domainAdminWallet) {
+          if (discovery.record.revoked) {
+            trustFailureReason = "DNS trust anchor reports this attester as revoked.";
+            setDnsMessage(trustFailureReason);
+          } else if (result.record.domainAdminWallet) {
             const isMatch = discovery.record.attester.toLowerCase() === result.record.domainAdminWallet.toLowerCase();
-            setDnsMessage(
-              isMatch
-                ? "DNS attester wallet matches on-chain domain admin wallet."
-                : "DNS attester wallet does not match on-chain domain admin wallet."
-            );
+            if (isMatch) {
+              setDnsMessage("DNS attester wallet matches on-chain domain admin wallet.");
+            } else {
+              trustFailureReason = "DNS attester wallet does not match on-chain domain admin wallet.";
+              setDnsMessage(trustFailureReason);
+            }
           } else {
-            setDnsMessage("DNS TXT found, but no on-chain domain admin wallet was resolved for comparison.");
+            trustFailureReason = "DNS TXT found, but no on-chain domain admin wallet was resolved for comparison.";
+            setDnsMessage(trustFailureReason);
           }
         } catch (dnsError) {
           setDnsDiscovery(null);
-          setDnsMessage(dnsError instanceof Error ? dnsError.message : "DNS lookup failed.");
+          trustFailureReason = dnsError instanceof Error ? dnsError.message : "DNS lookup failed.";
+          setDnsMessage(trustFailureReason);
         }
       } else {
         setDnsMessage("No domain found on UserCap, DNS verification skipped.");
+      }
+
+      if (trustFailureReason) {
+        setStatus("unconfirmed");
+        setMessage(`Hash matched on chain, but the trust check failed: ${trustFailureReason}`);
+        return;
       }
 
       setStatus("verified");
