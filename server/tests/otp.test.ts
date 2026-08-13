@@ -309,6 +309,33 @@ describe("otp routes", () => {
 
     await app.close();
   });
+
+  it("does not leak internal error details for an unmapped failure", async () => {
+    const { findOtpSession } = await import("../src/db/repositories.js");
+    vi.mocked(findOtpSession).mockRejectedValueOnce(
+      new Error("connection to server at internal-db-host.internal:5432 failed: password authentication failed")
+    );
+
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/otp/user-id-1",
+      headers: APP_API_KEY_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(500);
+    const body = response.json();
+    expect(body).toEqual({
+      error: "internal_error",
+      message: "An unexpected error occurred.",
+      correlationId: expect.any(String),
+    });
+    expect(JSON.stringify(body)).not.toContain("internal-db-host");
+    expect(JSON.stringify(body)).not.toContain("password authentication failed");
+
+    await app.close();
+  });
 });
 
 describe("OTP rate limiting", () => {
