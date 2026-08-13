@@ -328,7 +328,7 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
                               alignment: CrossAxisAlignment.start,
                               entries: [
                                 ('LOC', _locationLabel),
-                                ('ENC', 'AES-256-GCM / FORENSIC_SEC'),
+                                ('SIGN', 'SHA-256 / ED25519'),
                               ],
                             ),
                           ),
@@ -466,7 +466,7 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
                   ],
                   const SizedBox(height: 8),
                   Text(
-                    'END-TO-END FORENSIC ENCRYPTION ACTIVE',
+                    'CAPTURES ARE HASHED AND SIGNED ON DEVICE',
                     textAlign: TextAlign.center,
                     style: AppTextStyles.labelSmall.copyWith(
                       color: AppColors.textMuted,

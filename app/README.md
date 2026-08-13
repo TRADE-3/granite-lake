@@ -1,6 +1,6 @@
 # granite_lake
 
-Forensic-grade photo and file authenticity for field operations.
+Cryptographically attested photo and file records for field operations.
 
 ## Overview
 
