@@ -48,7 +48,6 @@ export async function createOtpSession(input: {
   assertConfiguredDomain(input.domain);
   assertConfiguredEmailDomain(input.userEmail);
 
-  const userId = randomUUID();
   const userEmail = normalizeEmail(input.userEmail);
   const existingUser = await findUserByEmail(userEmail);
 
@@ -56,6 +55,13 @@ export async function createOtpSession(input: {
     throw new Error(`User email ${userEmail} is already registered.`);
   }
 
+  const pendingSession = await findActivePendingOtpSessionByEmail(userEmail);
+
+  if (pendingSession) {
+    throw new Error(`User email ${userEmail} already has a registration in progress.`);
+  }
+
+  const userId = randomUUID();
   const otp = String(randomInt(0, 1_000_000)).padStart(6, "0");
   const createdAt = new Date();
   const expiresAt = new Date(createdAt.getTime() + input.ttlMs);
@@ -147,6 +153,71 @@ export async function findOtpSession(userId: string): Promise<OtpSessionRecord |
   );
 
   return result.rows[0] ? withConfiguredOtpFields(result.rows[0]) : null;
+}
+
+async function findActivePendingOtpSessionByEmail(userEmail: string): Promise<OtpSessionRecord | null> {
+  const result = await pool.query<OtpSessionRecord>(
+    `
+      select
+        user_id as "userId",
+        user_email as "userEmail",
+        user_wallet as "userWallet",
+        otp_hash as "otpHash",
+        status,
+        created_at as "createdAt",
+        expires_at as "expiresAt",
+        verified_at as "verifiedAt",
+        tx_digest as "txDigest",
+        user_cap_id as "userCapId",
+        error
+      from otp_sessions
+      where user_email = $1
+        and status = 'pending_verification'
+        and expires_at > now()
+      limit 1
+    `,
+    [userEmail]
+  );
+
+  return result.rows[0] ? withConfiguredOtpFields(result.rows[0]) : null;
+}
+
+export type OrphanedOtpSessionRecord = {
+  userId: string;
+  userEmail: string;
+  userWallet: string | null;
+  verifiedAt: string | null;
+  txDigest: string | null;
+  userCapId: string | null;
+};
+
+/**
+ * Completed otp_sessions rows with no corresponding users row: sessions that
+ * minted an on-chain capability but whose users insert never landed, most
+ * commonly because a second concurrent session for the same email lost the
+ * race against the users.user_email uniqueness constraint (see F-02). These
+ * capabilities are live on chain and unrevocable through /admin/users, which
+ * only reads the users table.
+ */
+export async function findOrphanedCompletedOtpSessions(): Promise<OrphanedOtpSessionRecord[]> {
+  const result = await pool.query<OrphanedOtpSessionRecord>(
+    `
+      select
+        s.user_id as "userId",
+        s.user_email as "userEmail",
+        s.user_wallet as "userWallet",
+        s.verified_at as "verifiedAt",
+        s.tx_digest as "txDigest",
+        s.user_cap_id as "userCapId"
+      from otp_sessions s
+      left join users u on u.user_id = s.user_id
+      where s.status = 'completed'
+        and u.user_id is null
+      order by s.verified_at desc
+    `
+  );
+
+  return result.rows;
 }
 
 export async function listUsers(): Promise<UserRecord[]> {
@@ -286,6 +357,17 @@ export async function completeOtpSession(input: {
   assertConfiguredDomain(input.domain);
 
   assertSuiAddress(input.userWallet, "userWallet");
+
+  const existingUser = await findUserByEmail(session.userEmail);
+
+  if (existingUser) {
+    await pool.query(
+      `update otp_sessions set status = 'expired', error = 'User email already registered by another session.' where user_id = $1`,
+      [input.userId]
+    );
+
+    throw new Error(`User email ${session.userEmail} is already registered.`);
+  }
 
   const addUserResult = await suiService.addUser({
     domain: configuredDomain(),

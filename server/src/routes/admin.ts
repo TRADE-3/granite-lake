@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { env } from "../config/env.js";
-import { disableUser, enableUser, listUsers } from "../db/repositories.js";
+import { disableUser, enableUser, findOrphanedCompletedOtpSessions, listUsers } from "../db/repositories.js";
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", async (request, reply) => {
@@ -21,6 +21,10 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/admin/users", async () => ({
     users: await listUsers(),
+  }));
+
+  app.get("/admin/orphaned-sessions", async () => ({
+    orphanedSessions: await findOrphanedCompletedOtpSessions(),
   }));
 
   app.patch("/admin/users/:userId/disable", async (request, reply) => {
