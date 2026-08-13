@@ -1,9 +1,11 @@
 package com.favoritemedium.granite_lake
 
 import android.os.Build
+import android.os.Bundle
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
+import android.view.WindowManager
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -27,6 +29,18 @@ class MainActivity : FlutterFragmentActivity() {
 
 	private var pendingResult: MethodChannel.Result? = null
 	private var pendingCreateAliasForCleanup: String? = null
+
+	override fun onCreate(savedInstanceState: Bundle?) {
+		// Every screen in this app can show captured evidence photos or their
+		// metadata. Block screenshots, screen recording, and the recent-apps
+		// thumbnail for the whole activity rather than picking screens to
+		// exempt.
+		window.setFlags(
+			WindowManager.LayoutParams.FLAG_SECURE,
+			WindowManager.LayoutParams.FLAG_SECURE,
+		)
+		super.onCreate(savedInstanceState)
+	}
 
 	override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
 		super.configureFlutterEngine(flutterEngine)
