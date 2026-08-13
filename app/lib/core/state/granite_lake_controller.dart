@@ -390,6 +390,23 @@ class GraniteLakeController extends ChangeNotifier {
   }
 
   Future<void> deleteAccount() async {
+    final claim = _photoAttestationClaim;
+    if (claim != null) {
+      // Best-effort: local deletion must succeed even if this fails or the
+      // device is offline. Without it, the server (and the on-chain
+      // enabled flag) would keep listing this user as active indefinitely.
+      try {
+        await _photoAttestationService.deactivateUser(
+          domain: claim.domain,
+          userId: claim.userId,
+        );
+      } catch (_) {
+        // Ignored: nothing the user can do about a failed server sync from
+        // the delete-account flow, and their device-local deletion should
+        // not be blocked by it.
+      }
+    }
+
     await _resetAppState(GraniteLakeSecureStateService.accountDeletedMessage);
   }
 

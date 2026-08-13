@@ -488,6 +488,37 @@ class PhotoAttestationService {
     }
   }
 
+  /// Tells the backend that this device deleted its local account, so the
+  /// server (and the on-chain enabled flag) stop listing the user as
+  /// active. Best-effort by design: the caller should not block local
+  /// account deletion on this succeeding, since deletion is something the
+  /// user can always do to their own device regardless of connectivity.
+  Future<void> deactivateUser({
+    required String domain,
+    required String userId,
+  }) async {
+    final backendConfig = await AppUtils.resolveOtpBackendConfig(
+      domain: domain,
+    );
+    final uri = AppUtils.otpBackendUri(
+      backendConfig.url,
+      'otp/$userId/deactivate',
+    );
+    final response = await _httpClient.patch(
+      uri,
+      headers: {AppUtils.appApiKeyHeader: backendConfig.apiKey},
+    );
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final payload = _decodeJsonPayload(response.body);
+      final message = _readBackendMessage(payload) ?? 'Deactivation failed.';
+      throw PhotoAttestationException(
+        userMessage: message,
+        rawMessage: message,
+      );
+    }
+  }
+
   Future<PhotoAttestationSubmissionResult> attestPhoto({
     required IdentityRecord identity,
     required SuiED25519PrivateKey signingKey,

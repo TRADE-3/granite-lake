@@ -223,7 +223,7 @@ Rules:
 - `domain` must match env `DOMAIN`.
 - `user_email` must be a valid email.
 - `user_email` domain must match env `DOMAIN`.
-- `user_email` must not already exist in the `users` table.
+- `user_email` must not already exist in the `users` table, **including disabled users** — see [Account Deletion and Re-registration](#account-deletion-and-re-registration).
 - The OTP is not returned by the API.
 
 Request:
@@ -320,6 +320,29 @@ Success:
   "userCapId": "0x...",
   "status": "completed",
   "verifiedAt": "2026-06-05T05:31:00.000Z"
+}
+```
+
+### `PATCH /otp/:userId/deactivate`
+
+Self-service deactivation: submits on-chain `disable_user`, then marks the user as disabled in Postgres. Called by the app when a user deletes their local account, so the server and chain stop listing them as active. Gated by `x-app-api-key`, the same as every other `/otp/*` route — not `x-admin-api-key`. See [App Authentication](#app-authentication) for what that credential does and does not prove.
+
+Headers:
+
+```http
+x-app-api-key: <APP_API_KEY>
+```
+
+Success:
+
+```json
+{
+  "message": "User disabled successfully.",
+  "user": {
+    "userId": "3cb8c8a1-69da-4efe-8a78-4d51cfc2df48",
+    "status": "disabled",
+    "disableUserTxDigest": "8s..."
+  }
 }
 ```
 
@@ -442,6 +465,18 @@ The database does not store `domain` or `admin_wallet`; those come from env beca
 5. Server verifies OTP and submits Sui `add_user`.
 6. Server stores the user as `active`.
 7. Admin can call disable/enable endpoints, which also submit Sui transactions.
+
+## Account Deletion and Re-registration
+
+Deleting a user's local app data (or an admin disabling them via `PATCH /admin/users/:userId/disable`) sets their `users` row to `status = 'disabled'`. It does not delete the row, and it does not free their `user_email` for a new registration — `POST /otp/request` and `POST /otp/verify` both reject an email that already has a `users` row, active or disabled, with `user_email_exists`.
+
+This is intentional, not an oversight. The only thing standing between "anyone who can receive an OTP at this email" and "a working on-chain identity for this domain" is possession of the inbox. That is an acceptable bar for _creating_ an identity, because it is bounded: it can only mint one capability per email, once. It is not an acceptable bar for _restoring one that was disabled_, because disabling is meant to be a deliberate act — the account holder choosing to delete their own device, or a domain admin responding to something (offboarding, a lost or compromised device, a policy violation). Letting the same low-friction, self-service OTP flow silently reverse that decision — no admin involved, no record of why the original disable happened — would mean disabling a user never actually revokes anything durably: anyone who still receives that address's mail could immediately reopen the identity on a new device. That collapses `disable` from an admin-controlled trust boundary into a formality.
+
+Concretely, this closes off a scenario worth naming: an attacker who gains transient access to a target's email inbox cannot use the disable/re-register pattern to permanently seize that person's identity slot for their own wallet outside the domain admin's view, even briefly. They can request and verify an OTP once (creating a new identity, if the email is not already registered) or self-deactivate an account they already control the device for (see `PATCH /otp/:userId/deactivate`), but they cannot make a previously-registered, since-disabled email start working with a wallet of their choosing.
+
+The tradeoff is operational: there is currently no self-service or admin path to free up a disabled email for re-registration. A person who deletes their own account is locked out of that email permanently unless an operator intervenes directly in Postgres.
+
+**Planned follow-up:** re-registration will go through the domain admin, not self-service. An admin who confirms the request is legitimate reassigns the email to the new wallet manually; the app gets a dedicated re-registration onboarding flow, separate from first-time signup, that this admin-mediated path drives. Neither exists yet.
 
 ## Security
 

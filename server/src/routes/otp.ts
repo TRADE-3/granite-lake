@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { env } from "../config/env.js";
-import { completeOtpSession, createOtpSession, findOtpSession } from "../db/repositories.js";
+import { completeOtpSession, createOtpSession, disableUser, findOtpSession } from "../db/repositories.js";
 import { VaultConnectionError } from "../services/VaultService.js";
 import { requireAppApiKey } from "../utils/auth.js";
 import { RateLimiter, otpRequestLimiter, otpVerifyLimiter, resetAllRateLimiters } from "../utils/rateLimit.js";
@@ -143,6 +143,33 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
       verifiedAt: session.verifiedAt,
       error: session.error,
     };
+  });
+
+  // Self-service account deletion: when a user deletes the app's local
+  // copy of their account, nothing previously told the server, so it and
+  // the chain kept listing them as active indefinitely. Gated by the same
+  // app API key as every other route here — consistent with /otp/verify
+  // already trusting that key to complete a registration for any userId,
+  // this trusts it to disable one. userId is an unguessable random UUID,
+  // never listed by any unauthenticated endpoint.
+  app.patch("/otp/:userId/deactivate", async (request, reply) => {
+    const userId = z
+      .string()
+      .min(1)
+      .parse((request.params as { userId: string }).userId);
+    const user = await disableUser(userId);
+
+    if (!user) {
+      return reply.status(404).send({
+        error: "not_found",
+        message: "No user found.",
+      });
+    }
+
+    return reply.send({
+      message: "User disabled successfully.",
+      user,
+    });
   });
 
   app.post("/otp/verify", async (request, reply) => {
