@@ -159,7 +159,24 @@ class GraniteLakeSecureStateService {
     }
 
     if (biometricBinding != null &&
+        biometricGatePayload != null &&
         (identity?.hasExportablePrivateKey ?? false)) {
+      // bindBiometrics() writes the gate payload and binding record before
+      // clearing the raw key from the identity record. Both prior writes
+      // are present, so only that last write was interrupted — finish it
+      // using the raw key already in memory instead of tearing down a
+      // working hardware gate, which would leave the raw key exposed again
+      // until the user re-binds from scratch.
+      final protectedIdentity = identity!.withoutPrivateKey();
+      await _storage.write(
+        key: _identityKey,
+        value: jsonEncode(protectedIdentity.toJson()),
+      );
+      identity = protectedIdentity;
+    } else if (biometricBinding != null &&
+        (identity?.hasExportablePrivateKey ?? false)) {
+      // The gate payload itself is missing, so there's nothing to recover
+      // the raw key into; only here does starting over make sense.
       await clearBiometricBindingAndSession(biometricBinding: biometricBinding);
       biometricBinding = null;
       biometricGatePayload = null;
