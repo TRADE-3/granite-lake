@@ -31,9 +31,12 @@ per-domain treatment.
 
 **Client**
 
-- Single `GL_OTP_BACKEND_URL` dart-define is replaced with a per-domain map dart-define, e.g.
-  `GL_OTP_BACKEND_MAP='{"acme.com":{"url":"https://acme-api.example.com","apiKey":"..."}}'`,
-  looked up by the domain the user enters at registration.
+- Single `GL_OTP_BACKEND_URL` dart-define is replaced with `GL_OTP_BACKEND_CONFIG`, e.g.
+  `GL_OTP_BACKEND_CONFIG='{"domain":"acme.com","url":"https://acme-api.example.com","apiKey":"..."}'`.
+  This was originally a per-domain map so one build could serve several tenants; it was collapsed
+  to a single `{domain, url, apiKey}` object as an interim mitigation for the blast-radius issue
+  below, since each build already targets exactly one client's domain in practice. The resolver
+  refuses any domain other than the one configured here.
 - Passed via `--dart-define-from-file=<gitignored-json>` rather than inline on the command line —
   keeps the values out of shell history, `ps aux` output during the build, and CI logs. This is a
   build-hygiene fix only; see the leak discussion below for why it doesn't solve the deeper
@@ -52,9 +55,11 @@ API without ever having installed the app) immediately.
   far more trivially, by running the app through a user-controlled local proxy (any MITM tool with
   a device-installed trusted cert). This applies equally to the backend URL and the API key; the
   app cannot keep either confidential from its own device or user.
-- **A decompiled app leaks the entire domain → key map at once**, not just one domain's key.
-  Per-domain granularity increases the blast radius of a single extraction event rather than
-  containing it — one leaked app build exposes every tenant's key simultaneously.
+- ~~**A decompiled app leaks the entire domain → key map at once**, not just one domain's
+  key.~~ **Mitigated:** the client now embeds a single `{domain, url, apiKey}` object
+  (`GL_OTP_BACKEND_CONFIG`) instead of a per-domain map, so one build can only ever carry one
+  tenant's credential — an extraction still leaks that key, but not every tenant's at once. This is
+  still a static, extractable secret; it doesn't change the next two points.
 - **The URL and the key are not equally sensitive, even though their exposure is identical.** The
   URL is routing information — knowing it doesn't let an attacker make an authenticated call. The
   key's entire purpose is to prove "this call came from our real app," and a static value a user

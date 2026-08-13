@@ -10,9 +10,9 @@ import '../constants/app_constants.dart';
 /// Resolves the OTP/UTC backend for a given company domain.
 ///
 /// Behaviour:
-///   * Release builds trust a per-domain map: `GL_OTP_BACKEND_MAP`. Domains not
-///     present in the map are refused. If the map is unset, the resolver
-///     throws for every domain.
+///   * Release builds trust a single configured domain: `GL_OTP_BACKEND_CONFIG`.
+///     Any other domain is refused. If unset, the resolver throws for every
+///     domain.
 ///   * Debug builds (`kDebugMode`) may opt in to localhost probes by passing
 ///     `--dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true`, paired with
 ///     `--dart-define=GL_OTP_BACKEND_DEV_API_KEY=<key>` matching the local
@@ -42,8 +42,9 @@ class AppUtils {
     final normalizedDomain = domain.trim().toLowerCase();
     final candidates = <DomainBackendConfig>[];
 
-    final configured = AppConstants.otpBackendConfigs[normalizedDomain];
-    if (configured != null) {
+    final configured = AppConstants.otpBackendConfig;
+    if (configured != null &&
+        AppConstants.otpBackendDomain == normalizedDomain) {
       candidates.add(configured);
     }
 
@@ -139,8 +140,8 @@ class AppUtils {
       );
       throw StateError(
         'No backend configured for domain "$domain". Refusing to talk to any '
-        'backend. Set --dart-define=GL_OTP_BACKEND_MAP with an entry for '
-        'this domain at build time.',
+        'backend. Set --dart-define=GL_OTP_BACKEND_CONFIG for this domain '
+        'at build time.',
       );
     }
 
