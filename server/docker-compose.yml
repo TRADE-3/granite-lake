@@ -6,7 +6,7 @@ services:
     container_name: ${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake_db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: ${POSTGRES_DB:-${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake}
     ports:
       - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
@@ -33,14 +33,14 @@ services:
       NODE_ENV: ${NODE_ENV:-development}
       CLIENT_ID: ${CLIENT_ID:-domain_demo}
       DOMAIN: ${DOMAIN:-domain.com}
-      ADMIN_WALLET: ${ADMIN_WALLET:-0xadmin}
-      ADMIN_API_KEY: ${ADMIN_API_KEY:-replace-with-a-long-random-admin-key}
-      APP_API_KEY: ${APP_API_KEY:-replace-with-a-long-random-app-key}
+      ADMIN_WALLET: ${ADMIN_WALLET:?ADMIN_WALLET must be set}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set}
+      APP_API_KEY: ${APP_API_KEY:?APP_API_KEY must be set}
       OTP_TTL_MS: ${OTP_TTL_MS:-300000}
       GOOGLE_CHAT_WEBHOOK_URL: ${GOOGLE_CHAT_WEBHOOK_URL:-}
       SUI_NETWORK: ${SUI_NETWORK:-testnet}
       SUI_RPC_URL: ${SUI_RPC_URL:-https://fullnode.testnet.sui.io:443}
-      SUI_PRIVATE_KEY: ${SUI_PRIVATE_KEY:-}
+      SUI_PRIVATE_KEY: ${SUI_PRIVATE_KEY:?SUI_PRIVATE_KEY must be set}
       SUI_PACKAGE_ID: ${SUI_PACKAGE_ID:-}
       SUI_MODULE: ${SUI_MODULE:-photo_attestation}
       SUI_REGISTRY_ID: ${SUI_REGISTRY_ID:-}
@@ -55,7 +55,7 @@ services:
       VAULT_KV_MOUNT: ${VAULT_KV_MOUNT:-secret}
       VAULT_SECRET_PREFIX: ${VAULT_SECRET_PREFIX:-}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake}
@@ -72,14 +72,14 @@ services:
       HOST: ${HOST:-0.0.0.0}
       CLIENT_ID: ${CLIENT_ID:-domain_demo}
       DOMAIN: ${DOMAIN:-domain.com}
-      ADMIN_WALLET: ${ADMIN_WALLET:-0xadmin}
-      ADMIN_API_KEY: ${ADMIN_API_KEY:-replace-with-a-long-random-admin-key}
-      APP_API_KEY: ${APP_API_KEY:-replace-with-a-long-random-app-key}
+      ADMIN_WALLET: ${ADMIN_WALLET:?ADMIN_WALLET must be set}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set}
+      APP_API_KEY: ${APP_API_KEY:?APP_API_KEY must be set}
       OTP_TTL_MS: ${OTP_TTL_MS:-300000}
       GOOGLE_CHAT_WEBHOOK_URL: ${GOOGLE_CHAT_WEBHOOK_URL:-}
       SUI_NETWORK: ${SUI_NETWORK:-testnet}
       SUI_RPC_URL: ${SUI_RPC_URL:-https://fullnode.testnet.sui.io:443}
-      SUI_PRIVATE_KEY: ${SUI_PRIVATE_KEY:-}
+      SUI_PRIVATE_KEY: ${SUI_PRIVATE_KEY:?SUI_PRIVATE_KEY must be set}
       SUI_PACKAGE_ID: ${SUI_PACKAGE_ID:-}
       SUI_MODULE: ${SUI_MODULE:-photo_attestation}
       SUI_REGISTRY_ID: ${SUI_REGISTRY_ID:-}
@@ -94,7 +94,7 @@ services:
       VAULT_KV_MOUNT: ${VAULT_KV_MOUNT:-secret}
       VAULT_SECRET_PREFIX: ${VAULT_SECRET_PREFIX:-}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-${NODE_ENV:-development}_${CLIENT_ID:-domain_demo}_granite_lake}
