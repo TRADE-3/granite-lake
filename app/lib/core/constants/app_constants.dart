@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 /// A single domain's backend routing + credential, resolved from
-/// [AppConstants.otpBackendConfigs].
+/// [AppConstants.otpBackendConfig].
 class DomainBackendConfig {
   const DomainBackendConfig({required this.url, required this.apiKey});
 
@@ -44,11 +44,15 @@ abstract final class AppConstants {
 
   // OTP / UTC backend configuration.
   //
-  // One backend stack is deployed per domain, so production builds embed a
-  // per-domain map of {url, apiKey} rather than a single URL. Production
-  // builds MUST set GL_OTP_BACKEND_MAP. The resolver in
-  // `core/utils/utils.dart` will refuse to talk to any domain not present in
-  // this map.
+  // One backend stack is deployed per domain, and each app build serves
+  // exactly one client's domain, so production builds embed a single
+  // {domain, url, apiKey} object rather than a map covering several
+  // tenants. Earlier this was a per-domain map so one build could carry
+  // several tenants' credentials at once; extracting the compiled app (see
+  // the Security note below) would then have handed over every tenant's
+  // key in one string instead of just this build's own. Production builds
+  // MUST set GL_OTP_BACKEND_CONFIG. The resolver in `core/utils/utils.dart`
+  // will refuse to talk to any domain other than the one configured here.
   //
   // Security: Phase 1 only. The connection is secured by TLS (HTTPS), and
   // apiKey stops opportunistic/scripted callers, but a value embedded in a
@@ -64,8 +68,8 @@ abstract final class AppConstants {
   // For local development, enable dev fallbacks:
   //   --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true
   //   --dart-define=GL_OTP_BACKEND_DEV_API_KEY=<key matching local server .env>
-  static const String _rawOtpBackendMap = String.fromEnvironment(
-    'GL_OTP_BACKEND_MAP',
+  static const String _rawOtpBackendConfig = String.fromEnvironment(
+    'GL_OTP_BACKEND_CONFIG',
     defaultValue: '',
   );
   static const bool otpBackendDevFallbacksEnabled = bool.fromEnvironment(
@@ -81,46 +85,46 @@ abstract final class AppConstants {
   /// to a value stored in secure storage and forces a re-resolution on mismatch.
   static const int otpBackendAppBuildVersion = 2;
 
-  /// Per-domain backend config parsed from [_rawOtpBackendMap], keyed by
-  /// lowercased, trimmed domain. Example shape:
-  /// `{"acme.com":{"url":"https://acme-api.example.com","apiKey":"..."}}`.
-  static Map<String, DomainBackendConfig> get otpBackendConfigs {
-    final cleaned = _rawOtpBackendMap.trim();
+  /// The one domain this build serves, lowercased and trimmed, parsed from
+  /// [_rawOtpBackendConfig]. Null if unset or malformed.
+  static String? get otpBackendDomain {
+    final domain = (_parsedOtpBackendConfig?['domain'] as String? ?? '')
+        .trim()
+        .toLowerCase();
+    return domain.isEmpty ? null : domain;
+  }
+
+  /// This build's single backend config, parsed from [_rawOtpBackendConfig].
+  /// Example shape: `{"domain":"acme.com","url":"https://acme-api.example.com","apiKey":"..."}`.
+  static DomainBackendConfig? get otpBackendConfig {
+    final decoded = _parsedOtpBackendConfig;
+    if (decoded == null) {
+      return null;
+    }
+
+    final url = (decoded['url'] as String? ?? '').trim();
+    final apiKey = (decoded['apiKey'] as String? ?? '').trim();
+    if (url.isEmpty || apiKey.isEmpty) {
+      return null;
+    }
+
+    return DomainBackendConfig(url: url, apiKey: apiKey);
+  }
+
+  static Map<String, dynamic>? get _parsedOtpBackendConfig {
+    final cleaned = _rawOtpBackendConfig.trim();
     if (cleaned.isEmpty) {
-      return const {};
+      return null;
     }
 
     final Object? decoded;
     try {
       decoded = jsonDecode(cleaned);
     } on FormatException {
-      return const {};
+      return null;
     }
 
-    if (decoded is! Map<String, dynamic>) {
-      return const {};
-    }
-
-    final result = <String, DomainBackendConfig>{};
-    for (final entry in decoded.entries) {
-      final value = entry.value;
-      if (value is! Map<String, dynamic>) {
-        continue;
-      }
-
-      final url = (value['url'] as String? ?? '').trim();
-      final apiKey = (value['apiKey'] as String? ?? '').trim();
-      if (url.isEmpty || apiKey.isEmpty) {
-        continue;
-      }
-
-      result[entry.key.trim().toLowerCase()] = DomainBackendConfig(
-        url: url,
-        apiKey: apiKey,
-      );
-    }
-
-    return result;
+    return decoded is Map<String, dynamic> ? decoded : null;
   }
 
   static const String defaultPhotoAttestationModule = 'photo_attestation';

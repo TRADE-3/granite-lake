@@ -114,7 +114,7 @@ class CaptureMethodScreen extends StatelessWidget {
                       child: _ActionCard(
                         icon: Icons.photo_camera_rounded,
                         title: 'TAKE_PHOTO',
-                        badge: 'Instant Forensic Attestation',
+                        badge: 'Instant Signed Attestation',
                         badgeForeground: AppColors.primary,
                         badgeBackground: AppColors.primary.withAlpha(18),
                         description:

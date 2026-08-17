@@ -3,16 +3,6 @@ import { pool } from "../db/pool.js";
 import { requireAppApiKey } from "../utils/auth.js";
 
 export const healthRoutes: FastifyPluginAsync = async (app) => {
-  app.addHook("onRequest", async (request, reply) => {
-    if (!request.url.startsWith("/utc")) {
-      return;
-    }
-
-    if (!requireAppApiKey(request, reply)) {
-      return;
-    }
-  });
-
   app.get("/health", async (_request, reply) => {
     try {
       await pool.query("select 1");
@@ -31,7 +21,15 @@ export const healthRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.get("/utc", async () => ({
-    utc: new Date().toISOString(),
-  }));
+  app.get(
+    "/utc",
+    {
+      preHandler: async (request, reply) => {
+        requireAppApiKey(request, reply);
+      },
+    },
+    async () => ({
+      utc: new Date().toISOString(),
+    })
+  );
 };

@@ -87,7 +87,7 @@ class WelcomeScreen extends StatelessWidget {
                                 ),
                                 const SizedBox(height: 16),
                                 Text(
-                                  'Forensic-grade photo authenticity\nfor field operations.',
+                                  'Cryptographically attested photos\nfor field operations.',
                                   textAlign: TextAlign.center,
                                   style: AppTextStyles.bodyMedium.copyWith(
                                     color: AppColors.textSecondary,

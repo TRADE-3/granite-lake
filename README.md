@@ -1,6 +1,6 @@
 # Granite Lake
 
-**Granite Lake** is an open-source, mobile-first platform that turns everyday field photos and critical project documents into bulletproof, forensic-grade evidence. By hardware-locking user identity via a biometric gate and anchoring records to the Sui blockchain, Granite Lake provides a permanent, tamper-proof audit trail for industries like construction, insurance, and logistics.
+**Granite Lake** is an open-source, mobile-first platform that turns everyday field photos and critical project documents into cryptographically attested records. By hardware-locking user identity via a biometric gate and anchoring a signed hash of each record to the Sui blockchain, Granite Lake provides a permanent, tamper-evident record of who submitted a given photo or document and when — for industries like construction, insurance, and logistics.
 
 ## Core Capabilities
 
@@ -8,13 +8,13 @@
   Cryptographic signing keys are secured by the user's physical fingerprint via a biometric gate.
 
 - **Flexible Field Workflows**
-  Teams can seamlessly snap live, location-verified photos or securely upload critical documents (like PDFs and compliance logs).
+  Teams can seamlessly capture field photos or securely upload critical documents (like PDFs and compliance logs).
 
-- **Immutable Context**
-  Photos are instantly bound with verified GPS coordinates, altitude, and timestamps; all assets (photos and documents) are tagged with project IDs.
+- **Attested Context**
+  Photos are bound with the device's self-reported GPS coordinates, altitude, and timestamp, and all assets (photos and documents) are tagged with project IDs. These values are recorded as submitted by the signing device and are not independently verified.
 
 - **Zero-Trust Verification**
-  Every file's cryptographic hash is anchored on-chain, allowing a public web portal to let anyone select a raw file to instantly verify its authenticity, or run comprehensive, chronological audits on a user's entire field history directly against the public ledger.
+  Every file's cryptographic hash is anchored on-chain, allowing a public web portal to let anyone select a raw file and check whether a matching, trust-anchored attestation exists, or run comprehensive, chronological audits on a user's entire field history directly against the public ledger.
 
 ## Repository Structure
 

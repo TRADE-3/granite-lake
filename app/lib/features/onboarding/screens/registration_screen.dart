@@ -144,7 +144,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     }
 
     setState(() => _isSubmitting = false);
-    context.go(AppRoutes.biometricSetup);
+    context.go(AppRoutes.dashboard);
   }
 
   String? get _otpExpiryLabel {
@@ -357,7 +357,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                           const SizedBox(height: 12),
                           OutlinedButton(
                             onPressed: () =>
-                                context.go(AppRoutes.identitySetup),
+                                context.go(AppRoutes.biometricSetup),
                             child: Text(
                               'BACK',
                               style: AppTextStyles.buttonText.copyWith(

@@ -58,10 +58,20 @@ export type AttestationRecord = {
   userWallet: string;
   domain: string | null;
   domainAdminWallet: string | null;
+  userEnabledAtAttestation: {
+    value: boolean | null;
+    latestEnabledTimestampMs: number | null;
+    latestDisabledTimestampMs: number | null;
+  };
 };
 
 export type VerificationResponse = {
   hasMatch: boolean;
+  // True when more than one distinct wallet has attested this exact hash.
+  // The contract accepts a hash from any enabled capability with no link to
+  // file ownership, so a collision is not resolved automatically — every
+  // matching attestation is returned instead of silently picking one.
+  collision: boolean;
   summary: string;
   request: {
     attestType: AttestType;
@@ -81,16 +91,12 @@ export type VerificationResponse = {
   scan: {
     pagesScanned: number;
     eventsScanned: number;
-    eventType: string;
     eventTypes: string[];
   };
-  attestation: AttestationRecord | null;
-  userEnabledAtAttestation: {
-    value: boolean | null;
-    latestEnabledTimestampMs: number | null;
-    latestDisabledTimestampMs: number | null;
-  };
-  dnsVerification: DnsVerification;
+  attestations: AttestationRecord[];
+  // Only populated when exactly one distinct wallet attested this hash.
+  // A collision has no single attester to check DNS trust for.
+  dnsVerification: DnsVerification | null;
   warnings: string[];
   durationMs: number;
 };

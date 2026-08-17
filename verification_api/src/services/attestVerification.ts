@@ -63,13 +63,7 @@ type OwnedObjectsResult = {
 export type VerificationScanResult = {
   pagesScanned: number;
   eventsScanned: number;
-  eventType: string | null;
-  record: AttestationRecord | null;
-  statusAtAttestation: {
-    value: boolean | null;
-    latestEnabledTimestampMs: number | null;
-    latestDisabledTimestampMs: number | null;
-  };
+  records: AttestationRecord[];
 };
 
 export type WalletAttestationsScanResult = {
@@ -154,11 +148,18 @@ function safeAddress(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+const SUI_RPC_TIMEOUT_MS = 10_000;
+// A single verify-attestation request can trigger many suix_queryEvents
+// pages while scanning for matches; without a ceiling, one request could
+// force an unbounded number of upstream RPC calls (see F-21).
+export const MAX_EVENT_PAGES = 200;
+
 async function suiRpcCall<T>(method: string, params: unknown[], rpcUrl: string): Promise<T> {
   const response = await fetch(normalizeGraphQlUrl(rpcUrl), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(buildGraphQlRequest(method, params)),
+    signal: AbortSignal.timeout(SUI_RPC_TIMEOUT_MS),
   });
 
   if (!response.ok) {
@@ -418,6 +419,7 @@ async function getDomainAdminWallet(domain: string | null, rpcUrl: string): Prom
 
   for (const eventType of domainAdminEventTypes) {
     let cursor: SuiEventCursor | null = null;
+    let pages = 0;
 
     do {
       const page: SuiEventPage = await suiRpcCall<SuiEventPage>(
@@ -425,6 +427,7 @@ async function getDomainAdminWallet(domain: string | null, rpcUrl: string): Prom
         [{ MoveEventType: eventType }, cursor, 50, true],
         rpcUrl
       );
+      pages += 1;
 
       for (const event of page.data ?? []) {
         const packageId = event.packageId.toLowerCase();
@@ -444,7 +447,7 @@ async function getDomainAdminWallet(domain: string | null, rpcUrl: string): Prom
       }
 
       cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-    } while (cursor);
+    } while (cursor && pages < MAX_EVENT_PAGES);
   }
 
   return null;
@@ -465,6 +468,7 @@ async function latestStatusTimestamp(params: {
 
   for (const eventType of params.eventTypes) {
     let cursor: SuiEventCursor | null = null;
+    let pages = 0;
 
     do {
       const page: SuiEventPage = await suiRpcCall<SuiEventPage>(
@@ -472,6 +476,7 @@ async function latestStatusTimestamp(params: {
         [{ MoveEventType: eventType }, cursor, 50, true],
         params.rpcUrl
       );
+      pages += 1;
 
       for (const event of page.data ?? []) {
         const packageId = event.packageId.toLowerCase();
@@ -501,7 +506,7 @@ async function latestStatusTimestamp(params: {
       }
 
       cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-    } while (cursor);
+    } while (cursor && pages < MAX_EVENT_PAGES);
   }
 
   return latest;
@@ -595,8 +600,15 @@ export async function verifyAttestationHashDetailed(
   const targetHash = normalizeHex(hashHex);
   const eventTypes = attestType === "attest_photo" ? PHOTO_ATTESTED_EVENT_TYPES : FILE_ATTESTED_EVENT_TYPES;
   const hashField = attestType === "attest_photo" ? "photo_hash" : "file_hash";
+  const allowedPackageIds = new Set([
+    GRANITE_LAKE_PACKAGE_ID.toLowerCase(),
+    GRANITE_LAKE_ORIGINAL_PACKAGE_ID.toLowerCase(),
+  ]);
   let pagesScanned = 0;
   let eventsScanned = 0;
+
+  const matchedEvents: SuiEvent[] = [];
+  const seen = new Set<string>();
 
   for (const eventType of eventTypes) {
     let cursor: SuiEventCursor | null = null;
@@ -613,12 +625,7 @@ export async function verifyAttestationHashDetailed(
 
       for (const event of page.data ?? []) {
         const packageId = event.packageId.toLowerCase();
-        const allowedPackageIds = new Set([
-          GRANITE_LAKE_PACKAGE_ID.toLowerCase(),
-          GRANITE_LAKE_ORIGINAL_PACKAGE_ID.toLowerCase(),
-        ]);
         if (!allowedPackageIds.has(packageId)) continue;
-
         if (!matchesExpectedEventType(event, eventType)) continue;
 
         const parsed = event.parsedJson;
@@ -629,76 +636,101 @@ export async function verifyAttestationHashDetailed(
           continue;
         }
 
-        const userWallet = safeAddress(parsed.user_wallet);
-        if (!userWallet) continue;
-
-        const userCapInfo = await getUserCapInfo(userWallet, rpcUrl);
-        const domain = userCapInfo.domain;
-        const domainAdminWallet = await getDomainAdminWallet(domain, rpcUrl);
-        const statusAtAttestation = await getEnabledAtAttestation({
-          userWallet,
-          domain,
-          attestationTimestampMs: Number(event.timestampMs ?? 0),
-          rpcUrl,
-        });
-
-        const gps = attestType === "attest_photo" ? decodeVector(parsed.gps) : null;
-        const altitude = attestType === "attest_photo" ? decodeVector(parsed.altitude) : null;
-        const fileId = attestType === "attest_file" ? decodeVector(parsed.file_id) : null;
-        const projectId = decodeVector(parsed.project_id);
-
-        const record: AttestationRecord = {
-          attestType,
-          txDigest: event.id.txDigest,
-          eventSeq: event.id.eventSeq,
-          packageId: event.packageId,
-          eventTimestampMs: event.timestampMs ?? null,
-          checkpointTimeIso: event.timestampMs ? new Date(Number(event.timestampMs)).toISOString() : null,
-          userCapObjectId: userCapInfo.userCapObjectId,
-          hashHex: eventHash,
-          ...(attestType === "attest_photo"
-            ? {
-                photoHashHex: eventHash,
-                gpsRawHex: gps?.hex ?? "",
-                gpsDecoded: gps?.decoded ?? "",
-                altitudeRawHex: altitude?.hex ?? "",
-                altitudeDecoded: altitude?.decoded ?? "",
-              }
-            : {
-                fileHashHex: eventHash,
-                fileIdRawHex: fileId?.hex ?? "",
-                fileIdDecoded: fileId?.decoded ?? "",
-              }),
-          projectIdRawHex: projectId.hex,
-          projectIdDecoded: projectId.decoded,
-          userWallet,
-          domain,
-          domainAdminWallet,
-        };
-
-        return {
-          pagesScanned,
-          eventsScanned,
-          eventType,
-          record,
-          statusAtAttestation,
-        };
+        const key = `${event.id.txDigest}:${event.id.eventSeq}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        matchedEvents.push(event);
       }
 
       cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-    } while (cursor);
+    } while (cursor && pagesScanned < MAX_EVENT_PAGES);
   }
+
+  // Cache domain/admin-wallet lookups per wallet: several matched events can
+  // share the same attester (retries, re-attestation), and each lookup is a
+  // full on-chain scan.
+  const domainByWallet = new Map<
+    string,
+    { domain: string | null; domainAdminWallet: string | null; userCapObjectId: string | null }
+  >();
+
+  async function resolveDomain(
+    userWallet: string
+  ): Promise<{ domain: string | null; domainAdminWallet: string | null; userCapObjectId: string | null }> {
+    const cached = domainByWallet.get(userWallet.toLowerCase());
+    if (cached) return cached;
+
+    const userCapInfo = await getUserCapInfo(userWallet, rpcUrl);
+    const domainAdminWallet = await getDomainAdminWallet(userCapInfo.domain, rpcUrl);
+    const resolved = {
+      domain: userCapInfo.domain,
+      domainAdminWallet,
+      userCapObjectId: userCapInfo.userCapObjectId,
+    };
+    domainByWallet.set(userWallet.toLowerCase(), resolved);
+    return resolved;
+  }
+
+  const records: AttestationRecord[] = [];
+
+  for (const event of matchedEvents) {
+    const parsed = event.parsedJson;
+    if (!parsed) continue;
+
+    const eventHash = decodePhotoHash(parsed[hashField]);
+    const userWallet = safeAddress(parsed.user_wallet);
+    if (!userWallet) continue;
+
+    const { domain, domainAdminWallet, userCapObjectId } = await resolveDomain(userWallet);
+    const userEnabledAtAttestation = await getEnabledAtAttestation({
+      userWallet,
+      domain,
+      attestationTimestampMs: Number(event.timestampMs ?? 0),
+      rpcUrl,
+    });
+
+    const gps = attestType === "attest_photo" ? decodeVector(parsed.gps) : null;
+    const altitude = attestType === "attest_photo" ? decodeVector(parsed.altitude) : null;
+    const fileId = attestType === "attest_file" ? decodeVector(parsed.file_id) : null;
+    const projectId = decodeVector(parsed.project_id);
+
+    records.push({
+      attestType,
+      txDigest: event.id.txDigest,
+      eventSeq: event.id.eventSeq,
+      packageId: event.packageId,
+      eventTimestampMs: event.timestampMs ?? null,
+      checkpointTimeIso: event.timestampMs ? new Date(Number(event.timestampMs)).toISOString() : null,
+      userCapObjectId,
+      hashHex: eventHash,
+      ...(attestType === "attest_photo"
+        ? {
+            photoHashHex: eventHash,
+            gpsRawHex: gps?.hex ?? "",
+            gpsDecoded: gps?.decoded ?? "",
+            altitudeRawHex: altitude?.hex ?? "",
+            altitudeDecoded: altitude?.decoded ?? "",
+          }
+        : {
+            fileHashHex: eventHash,
+            fileIdRawHex: fileId?.hex ?? "",
+            fileIdDecoded: fileId?.decoded ?? "",
+          }),
+      projectIdRawHex: projectId.hex,
+      projectIdDecoded: projectId.decoded,
+      userWallet,
+      domain,
+      domainAdminWallet,
+      userEnabledAtAttestation,
+    });
+  }
+
+  records.sort((a, b) => Number(a.eventTimestampMs ?? 0) - Number(b.eventTimestampMs ?? 0));
 
   return {
     pagesScanned,
     eventsScanned,
-    eventType: null,
-    record: null,
-    statusAtAttestation: {
-      value: null,
-      latestEnabledTimestampMs: null,
-      latestDisabledTimestampMs: null,
-    },
+    records,
   };
 }
 
@@ -770,6 +802,12 @@ export async function getAttestationsByWallet(
           const altitude = group.attestType === "attest_photo" ? decodeVector(parsed.altitude) : null;
           const fileId = group.attestType === "attest_file" ? decodeVector(parsed.file_id) : null;
           const projectId = decodeVector(parsed.project_id);
+          const userEnabledAtAttestation = await getEnabledAtAttestation({
+            userWallet: walletAddress,
+            domain,
+            attestationTimestampMs: Number(event.timestampMs ?? 0),
+            rpcUrl,
+          });
 
           const record: AttestationRecord = {
             attestType: group.attestType,
@@ -798,13 +836,14 @@ export async function getAttestationsByWallet(
             userWallet: safeAddress(parsed.user_wallet),
             domain,
             domainAdminWallet,
+            userEnabledAtAttestation,
           };
 
           events.push(record);
         }
 
         cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-      } while (cursor);
+      } while (cursor && pagesScanned < MAX_EVENT_PAGES);
     }
   }
 

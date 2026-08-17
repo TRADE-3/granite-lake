@@ -52,17 +52,22 @@ GoRouter createAppRouter(GraniteLakeController controller) {
             : AppRoutes.identitySetup;
       }
 
-      if (!controller.hasCompletedRegistration) {
-        return location == AppRoutes.registration ||
+      // Biometric binding is checked before registration: the identity's
+      // raw signing key exists unprotected in storage from the moment it's
+      // created until it's wrapped by the hardware-backed biometric gate,
+      // so that gate is created as early in the flow as possible rather
+      // than after registration's out-of-band code wait (see F-09).
+      if (!controller.isBiometricBound) {
+        return location == AppRoutes.biometricSetup ||
                 location == AppRoutes.identitySetup
             ? null
-            : AppRoutes.registration;
+            : AppRoutes.biometricSetup;
       }
 
-      if (!controller.isBiometricBound) {
-        return location == AppRoutes.biometricSetup
+      if (!controller.hasCompletedRegistration) {
+        return location == AppRoutes.registration
             ? null
-            : AppRoutes.biometricSetup;
+            : AppRoutes.registration;
       }
 
       if ((location == AppRoutes.capture ||

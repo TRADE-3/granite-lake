@@ -167,7 +167,7 @@ class _IdentitySetupScreenState extends State<IdentitySetupScreen> {
                                 ? null
                                 : () async {
                                     if (identity != null) {
-                                      context.go(AppRoutes.registration);
+                                      context.go(AppRoutes.biometricSetup);
                                       return;
                                     }
 
@@ -191,7 +191,7 @@ class _IdentitySetupScreenState extends State<IdentitySetupScreen> {
                                     }
 
                                     setState(() => _isGenerating = false);
-                                    context.go(AppRoutes.registration);
+                                    context.go(AppRoutes.biometricSetup);
                                   },
                             icon: const Icon(Icons.link_rounded, size: 18),
                             label: Text(

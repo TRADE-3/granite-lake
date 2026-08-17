@@ -1,6 +1,6 @@
 # granite_lake
 
-Forensic-grade photo and file authenticity for field operations.
+Cryptographically attested photo and file records for field operations.
 
 ## Overview
 
@@ -64,23 +64,23 @@ Config sync logic lives in:
 
 ## Backend URL Configuration
 
-The app needs to know the backend API URL and app API key to connect for OTP verification and UTC time. Because each domain is deployed as its own backend stack (see `server/README.md`), the app is built with a per-domain map rather than a single URL, keyed by the company domain the user enters at registration.
+The app needs to know the backend API URL and app API key to connect for OTP verification and UTC time. Each domain is deployed as its own backend stack (see `server/README.md`), and each app build targets exactly one client's domain, so the app is built with a single `{domain, url, apiKey}` object rather than a map covering several tenants. (An earlier version used a per-domain map so one build could serve multiple tenants; that was replaced because a single leaked build would then expose every tenant's key at once instead of just its own — see `granite-lake-app-auth-design.md`.)
 
 ### Build Arguments
 
-| Argument                       | Required         | Description                                                                                                                            |
-| ------------------------------ | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `GL_OTP_BACKEND_MAP`           | Yes (production) | JSON object mapping domain to `{"url": ..., "apiKey": ...}`, e.g. `{"acme.com":{"url":"https://acme-api.example.com","apiKey":"..."}}` |
-| `GL_OTP_BACKEND_DEV_FALLBACKS` | No               | Enable localhost fallback for development (`true` or `false`)                                                                          |
-| `GL_OTP_BACKEND_DEV_API_KEY`   | No               | App API key to send with localhost fallback requests, matching the local server's `APP_API_KEY`                                        |
+| Argument                       | Required         | Description                                                                                                                                |
+| ------------------------------ | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GL_OTP_BACKEND_CONFIG`        | Yes (production) | JSON object `{"domain": ..., "url": ..., "apiKey": ...}`, e.g. `{"domain":"acme.com","url":"https://acme-api.example.com","apiKey":"..."}` |
+| `GL_OTP_BACKEND_DEV_FALLBACKS` | No               | Enable localhost fallback for development (`true` or `false`)                                                                              |
+| `GL_OTP_BACKEND_DEV_API_KEY`   | No               | App API key to send with localhost fallback requests, matching the local server's `APP_API_KEY`                                            |
 
-Pass `GL_OTP_BACKEND_MAP` via `--dart-define-from-file=<path>` pointing at a **gitignored** JSON file, not inline on the command line — inline values land in shell history, `ps aux` output during the build, and CI logs. The file just needs a top-level `GL_OTP_BACKEND_MAP` key whose value is the JSON string above.
+Pass `GL_OTP_BACKEND_CONFIG` via `--dart-define-from-file=<path>` pointing at a **gitignored** JSON file, not inline on the command line — inline values land in shell history, `ps aux` output during the build, and CI logs. The file just needs a top-level `GL_OTP_BACKEND_CONFIG` key whose value is the JSON string above.
 
 ### Build Examples
 
 ```bash
 # Production build (secrets.json is gitignored, contains
-# {"GL_OTP_BACKEND_MAP": "{\"acme.com\":{\"url\":\"https://acme-api.example.com\",\"apiKey\":\"...\"}}"})
+# {"GL_OTP_BACKEND_CONFIG": "{\"domain\":\"acme.com\",\"url\":\"https://acme-api.example.com\",\"apiKey\":\"...\"}"})
 flutter build apk --dart-define-from-file=secrets.json
 
 # Development build with localhost fallback
@@ -91,18 +91,18 @@ flutter build apk --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true --dart-define=
 
 For the company domain entered at registration, the app resolves candidates in this order:
 
-1. If the domain has an entry in `GL_OTP_BACKEND_MAP`, use its `url`/`apiKey`
+1. If the domain matches `GL_OTP_BACKEND_CONFIG`'s configured `domain`, use its `url`/`apiKey`
 2. In debug mode with `GL_OTP_BACKEND_DEV_FALLBACKS=true`, also try (paired with `GL_OTP_BACKEND_DEV_API_KEY`):
    - `http://10.0.2.2:8080` (Android emulator host machine)
    - `http://127.0.0.1:8080` (localhost)
 
-A domain with no map entry and no working dev fallback is refused — the app will not talk to an unconfigured backend.
+Any other domain, and any domain with no working dev fallback, is refused — the app will not talk to an unconfigured backend.
 
 ### Security
 
 The connection is secured by TLS (HTTPS). Ensure your backend is configured with a valid TLS certificate.
 
-The app sends `apiKey` as an `x-app-api-key` header on every OTP/UTC request, gating out opportunistic/scripted callers. This is a Phase 1, dev/staging-appropriate control, not a durable production one: any value embedded in a compiled app is extractable via decompilation or by proxying the app's own traffic, so it does not prove a request came from an unmodified, legitimate copy of the app, and a decompiled build exposes every domain's key at once. See `granite-lake-app-auth-design.md` at the repo root for the full design and the Phase 2 (device attestation + short-lived session tokens) follow-up.
+The app sends `apiKey` as an `x-app-api-key` header on every OTP/UTC request, gating out opportunistic/scripted callers. This is a Phase 1, dev/staging-appropriate control, not a durable production one: any value embedded in a compiled app is extractable via decompilation or by proxying the app's own traffic, so it does not prove a request came from an unmodified, legitimate copy of the app. A decompiled build still exposes its own domain's key — the single-config change above only stops one leak from exposing every tenant's key at once. See `granite-lake-app-auth-design.md` at the repo root for the full design and the Phase 2 (device attestation + short-lived session tokens) follow-up.
 
 ## Smart Contract Integration
 
@@ -660,13 +660,13 @@ The strongest next steps would be:
 
 ### Running the App
 
-The app requires the backend API URL and app API key to be configured at build time, via `--dart-define-from-file`. **Always run/build through `secrets.json`, even for local development** — it's the same file and the same flag whether you're pointing at your local server or a deployed one, so there's no separate "dev mode" config path to keep in sync with `GL_OTP_BACKEND_MAP`'s per-domain shape.
+The app requires the backend API URL and app API key to be configured at build time, via `--dart-define-from-file`. **Always run/build through `secrets.json`, even for local development** — it's the same file and the same flag whether you're pointing at your local server or a deployed one, so there's no separate "dev mode" config path to keep in sync with `GL_OTP_BACKEND_CONFIG`'s shape.
 
-`secrets.json` lives at `app/secrets.json`, is gitignored (see `.gitignore`), and is never committed. See "Backend URL Configuration" above for its shape. For local development, point the `url` for your domain at your local server instead of a real one:
+`secrets.json` lives at `app/secrets.json`, is gitignored (see `.gitignore`), and is never committed. See "Backend URL Configuration" above for its shape. For local development, point `url` at your local server instead of a real one:
 
 ```json
 {
-  "GL_OTP_BACKEND_MAP": "{\"acme.com\":{\"url\":\"http://10.0.2.2:8080\",\"apiKey\":\"<matches local server APP_API_KEY>\"}}"
+  "GL_OTP_BACKEND_CONFIG": "{\"domain\":\"acme.com\",\"url\":\"http://10.0.2.2:8080\",\"apiKey\":\"<matches local server APP_API_KEY>\"}"
 }
 ```
 

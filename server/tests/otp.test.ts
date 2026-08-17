@@ -309,6 +309,100 @@ describe("otp routes", () => {
 
     await app.close();
   });
+
+  it("deactivates a user's own account with the app API key", async () => {
+    const { disableUser } = await import("../src/db/repositories.js");
+    vi.mocked(disableUser).mockResolvedValueOnce({
+      userId: "user-id-1",
+      domain: "acme.com",
+      userEmail: "alice@acme.com",
+      userWallet: "0xuser",
+      adminWallet: "0xabc",
+      status: "disabled",
+      userCapId: "0xcap",
+      addUserTxDigest: "add-digest",
+      disableUserTxDigest: "disable-digest",
+      enableUserTxDigest: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastVerifiedAt: new Date().toISOString(),
+      disabledAt: new Date().toISOString(),
+    });
+
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/otp/user-id-1/deactivate",
+      headers: APP_API_KEY_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(disableUser).toHaveBeenCalledWith("user-id-1");
+    expect(response.json()).toMatchObject({
+      message: "User disabled successfully.",
+      user: { userId: "user-id-1", status: "disabled" },
+    });
+
+    await app.close();
+  });
+
+  it("rejects account deactivation without an app API key", async () => {
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/otp/user-id-1/deactivate",
+    });
+
+    expect(response.statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  it("returns 404 deactivating an unknown account", async () => {
+    const { disableUser } = await import("../src/db/repositories.js");
+    vi.mocked(disableUser).mockResolvedValueOnce(null);
+
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/otp/missing-user/deactivate",
+      headers: APP_API_KEY_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(404);
+
+    await app.close();
+  });
+
+  it("does not leak internal error details for an unmapped failure", async () => {
+    const { findOtpSession } = await import("../src/db/repositories.js");
+    vi.mocked(findOtpSession).mockRejectedValueOnce(
+      new Error("connection to server at internal-db-host.internal:5432 failed: password authentication failed")
+    );
+
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/otp/user-id-1",
+      headers: APP_API_KEY_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(500);
+    const body = response.json();
+    expect(body).toEqual({
+      error: "internal_error",
+      message: "An unexpected error occurred.",
+      correlationId: expect.any(String),
+    });
+    expect(JSON.stringify(body)).not.toContain("internal-db-host");
+    expect(JSON.stringify(body)).not.toContain("password authentication failed");
+
+    await app.close();
+  });
 });
 
 describe("OTP rate limiting", () => {

@@ -12,6 +12,7 @@ import '../../../core/router/app_router.dart';
 import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/utils/utils.dart';
 
 enum _FileFlow { selecting, review, submitting, success }
 
@@ -188,6 +189,14 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
     }
   }
 
+  Future<DateTime?> _fetchBackendUtcTimestamp() async {
+    final domain = GraniteLakeScope.of(context).employee?.companyDomain;
+    if (domain == null || domain.isEmpty) {
+      return null;
+    }
+    return await AppUtils.fetchBackendUtcTimestamp(domain: domain);
+  }
+
   Future<void> _submit() async {
     final selectedFile = _selectedFile;
     if (selectedFile == null) {
@@ -213,6 +222,23 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
       _submissionMessage = 'HASHING_LOCAL_FILE';
     });
 
+    // The file id is derived from this timestamp (see
+    // GraniteLakeCaptureWorkflowService.persistFile), so it must come from
+    // a clock the client doesn't control. The file's own local
+    // last-modified time is not that: it only records when a copy was last
+    // written on this device, not a verifiable attestation moment.
+    final attestedAtUtc = await _fetchBackendUtcTimestamp();
+    if (attestedAtUtc == null) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _flow = _FileFlow.review;
+        _errorMessage = 'Could not reach the backend clock. Try again.';
+      });
+      return;
+    }
+
     final result = await controller.persistFileWithMetadata(
       sourceFilePath: selectedFile.path,
       sourceFileName: selectedFile.name,
@@ -222,8 +248,8 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
       note: _noteController.text.trim().isEmpty
           ? null
           : _noteController.text.trim(),
-      capturedAtUtc: selectedFile.modifiedAt,
-      submittedAtUtc: DateTime.now().toUtc(),
+      capturedAtUtc: attestedAtUtc,
+      submittedAtUtc: attestedAtUtc,
       buildLabel: 'FILE_IMPORT_V1',
       onProgress: (progress) {
         unawaited(_applySubmissionProgress(progress, submissionRunId));
@@ -1665,6 +1691,9 @@ class _SubmissionScanPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
+// The real file id is assigned from the backend clock at submission time
+// (see _FileAttestationScreenState._submit), not from anything known about
+// the file before then, so there is nothing meaningful to preview here.
 String _projectedFileId(_SelectedFileSnapshot file) {
-  return '${file.modifiedAt.toUtc().microsecondsSinceEpoch}';
+  return 'ASSIGNED_AT_SUBMISSION';
 }

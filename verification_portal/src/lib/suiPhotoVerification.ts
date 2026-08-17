@@ -110,8 +110,19 @@ export type VerificationResult =
     }
   | {
       hasMatch: true;
+      collision: false;
       progress: ScanProgress;
       record: PhotoAttestationRecord;
+    }
+  | {
+      // More than one distinct wallet attested this exact hash. The contract
+      // has no link between an attestation and file ownership, so this is
+      // not resolved automatically — every candidate is returned instead of
+      // silently picking one (see F-04).
+      hasMatch: true;
+      collision: true;
+      progress: ScanProgress;
+      records: PhotoAttestationRecord[];
     };
 
 export type FileVerificationResult =
@@ -121,8 +132,15 @@ export type FileVerificationResult =
     }
   | {
       hasMatch: true;
+      collision: false;
       progress: ScanProgress;
       record: FileAttestationRecord;
+    }
+  | {
+      hasMatch: true;
+      collision: true;
+      progress: ScanProgress;
+      records: FileAttestationRecord[];
     };
 
 export type WalletAttestType = "attest_photo" | "attest_file";
@@ -941,6 +959,21 @@ export async function getWalletAttestationsByWallet(options: {
   };
 }
 
+async function resolveDomainCached(
+  userWallet: string,
+  cache: Map<string, { domain: string | null; domainAdminWallet: string | null }>
+): Promise<{ domain: string | null; domainAdminWallet: string | null }> {
+  const key = normalizeWalletAddress(userWallet);
+  const cached = cache.get(key);
+  if (cached) return cached;
+
+  const domain = await getDomainFromUserCap(userWallet);
+  const domainAdminWallet = await getDomainAdminWallet(domain);
+  const resolved = { domain, domainAdminWallet };
+  cache.set(key, resolved);
+  return resolved;
+}
+
 export async function verifyPhotoHash(options: {
   photoHashHex: string;
   onProgress?: (progress: ScanProgress) => void;
@@ -948,6 +981,8 @@ export async function verifyPhotoHash(options: {
   const targetHash = normalizeHex(options.photoHashHex);
   let pagesScanned = 0;
   let eventsScanned = 0;
+  const matchedEvents: SuiEvent[] = [];
+  const seen = new Set<string>();
 
   for (const eventType of PHOTO_ATTESTED_EVENT_TYPES) {
     let cursor: SuiEventCursor | null = null;
@@ -980,38 +1015,65 @@ export async function verifyPhotoHash(options: {
           continue;
         }
 
-        const userWallet = safeAddress(parsed?.user_wallet);
-        if (!userWallet) {
-          continue;
-        }
-
-        const domain = await getDomainFromUserCap(userWallet);
-        const domainAdminWallet = await getDomainAdminWallet(domain);
-        const enabled = await getEnabledAtAttestation({
-          userWallet,
-          domain,
-          attestationTimestampMs: Number(event.timestampMs ?? 0),
-        });
-
-        const record = toRecord(event, domain, domainAdminWallet, enabled);
-        if (!record) {
-          continue;
-        }
-
-        return {
-          hasMatch: true,
-          progress: { pagesScanned, eventsScanned },
-          record,
-        };
+        const key = `${event.id.txDigest}:${event.id.eventSeq}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        matchedEvents.push(event);
       }
 
       cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
     } while (cursor);
   }
 
+  if (matchedEvents.length === 0) {
+    return {
+      hasMatch: false,
+      progress: { pagesScanned, eventsScanned },
+    };
+  }
+
+  const domainCache = new Map<string, { domain: string | null; domainAdminWallet: string | null }>();
+  const records: PhotoAttestationRecord[] = [];
+
+  for (const event of matchedEvents) {
+    const userWallet = safeAddress(event.parsedJson?.user_wallet);
+    if (!userWallet) continue;
+
+    const { domain, domainAdminWallet } = await resolveDomainCached(userWallet, domainCache);
+    const enabled = await getEnabledAtAttestation({
+      userWallet,
+      domain,
+      attestationTimestampMs: Number(event.timestampMs ?? 0),
+    });
+
+    const record = toRecord(event, domain, domainAdminWallet, enabled);
+    if (record) records.push(record);
+  }
+
+  if (records.length === 0) {
+    return {
+      hasMatch: false,
+      progress: { pagesScanned, eventsScanned },
+    };
+  }
+
+  const distinctWallets = new Set(records.map((record) => normalizeWalletAddress(record.userWallet)));
+  const progress = { pagesScanned, eventsScanned };
+
+  if (distinctWallets.size > 1) {
+    return {
+      hasMatch: true,
+      collision: true,
+      progress,
+      records,
+    };
+  }
+
   return {
-    hasMatch: false,
-    progress: { pagesScanned, eventsScanned },
+    hasMatch: true,
+    collision: false,
+    progress,
+    record: records[0],
   };
 }
 
@@ -1022,6 +1084,8 @@ export async function verifyFileHash(options: {
   const targetHash = normalizeHex(options.fileHashHex);
   let pagesScanned = 0;
   let eventsScanned = 0;
+  const matchedEvents: SuiEvent[] = [];
+  const seen = new Set<string>();
 
   for (const eventType of FILE_ATTESTED_EVENT_TYPES) {
     let cursor: SuiEventCursor | null = null;
@@ -1054,37 +1118,64 @@ export async function verifyFileHash(options: {
           continue;
         }
 
-        const userWallet = safeAddress(parsed?.user_wallet);
-        if (!userWallet) {
-          continue;
-        }
-
-        const domain = await getDomainFromUserCap(userWallet);
-        const domainAdminWallet = await getDomainAdminWallet(domain);
-        const enabled = await getEnabledAtAttestation({
-          userWallet,
-          domain,
-          attestationTimestampMs: Number(event.timestampMs ?? 0),
-        });
-
-        const record = toFileRecord(event, domain, domainAdminWallet, enabled);
-        if (!record) {
-          continue;
-        }
-
-        return {
-          hasMatch: true,
-          progress: { pagesScanned, eventsScanned },
-          record,
-        };
+        const key = `${event.id.txDigest}:${event.id.eventSeq}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        matchedEvents.push(event);
       }
 
       cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
     } while (cursor);
   }
 
+  if (matchedEvents.length === 0) {
+    return {
+      hasMatch: false,
+      progress: { pagesScanned, eventsScanned },
+    };
+  }
+
+  const domainCache = new Map<string, { domain: string | null; domainAdminWallet: string | null }>();
+  const records: FileAttestationRecord[] = [];
+
+  for (const event of matchedEvents) {
+    const userWallet = safeAddress(event.parsedJson?.user_wallet);
+    if (!userWallet) continue;
+
+    const { domain, domainAdminWallet } = await resolveDomainCached(userWallet, domainCache);
+    const enabled = await getEnabledAtAttestation({
+      userWallet,
+      domain,
+      attestationTimestampMs: Number(event.timestampMs ?? 0),
+    });
+
+    const record = toFileRecord(event, domain, domainAdminWallet, enabled);
+    if (record) records.push(record);
+  }
+
+  if (records.length === 0) {
+    return {
+      hasMatch: false,
+      progress: { pagesScanned, eventsScanned },
+    };
+  }
+
+  const distinctWallets = new Set(records.map((record) => normalizeWalletAddress(record.userWallet)));
+  const progress = { pagesScanned, eventsScanned };
+
+  if (distinctWallets.size > 1) {
+    return {
+      hasMatch: true,
+      collision: true,
+      progress,
+      records,
+    };
+  }
+
   return {
-    hasMatch: false,
-    progress: { pagesScanned, eventsScanned },
+    hasMatch: true,
+    collision: false,
+    progress,
+    record: records[0],
   };
 }
