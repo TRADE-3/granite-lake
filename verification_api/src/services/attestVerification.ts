@@ -176,7 +176,7 @@ function safeAddress(value: unknown): string {
 const SUI_RPC_TIMEOUT_MS = 10_000;
 // A single verify-attestation request can trigger many suix_queryEvents
 // pages while scanning for matches; without a ceiling, one request could
-// force an unbounded number of upstream RPC calls (see F-21).
+// force an unbounded number of upstream RPC calls.
 export const MAX_EVENT_PAGES = 200;
 
 async function suiRpcCall<T>(method: string, params: unknown[], rpcUrl: string): Promise<T> {
@@ -519,7 +519,7 @@ type RegistryDomainRecord = {
 // Reads the DomainRecord straight off the live Registry object instead of
 // reconstructing it from DomainAdded/UserAdded events, which the network
 // prunes and which can never reflect a key rotation the events didn't
-// record (see F-12).
+// record .
 async function getRegistryDomainRecord(domain: string, rpcUrl: string): Promise<RegistryDomainRecord | null> {
   const tableId = await getRegistryDomainsTableId(rpcUrl);
   if (!tableId) return null;
@@ -549,7 +549,7 @@ async function getDomainAdminWallet(domain: string | null, rpcUrl: string): Prom
 // Registration writes DomainRecord.users[wallet] = true but emits no event
 // for it, so a freshly-enrolled user with no enable/disable history has no
 // event trail to derive standing from. Read the live flag off the Registry
-// for that case instead of reporting it as unavailable (see F-16).
+// for that case instead of reporting it as unavailable.
 async function getRegistryEnabledFlag(domain: string, userWallet: string, rpcUrl: string): Promise<boolean | null> {
   const record = await getRegistryDomainRecord(domain, rpcUrl);
   if (!record?.usersTableId) return null;
@@ -660,7 +660,7 @@ async function getEnabledAtAttestation(params: {
   if (latestEnabledTimestampMs === null && latestDisabledTimestampMs === null) {
     // No enable/disable event exists before this attestation — the common
     // case for a user who has never been toggled since registration, since
-    // add_user sets the flag without emitting an event for it (F-16). Fall
+    // add_user sets the flag without emitting an event for it. Fall
     // back to the Registry's live flag rather than reporting unavailable.
     const registryValue = await getRegistryEnabledFlag(params.domain, params.userWallet, params.rpcUrl);
     return {

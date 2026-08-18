@@ -239,6 +239,7 @@ class GraniteLakeController extends ChangeNotifier {
     required String domain,
     required String userId,
     required String otp,
+    required String walletNonce,
   }) async {
     final identity = _identity;
     final config = _photoAttestationConfig;
@@ -256,22 +257,51 @@ class GraniteLakeController extends ChangeNotifier {
     final normalizedDomain = domain.trim();
     final normalizedUserId = userId.trim();
     final normalizedOtp = otp.trim();
+    final normalizedWalletNonce = walletNonce.trim();
     if (normalizedDomain.isEmpty ||
         normalizedUserId.isEmpty ||
-        normalizedOtp.isEmpty) {
+        normalizedOtp.isEmpty ||
+        normalizedWalletNonce.isEmpty) {
       return const ActionResult.failure(
-        'Company domain, OTP session id, and OTP are all required.',
+        'Company domain, OTP session id, OTP, and wallet nonce are all required.',
+      );
+    }
+
+    // Proving wallet possession needs the raw signing key. Biometrics are
+    // bound before registration runs (see F-09), which strips that key out
+    // of the in-memory identity, so unlock it the same way the capture flow
+    // does rather than reading it off `identity`. Registration itself has
+    // no use for a standing session afterward, so only start one here if
+    // none is already active, and tear back down whatever this call started
+    // once the signature has been produced - the signing key only needs to
+    // exist for the moment it's used.
+    final hadActiveSessionBeforeClaim = hasActiveSession;
+    if (!hadActiveSessionBeforeClaim) {
+      final sessionResult = await startSession(
+        promptTitle: 'Confirm your identity',
+        promptSubtitle: 'Verify biometrics to complete registration.',
+      );
+      if (!sessionResult.isSuccess) {
+        return sessionResult;
+      }
+    }
+    final sessionSigningKey = _sessionSigningKey;
+    if (sessionSigningKey == null) {
+      return const ActionResult.failure(
+        'Your secure signing key is locked. Start a new session.',
       );
     }
 
     try {
       final claim = await _photoAttestationService.claimUserWithOtp(
         identity: identity,
+        signingKey: sessionSigningKey,
         config: config,
         input: PhotoAttestationClaimInput(
           domain: normalizedDomain,
           userId: normalizedUserId,
           otp: normalizedOtp,
+          walletNonce: normalizedWalletNonce,
         ),
       );
       await _dataControllers.config.savePhotoAttestationClaim(claim);
@@ -295,6 +325,10 @@ class GraniteLakeController extends ChangeNotifier {
       return ActionResult.failure(error.userMessage);
     } catch (error) {
       return ActionResult.failure('User claim failed: $error');
+    } finally {
+      if (!hadActiveSessionBeforeClaim) {
+        await endSession();
+      }
     }
   }
 
@@ -343,7 +377,10 @@ class GraniteLakeController extends ChangeNotifier {
     return const ActionResult.success();
   }
 
-  Future<ActionResult> startSession() async {
+  Future<ActionResult> startSession({
+    String? promptTitle,
+    String? promptSubtitle,
+  }) async {
     if (hasActiveSession) {
       return const ActionResult.success();
     }
@@ -352,6 +389,8 @@ class GraniteLakeController extends ChangeNotifier {
       identity: _identity,
       biometricBinding: _biometricBinding,
       biometricGatePayload: _biometricGatePayload,
+      promptTitle: promptTitle,
+      promptSubtitle: promptSubtitle,
     );
     if (result.clearedBiometricBinding) {
       _clearLocalBiometricSessionState();

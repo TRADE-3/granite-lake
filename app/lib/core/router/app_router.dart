@@ -56,7 +56,7 @@ GoRouter createAppRouter(GraniteLakeController controller) {
       // raw signing key exists unprotected in storage from the moment it's
       // created until it's wrapped by the hardware-backed biometric gate,
       // so that gate is created as early in the flow as possible rather
-      // than after registration's out-of-band code wait (see F-09).
+      // than after registration's out-of-band code wait.
       if (!controller.isBiometricBound) {
         return location == AppRoutes.biometricSetup ||
                 location == AppRoutes.identitySetup

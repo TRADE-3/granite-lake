@@ -46,7 +46,7 @@ function normalizeJsonTxtData(data: string): string {
 // normalization before comparing, so two identical answers that differ only
 // in trailing-dot formatting must be treated as identical here too — the
 // prior unnormalized comparison made exact consensus permanently false
-// against real records that in fact agreed (see F-14).
+// against real records that in fact agreed.
 function ensureTrailingDot(name: string): string {
   return name.endsWith(".") ? name : `${name}.`;
 }
@@ -204,7 +204,7 @@ export async function lookupGraniteTxtConsensus(
   // picked between. Different networks legitimately coexist (a domain can
   // publish both a testnet and a mainnet attester record) and are not an
   // error; the record for the network this deployment actually runs on is
-  // selected below (see F-15).
+  // selected below.
   const recordsByNetwork = new Map<string, GraniteDnsRecord[]>();
 
   for (const providerResult of providerResults) {

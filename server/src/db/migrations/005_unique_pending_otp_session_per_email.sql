@@ -1,4 +1,4 @@
--- F-02: a completed on-chain capability could be minted with no matching
+-- A completed on-chain capability could be minted with no matching
 -- users row when two otp_sessions were opened for the same email and
 -- completed concurrently. The application now rejects a second pending
 -- session for an email before minting, but that check has a narrow

@@ -114,6 +114,9 @@ class MainActivity : FlutterFragmentActivity() {
 		val alias = call.argument<String>("alias")
 		val ciphertextBase64 = call.argument<String>("ciphertextBase64")
 		val ivBase64 = call.argument<String>("ivBase64")
+		val title = call.argument<String>("title")?.takeIf { it.isNotBlank() } ?: "Unlock secure session"
+		val subtitle = call.argument<String>("subtitle")?.takeIf { it.isNotBlank() }
+			?: "Verify biometrics to unlock Granite Lake."
 
 		if (alias.isNullOrBlank() || ciphertextBase64.isNullOrBlank() || ivBase64.isNullOrBlank()) {
 			result.error("invalid_arguments", "Missing biometric gate payload.", null)
@@ -126,8 +129,8 @@ class MainActivity : FlutterFragmentActivity() {
 			val ciphertext = android.util.Base64.decode(ciphertextBase64, android.util.Base64.DEFAULT)
 			val cipher = initDecryptCipher(alias, iv)
 			authenticate(
-				title = "Unlock secure session",
-				subtitle = "Verify biometrics to unlock Granite Lake.",
+				title = title,
+				subtitle = subtitle,
 				cipher = cipher,
 				onSuccess = { authenticatedCipher ->
 					val plaintext = authenticatedCipher.doFinal(ciphertext)
