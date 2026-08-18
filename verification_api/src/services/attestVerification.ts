@@ -1,13 +1,12 @@
 import {
-  DOMAIN_ADDED_EVENT_TYPES,
   FILE_ATTESTED_EVENT_TYPES,
   GRANITE_LAKE_ORIGINAL_PACKAGE_ID,
   GRANITE_LAKE_PACKAGE_ID,
+  GRANITE_LAKE_REGISTRY_ID,
   PHOTO_ATTESTED_EVENT_TYPES,
   SUI_RPC_URL,
   USER_CAP_TYPE,
   USER_CAP_TYPE_ORIGINAL,
-  USER_ADDED_EVENT_TYPES,
   USER_DISABLED_EVENT_TYPES,
   USER_ENABLED_EVENT_TYPES,
 } from "../constants.js";
@@ -113,6 +112,32 @@ function parseVectorU8(value: unknown): Uint8Array | null {
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+// BCS encoders for dynamic-field lookup keys (see getRegistryDomainRecord).
+// Table<K, V> stores each entry as a dynamic field keyed by the raw BCS
+// encoding of K, so these must match sui::table's on-chain key types exactly:
+// vector<u8> for Registry.domains, address for DomainRecord.users.
+function bcsEncodeVectorU8(bytes: Uint8Array): string {
+  const lenBytes: number[] = [];
+  let remaining = bytes.length;
+  do {
+    let byte = remaining & 0x7f;
+    remaining >>>= 7;
+    if (remaining !== 0) byte |= 0x80;
+    lenBytes.push(byte);
+  } while (remaining !== 0);
+
+  const encoded = new Uint8Array(lenBytes.length + bytes.length);
+  encoded.set(lenBytes, 0);
+  encoded.set(bytes, lenBytes.length);
+  return Buffer.from(encoded).toString("base64");
+}
+
+function bcsEncodeAddress(address: string): string {
+  const hex = normalizeHex(address).padStart(64, "0");
+  const bytes = hex.match(/.{2}/g)?.map((byte) => parseInt(byte, 16)) ?? [];
+  return Buffer.from(Uint8Array.from(bytes)).toString("base64");
 }
 
 function decodeVector(value: unknown): { hex: string; decoded: string } {
@@ -274,6 +299,41 @@ function buildGraphQlRequest(method: string, params: unknown[]): { query: string
         },
       };
     }
+    case "sui_getObject": {
+      // Queried via the Address interface rather than Query.object: the
+      // Registry's `domains` Table (and DomainRecord's nested `users`
+      // Table) are wrapped child objects, and Query.object returns null
+      // for those — only Address resolves them.
+      const [objectId] = params as [string];
+      return {
+        query: `query($address:SuiAddress!){
+          address(address:$address){
+            asObject{
+              asMoveObject{
+                contents{ json }
+              }
+            }
+          }
+        }`,
+        variables: { address: objectId },
+      };
+    }
+    case "suix_getDynamicFieldObject": {
+      const [parentId, name] = params as [string, { type: string; bcs: string }];
+      return {
+        query: `query($address:SuiAddress!,$type:String!,$bcs:Base64!){
+          address(address:$address){
+            dynamicField(name:{ type:$type, bcs:$bcs }){
+              value{
+                __typename
+                ... on MoveValue { json }
+              }
+            }
+          }
+        }`,
+        variables: { address: parentId, type: name.type, bcs: name.bcs },
+      };
+    }
     default:
       throw new Error(`Unsupported GraphQL migration path for method ${method}`);
   }
@@ -285,9 +345,28 @@ function extractGraphQlResult<T>(method: string, data: Record<string, unknown>):
       return mapOwnedObjectsGraphQlResult(data) as T;
     case "suix_queryEvents":
       return mapEventsGraphQlResult(data) as T;
+    case "sui_getObject":
+      return mapGetObjectGraphQlResult(data) as T;
+    case "suix_getDynamicFieldObject":
+      return mapDynamicFieldGraphQlResult(data) as T;
     default:
       throw new Error(`Unsupported GraphQL result mapping for method ${method}`);
   }
+}
+
+function mapGetObjectGraphQlResult(data: Record<string, unknown>): { json: Record<string, unknown> | null } {
+  const address = asRecord(data.address);
+  const asObject = asRecord(address?.asObject);
+  const asMoveObject = asRecord(asObject?.asMoveObject);
+  const contents = asRecord(asMoveObject?.contents);
+  return { json: asRecord(contents?.json) };
+}
+
+function mapDynamicFieldGraphQlResult(data: Record<string, unknown>): { json: unknown } {
+  const address = asRecord(data.address);
+  const dynamicField = asRecord(address?.dynamicField);
+  const value = asRecord(dynamicField?.value);
+  return { json: value?.json ?? null };
 }
 
 function mapOwnedObjectsGraphQlResult(data: Record<string, unknown>): OwnedObjectsResult {
@@ -412,45 +491,76 @@ async function getUserCapInfo(
   };
 }
 
+// The Registry's `domains` field is a Move Table, which stores its entries
+// as dynamic fields under the Table's own object id (not the Registry's).
+// That id never changes once the Registry is created, so it is safe to
+// cache per rpcUrl rather than re-fetching the Registry on every lookup.
+const registryDomainsTableIdCache = new Map<string, Promise<string | null>>();
+
+async function getRegistryDomainsTableId(rpcUrl: string): Promise<string | null> {
+  let cached = registryDomainsTableIdCache.get(rpcUrl);
+  if (!cached) {
+    cached = suiRpcCall<{ json: Record<string, unknown> | null }>("sui_getObject", [GRANITE_LAKE_REGISTRY_ID], rpcUrl)
+      .then((result) => asString(asRecord(result.json?.domains)?.id) || null)
+      .catch((error) => {
+        registryDomainsTableIdCache.delete(rpcUrl);
+        throw error;
+      });
+    registryDomainsTableIdCache.set(rpcUrl, cached);
+  }
+  return cached;
+}
+
+type RegistryDomainRecord = {
+  adminWallet: string | null;
+  usersTableId: string | null;
+};
+
+// Reads the DomainRecord straight off the live Registry object instead of
+// reconstructing it from DomainAdded/UserAdded events, which the network
+// prunes and which can never reflect a key rotation the events didn't
+// record (see F-12).
+async function getRegistryDomainRecord(domain: string, rpcUrl: string): Promise<RegistryDomainRecord | null> {
+  const tableId = await getRegistryDomainsTableId(rpcUrl);
+  if (!tableId) return null;
+
+  const domainBytes = new TextEncoder().encode(domain);
+  const result = await suiRpcCall<{ json: unknown }>(
+    "suix_getDynamicFieldObject",
+    [tableId, { type: "vector<u8>", bcs: bcsEncodeVectorU8(domainBytes) }],
+    rpcUrl
+  );
+
+  const record = asRecord(result.json);
+  if (!record) return null;
+
+  return {
+    adminWallet: safeAddress(record.admin_wallet) || null,
+    usersTableId: asString(asRecord(record.users)?.id) || null,
+  };
+}
+
 async function getDomainAdminWallet(domain: string | null, rpcUrl: string): Promise<string | null> {
   if (!domain) return null;
+  const record = await getRegistryDomainRecord(domain, rpcUrl);
+  return record?.adminWallet ?? null;
+}
 
-  const domainAdminEventTypes = [...DOMAIN_ADDED_EVENT_TYPES, ...USER_ADDED_EVENT_TYPES];
+// Registration writes DomainRecord.users[wallet] = true but emits no event
+// for it, so a freshly-enrolled user with no enable/disable history has no
+// event trail to derive standing from. Read the live flag off the Registry
+// for that case instead of reporting it as unavailable (see F-16).
+async function getRegistryEnabledFlag(domain: string, userWallet: string, rpcUrl: string): Promise<boolean | null> {
+  const record = await getRegistryDomainRecord(domain, rpcUrl);
+  if (!record?.usersTableId) return null;
 
-  for (const eventType of domainAdminEventTypes) {
-    let cursor: SuiEventCursor | null = null;
-    let pages = 0;
+  const result = await suiRpcCall<{ json: unknown }>(
+    "suix_getDynamicFieldObject",
+    [record.usersTableId, { type: "address", bcs: bcsEncodeAddress(userWallet) }],
+    rpcUrl
+  );
 
-    do {
-      const page: SuiEventPage = await suiRpcCall<SuiEventPage>(
-        "suix_queryEvents",
-        [{ MoveEventType: eventType }, cursor, 50, true],
-        rpcUrl
-      );
-      pages += 1;
-
-      for (const event of page.data ?? []) {
-        const packageId = event.packageId.toLowerCase();
-        const allowedPackageIds = new Set([
-          GRANITE_LAKE_PACKAGE_ID.toLowerCase(),
-          GRANITE_LAKE_ORIGINAL_PACKAGE_ID.toLowerCase(),
-        ]);
-        if (!allowedPackageIds.has(packageId) || !matchesExpectedEventType(event, eventType)) continue;
-
-        const parsed = event.parsedJson;
-        if (!parsed) continue;
-
-        if (decodeVector(parsed.domain).decoded.toLowerCase() === domain.toLowerCase()) {
-          const adminWallet = safeAddress(parsed.admin_wallet);
-          return adminWallet || null;
-        }
-      }
-
-      cursor = page.hasNextPage ? (page.nextCursor ?? null) : null;
-    } while (cursor && pages < MAX_EVENT_PAGES);
-  }
-
-  return null;
+  return typeof result.json === "boolean" ? result.json : null;
 }
 
 async function latestStatusTimestamp(params: {
@@ -548,8 +658,13 @@ async function getEnabledAtAttestation(params: {
   ]);
 
   if (latestEnabledTimestampMs === null && latestDisabledTimestampMs === null) {
+    // No enable/disable event exists before this attestation — the common
+    // case for a user who has never been toggled since registration, since
+    // add_user sets the flag without emitting an event for it (F-16). Fall
+    // back to the Registry's live flag rather than reporting unavailable.
+    const registryValue = await getRegistryEnabledFlag(params.domain, params.userWallet, params.rpcUrl);
     return {
-      value: null,
+      value: registryValue,
       latestEnabledTimestampMs,
       latestDisabledTimestampMs,
     };
