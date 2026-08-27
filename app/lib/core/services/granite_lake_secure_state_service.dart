@@ -337,6 +337,8 @@ class GraniteLakeSecureStateService {
     required IdentityRecord? identity,
     required BiometricBindingRecord? biometricBinding,
     required BiometricGatePayload? biometricGatePayload,
+    String? promptTitle,
+    String? promptSubtitle,
   }) async {
     if (identity == null) {
       return const SecureOperationResult<SessionStartState>.failure(
@@ -364,6 +366,8 @@ class GraniteLakeSecureStateService {
       final decryptedBundleJson = await _unlockBiometricGate(
         biometricBinding.gateAlias,
         biometricGatePayload,
+        promptTitle: promptTitle,
+        promptSubtitle: promptSubtitle,
       );
       final protectedBundle = _ProtectedIdentityKeyBundle.fromJson(
         jsonDecode(decryptedBundleJson) as Map<String, dynamic>,
@@ -574,14 +578,18 @@ class GraniteLakeSecureStateService {
 
   Future<String> _unlockBiometricGate(
     String alias,
-    BiometricGatePayload payload,
-  ) async {
+    BiometricGatePayload payload, {
+    String? promptTitle,
+    String? promptSubtitle,
+  }) async {
     try {
       final decryptedPayload = await _biometricGateChannel
           .invokeMethod<String>('unlockBiometricGate', {
             'alias': alias,
             'ciphertextBase64': payload.ciphertextBase64,
             'ivBase64': payload.ivBase64,
+            'title': ?promptTitle,
+            'subtitle': ?promptSubtitle,
           });
       if (decryptedPayload == null || decryptedPayload.isEmpty) {
         throw const _BiometricGateException(

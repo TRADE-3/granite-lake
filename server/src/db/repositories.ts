@@ -1,4 +1,5 @@
-import { randomInt, randomUUID, createHash } from "node:crypto";
+import { randomBytes, randomInt, randomUUID, createHash } from "node:crypto";
+import { verifyPersonalMessageSignature } from "@mysten/sui/verify";
 import { env } from "../config/env.js";
 import { GoogleChatService } from "../services/GoogleChatService.js";
 import { SuiService, type AddUserResult } from "../services/SuiService.js";
@@ -14,6 +15,10 @@ export type OtpSessionRecord = {
   userWallet: string | null;
   adminWallet: string;
   otpHash: string;
+  // Server-issued nonce the claimed wallet must sign before completeOtpSession
+  // binds it to this session. Null only for sessions created before
+  // this column existed.
+  walletNonce: string | null;
   status: "pending_verification" | "completed" | "expired";
   createdAt: string;
   expiresAt: string;
@@ -73,6 +78,7 @@ export async function createOtpSession(input: {
     userWallet: null,
     adminWallet: configuredAdminWallet(),
     otpHash: sha256(otp),
+    walletNonce: randomBytes(32).toString("base64"),
     status: "pending_verification",
     createdAt: createdAt.toISOString(),
     expiresAt: expiresAt.toISOString(),
@@ -89,6 +95,7 @@ export async function createOtpSession(input: {
         user_email,
         user_wallet,
         otp_hash,
+        wallet_nonce,
         status,
         created_at,
         expires_at,
@@ -96,13 +103,14 @@ export async function createOtpSession(input: {
         tx_digest,
         user_cap_id,
         error
-      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     `,
     [
       session.userId,
       session.userEmail,
       session.userWallet,
       session.otpHash,
+      session.walletNonce,
       session.status,
       session.createdAt,
       session.expiresAt,
@@ -139,6 +147,7 @@ export async function findOtpSession(userId: string): Promise<OtpSessionRecord |
         user_email as "userEmail",
         user_wallet as "userWallet",
         otp_hash as "otpHash",
+        wallet_nonce as "walletNonce",
         status,
         created_at as "createdAt",
         expires_at as "expiresAt",
@@ -163,6 +172,7 @@ async function findActivePendingOtpSessionByEmail(userEmail: string): Promise<Ot
         user_email as "userEmail",
         user_wallet as "userWallet",
         otp_hash as "otpHash",
+        wallet_nonce as "walletNonce",
         status,
         created_at as "createdAt",
         expires_at as "expiresAt",
@@ -195,7 +205,7 @@ export type OrphanedOtpSessionRecord = {
  * Completed otp_sessions rows with no corresponding users row: sessions that
  * minted an on-chain capability but whose users insert never landed, most
  * commonly because a second concurrent session for the same email lost the
- * race against the users.user_email uniqueness constraint (see F-02). These
+ * race against the users.user_email uniqueness constraint. These
  * capabilities are live on chain and unrevocable through /admin/users, which
  * only reads the users table.
  */
@@ -331,6 +341,7 @@ export async function completeOtpSession(input: {
   domain: string;
   otp: string;
   userWallet: string;
+  userWalletSignature: string;
 }): Promise<OtpSessionRecord> {
   const session = await findOtpSession(input.userId);
 
@@ -357,6 +368,16 @@ export async function completeOtpSession(input: {
   assertConfiguredDomain(input.domain);
 
   assertSuiAddress(input.userWallet, "userWallet");
+
+  // The caller supplies userWallet as a bare string with nothing binding it
+  // to the holder of that wallet's private key. Require a
+  // signature over this session's server-issued nonce, verified against the
+  // claimed address, before minting a capability for it.
+  await assertWalletSignature({
+    userWallet: normalizeWallet(input.userWallet),
+    nonce: session.walletNonce,
+    signature: input.userWalletSignature,
+  });
 
   const existingUser = await findUserByEmail(session.userEmail);
 
@@ -391,6 +412,7 @@ export async function completeOtpSession(input: {
         user_email as "userEmail",
         user_wallet as "userWallet",
         otp_hash as "otpHash",
+        wallet_nonce as "walletNonce",
         status,
         created_at as "createdAt",
         expires_at as "expiresAt",
@@ -554,6 +576,28 @@ async function upsertActiveUserFromSession(session: OtpSessionRecord, addUserRes
 function assertSuiAddress(value: string, key: string): void {
   if (!/^0x[a-f0-9]{64}$/i.test(value.trim())) {
     throw new Error(`${key} must be a Sui address.`);
+  }
+}
+
+// Proves the caller holds userWallet's private key by requiring a signature
+// over this session's server-issued nonce. The wallet never
+// existed on chain until this check passes, so there is nothing to look up
+// on chain here - only the signature over the nonce establishes possession.
+async function assertWalletSignature(params: {
+  userWallet: string;
+  nonce: string | null;
+  signature: string;
+}): Promise<void> {
+  if (!params.nonce) {
+    throw new Error("userWallet does not match the OTP session.");
+  }
+
+  try {
+    await verifyPersonalMessageSignature(Buffer.from(params.nonce, "base64"), params.signature, {
+      address: params.userWallet,
+    });
+  } catch {
+    throw new Error("userWallet does not match the OTP session.");
   }
 }
 

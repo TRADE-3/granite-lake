@@ -23,11 +23,16 @@ class PhotoAttestationClaimInput {
     required this.domain,
     required this.userId,
     required this.otp,
+    required this.walletNonce,
   });
 
   final String domain;
   final String userId;
   final String otp;
+
+  // Server-issued nonce this claim's wallet must sign to prove possession of
+  // its private key before the backend binds it to the OTP session.
+  final String walletNonce;
 }
 
 class PhotoAttestationOtpRequestResult {
@@ -36,12 +41,14 @@ class PhotoAttestationOtpRequestResult {
     required this.domain,
     required this.userEmail,
     required this.expiresAt,
+    required this.walletNonce,
   });
 
   final String userId;
   final String domain;
   final String userEmail;
   final DateTime expiresAt;
+  final String walletNonce;
 }
 
 class PhotoAttestationSubmissionResult {
@@ -390,9 +397,10 @@ class PhotoAttestationService {
 
       final userId = (payload['userId'] as String? ?? '').trim();
       final expiresAt = (payload['expiresAt'] as String? ?? '').trim();
-      if (userId.isEmpty || expiresAt.isEmpty) {
+      final walletNonce = (payload['walletNonce'] as String? ?? '').trim();
+      if (userId.isEmpty || expiresAt.isEmpty || walletNonce.isEmpty) {
         throw const FormatException(
-          'OTP request response is missing userId or expiresAt.',
+          'OTP request response is missing userId, expiresAt, or walletNonce.',
         );
       }
 
@@ -401,6 +409,7 @@ class PhotoAttestationService {
         domain: (payload['domain'] as String? ?? domain).trim(),
         userEmail: (payload['userEmail'] as String? ?? userEmail).trim(),
         expiresAt: DateTime.parse(expiresAt).toUtc(),
+        walletNonce: walletNonce,
       );
     } catch (error) {
       throw PhotoAttestationException.fromError(error, operation: 'claim');
@@ -409,6 +418,7 @@ class PhotoAttestationService {
 
   Future<PhotoAttestationClaimRecord> claimUserWithOtp({
     required IdentityRecord identity,
+    required SuiED25519PrivateKey signingKey,
     required PhotoAttestationContractConfig config,
     required PhotoAttestationClaimInput input,
   }) async {
@@ -416,6 +426,19 @@ class PhotoAttestationService {
       final backendConfig = await AppUtils.resolveOtpBackendConfig(
         domain: input.domain,
       );
+
+      // Prove possession of the wallet's private key by signing the
+      // server-issued nonce for this OTP session (see F-03). Without this,
+      // the backend has nothing binding the claimed userWallet to whoever
+      // is making the request. identity.privateKey is unavailable here:
+      // biometrics are bound before registration runs (see F-09), which
+      // strips the raw key from the in-memory identity, so the caller must
+      // supply an unlocked session signing key instead.
+      final account = SuiEd25519Account(signingKey);
+      final nonceBytes = base64Decode(input.walletNonce);
+      final walletSignature = account
+          .signPersonalMessage(nonceBytes)
+          .toVariantBcsBase64();
 
       final uri = AppUtils.otpBackendUri(backendConfig.url, 'otp/verify');
       final response = await _httpClient.post(
@@ -429,6 +452,7 @@ class PhotoAttestationService {
           'otp': input.otp,
           'domain': input.domain,
           'userWallet': identity.walletAddress,
+          'userWalletSignature': walletSignature,
         }),
       );
       final payload = _decodeJsonPayload(response.body);

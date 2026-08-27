@@ -20,6 +20,7 @@ const createOtpSession = vi.fn(async (input) => ({
   userWallet: null,
   adminWallet: "0xabc",
   otpHash: "otp-hash",
+  walletNonce: "test-nonce",
   status: "pending_verification",
   createdAt: new Date().toISOString(),
   expiresAt: new Date().toISOString(),
@@ -84,6 +85,7 @@ describe("otp routes", () => {
         otp: "123456",
         domain: "acme.com",
         userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+        userWalletSignature: "test-signature",
       },
     });
 
@@ -236,6 +238,7 @@ describe("otp routes", () => {
         otp: "123456",
         domain: "acme.com",
         userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+        userWalletSignature: "test-signature",
       },
     });
 
@@ -244,6 +247,58 @@ describe("otp routes", () => {
       error: "otp_already_used",
       message: "OTP already used.",
     });
+
+    await app.close();
+  });
+
+  it("rejects OTP verification when the wallet signature does not prove possession", async () => {
+    completeOtpSession.mockRejectedValueOnce(new Error("userWallet does not match the OTP session."));
+
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/otp/verify",
+      headers: APP_API_KEY_HEADERS,
+      payload: {
+        userId: "user-id-1",
+        otp: "123456",
+        domain: "acme.com",
+        userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+        userWalletSignature: "not-a-valid-signature",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: "otp_verification_failed",
+      message: "userWallet does not match the OTP session.",
+    });
+
+    await app.close();
+  });
+
+  it("rejects OTP verification with no wallet signature", async () => {
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/otp/verify",
+      headers: APP_API_KEY_HEADERS,
+      payload: {
+        userId: "user-id-1",
+        otp: "123456",
+        domain: "acme.com",
+        userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: "invalid_request",
+      message: "Request body must be a JSON object with userId, otp, domain, userWallet, and userWalletSignature.",
+    });
+    expect(completeOtpSession).not.toHaveBeenCalled();
 
     await app.close();
   });
@@ -268,6 +323,7 @@ describe("otp routes", () => {
         otp: "123456",
         domain: "acme.com",
         userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+        userWalletSignature: "test-signature",
       },
     });
 
@@ -297,6 +353,7 @@ describe("otp routes", () => {
         otp: "123456",
         domain: "acme.com",
         userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+        userWalletSignature: "test-signature",
       },
     });
 
@@ -491,6 +548,7 @@ describe("OTP rate limiting", () => {
       expiresAt: new Date().toISOString(),
       verifiedAt: null,
       otpHash: "hash",
+      walletNonce: "test-nonce",
       error: null,
     });
 
@@ -521,6 +579,7 @@ describe("OTP rate limiting", () => {
         otp: "wrong-otp-2",
         domain: "acme.com",
         userWallet: "0x1111111111111111111111111111111111111111111111111111111111111111",
+        userWalletSignature: "test-signature",
       },
     });
 

@@ -117,7 +117,7 @@ export type VerificationResult =
       // More than one distinct wallet attested this exact hash. The contract
       // has no link between an attestation and file ownership, so this is
       // not resolved automatically — every candidate is returned instead of
-      // silently picking one (see F-04).
+      // silently picking one.
       hasMatch: true;
       collision: true;
       progress: ScanProgress;
@@ -641,7 +641,7 @@ type RegistryDomainRecord = {
 // Reads the DomainRecord straight off the live Registry object instead of
 // reconstructing it from DomainAdded/UserAdded events, which the network
 // prunes and which can never reflect a key rotation the events didn't
-// record (see F-12).
+// record.
 async function getRegistryDomainRecord(domain: string): Promise<RegistryDomainRecord | null> {
   const tableId = await getRegistryDomainsTableId();
   if (!tableId) return null;
@@ -673,7 +673,7 @@ async function getDomainAdminWallet(domain: string | null): Promise<string | nul
 // Registration writes DomainRecord.users[wallet] = true but emits no event
 // for it, so a freshly-enrolled user with no enable/disable history has no
 // event trail to derive standing from. Read the live flag off the Registry
-// for that case instead of reporting it as unavailable (see F-16).
+// for that case instead of reporting it as unavailable.
 async function getRegistryEnabledFlag(domain: string, userWallet: string): Promise<boolean | null> {
   const record = await getRegistryDomainRecord(domain);
   if (!record?.usersTableId) return null;
@@ -787,7 +787,7 @@ async function getEnabledAtAttestation(params: {
   if (!enabledPoint && !disabledPoint) {
     // No enable/disable event exists before this attestation — the common
     // case for a user who has never been toggled since registration, since
-    // add_user sets the flag without emitting an event for it (F-16). Fall
+    // add_user sets the flag without emitting an event for it. Fall
     // back to the Registry's live flag rather than reporting unavailable.
     return getRegistryEnabledFlag(params.domain, params.userWallet);
   }

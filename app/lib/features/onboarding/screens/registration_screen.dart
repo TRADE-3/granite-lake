@@ -24,6 +24,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
 
   String? _otpUserId;
   DateTime? _otpExpiresAt;
+  String? _otpWalletNonce;
   String? _errorText;
   String? _statusText;
   bool _isRequestingOtp = false;
@@ -54,6 +55,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     setState(() {
       _otpUserId = null;
       _otpExpiresAt = null;
+      _otpWalletNonce = null;
       _statusText = null;
       _otpController.clear();
     });
@@ -82,6 +84,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       _statusText = null;
       _otpUserId = null;
       _otpExpiresAt = null;
+      _otpWalletNonce = null;
     });
 
     final controller = GraniteLakeScope.of(context);
@@ -106,6 +109,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       _isRequestingOtp = false;
       _otpUserId = otpRequest.userId;
       _otpExpiresAt = otpRequest.expiresAt;
+      _otpWalletNonce = otpRequest.walletNonce;
       _statusText =
           'OTP requested for ${otpRequest.userEmail}. Check the configured delivery channel.';
     });
@@ -113,7 +117,11 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
 
   Future<void> _submit() async {
     final userId = _otpUserId;
-    if (userId == null || userId.isEmpty) {
+    final walletNonce = _otpWalletNonce;
+    if (userId == null ||
+        userId.isEmpty ||
+        walletNonce == null ||
+        walletNonce.isEmpty) {
       setState(() {
         _errorText = 'Request an OTP before verifying your wallet.';
       });
@@ -130,6 +138,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       domain: _domainController.text,
       userId: userId,
       otp: _otpController.text,
+      walletNonce: walletNonce,
     );
     if (!mounted) {
       return;
@@ -352,17 +361,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                             child: Text(
                               _isSubmitting ? 'VERIFYING OTP' : 'CONTINUE',
                               style: AppTextStyles.buttonText,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          OutlinedButton(
-                            onPressed: () =>
-                                context.go(AppRoutes.biometricSetup),
-                            child: Text(
-                              'BACK',
-                              style: AppTextStyles.buttonText.copyWith(
-                                color: AppColors.textSecondary,
-                              ),
                             ),
                           ),
                           const Spacer(),

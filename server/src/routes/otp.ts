@@ -19,6 +19,7 @@ const otpVerifySchema = z.object({
   otp: z.string().min(1),
   domain: z.string().min(1),
   userWallet: z.string().min(1),
+  userWalletSignature: z.string().min(1),
 });
 
 export const otpRoutes: FastifyPluginAsync = async (app) => {
@@ -112,6 +113,9 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
       expiresAt: session.expiresAt,
       domain: session.domain,
       userEmail: session.userEmail,
+      // The wallet claimed at /otp/verify must sign this nonce to prove
+      // possession of its private key.
+      walletNonce: session.walletNonce,
     });
   });
 
@@ -195,7 +199,7 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
     if (!parsedBody.success) {
       return reply.status(400).send({
         error: "invalid_request",
-        message: "Request body must be a JSON object with userId, otp, domain, and userWallet.",
+        message: "Request body must be a JSON object with userId, otp, domain, userWallet, and userWalletSignature.",
       });
     }
 
