@@ -1,30 +1,38 @@
+@import url("https://fonts.googleapis.com/css2?family=Raleway:wght@600;700;800&family=Karla:wght@400;500;600;700&display=swap");
+
 :root {
-  --bg: #f4f7f8;
+  /* Cream Scale (Light Background) */
+  --bg: #fdf5ef;
   --panel: #ffffff;
-  --panel-soft: #eef4f5;
-  --text: #102024;
-  --muted: #4a6267;
-  --accent: #11666f;
-  --accent-strong: #0d4e55;
-  --ok: #0b7f46;
-  --warn: #b35d00;
-  --error: #a21a1a;
-  --edge: #d6e4e7;
-  --shadow: 0 14px 40px rgba(16, 32, 36, 0.08);
+  --panel-soft: #fae9da;
+  /* Navy Scale (Text) */
+  --text: #060430;
+  --muted: #4a4870;
+  /* Brand Accents */
+  --accent: #3b128d;
+  --accent-strong: #6a35c5;
+  --ok: #059669;
+  --warn: #f75835;
+  --error: #dc2626;
+  --edge: #f5d7bf;
+  --shadow: 0 14px 40px rgba(6, 4, 48, 0.06);
 }
 
 :root[data-theme="dark"] {
-  --bg: #0f1518;
-  --panel: #152025;
-  --panel-soft: #192830;
-  --text: #e7f3f5;
-  --muted: #a9bec2;
-  --accent: #58bcc8;
-  --accent-strong: #86dce8;
-  --ok: #3ec57f;
-  --warn: #e8a24f;
-  --error: #ef6c6c;
-  --edge: #2a3b43;
+  /* Navy Scale (Dark Background) */
+  --bg: #060430;
+  --panel: #0b0840;
+  --panel-soft: #10093a;
+  /* Light Text */
+  --text: #eeedf8;
+  --muted: #9997c5;
+  /* Brand Accents */
+  --accent: #8f61d9;
+  --accent-strong: #b898e9;
+  --ok: #10b981;
+  --warn: #fb6e4c;
+  --error: #ef4444;
+  --edge: #1a1660;
   --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
 }
 
@@ -34,18 +42,19 @@
 
 body {
   margin: 0;
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-family: "Karla", "Segoe UI", sans-serif;
   color: var(--text);
   background:
-    radial-gradient(circle at 0 0, #d9ecef 0%, transparent 45%),
-    radial-gradient(circle at 100% 100%, #d7e8db 0%, transparent 40%), var(--bg);
+    radial-gradient(circle at 0 0, rgba(59, 18, 141, 0.04) 0%, transparent 45%),
+    radial-gradient(circle at 100% 100%, rgba(247, 88, 53, 0.04) 0%, transparent 40%), var(--bg);
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
 }
 
 :root[data-theme="dark"] body {
   background:
-    radial-gradient(circle at 0 0, #1a2730 0%, transparent 45%),
-    radial-gradient(circle at 100% 100%, #1d2f2a 0%, transparent 40%), var(--bg);
+    radial-gradient(circle at 0 0, rgba(59, 18, 141, 0.25) 0%, transparent 45%),
+    radial-gradient(circle at 100% 100%, rgba(247, 88, 53, 0.12) 0%, transparent 40%), var(--bg);
 }
 
 code {
@@ -56,22 +65,34 @@ code {
 .shell {
   width: min(100%, 1040px);
   margin-inline: auto;
-  padding: 28px 18px 34px;
+  padding: 18px 18px 20px;
 }
 
 .panel {
   border: 1px solid var(--edge);
   background: var(--panel);
-  border-radius: 14px;
+  border-radius: 16px;
   box-shadow: var(--shadow);
 }
 
 .hero {
-  padding: 24px 24px 20px;
-  margin-bottom: 18px;
+  padding: 16px 24px 14px;
+  margin-bottom: 12px;
 }
 
-.hero-top {
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--panel);
+  border-bottom: 1px solid var(--edge);
+}
+
+.site-header-inner {
+  width: min(100%, 1040px);
+  margin-inline: auto;
+  padding: 0 18px;
+  height: 64px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -123,30 +144,52 @@ code {
   transform: translateX(18px);
 }
 
-.eyebrow {
-  margin: 0;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--accent);
-  font-size: 0.74rem;
-  font-weight: 700;
+.logo-wordmark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: "Raleway", sans-serif;
+  font-weight: 800;
+  font-size: 1.1rem;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+
+.logo-mark {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  font-family: "Raleway", sans-serif;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: -0.05em;
 }
 
 .hero h1 {
-  margin: 10px 0;
-  font-size: clamp(1.4rem, 3vw, 2rem);
+  margin: 6px 0;
+  font-family: "Raleway", sans-serif;
+  font-size: clamp(1.6rem, 3.2vw, 2.1rem);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1.05;
 }
 
 .hero p {
   margin: 0;
   color: var(--muted);
   line-height: 1.5;
+  font-size: 0.95rem;
 }
 
 .tab-switcher {
   display: inline-flex;
   gap: 8px;
-  margin-top: 16px;
+  margin-top: 10px;
   padding: 6px;
   border: 1px solid var(--edge);
   border-radius: 999px;
@@ -161,8 +204,10 @@ code {
   color: var(--muted);
   font: inherit;
   font-weight: 700;
-  padding: 10px 14px;
+  padding: 8px 14px;
   cursor: pointer;
+  letter-spacing: 0.01em;
+  transition: all 0.2s ease;
 }
 
 .tab-button.is-active {
@@ -184,7 +229,7 @@ code {
 
 .form-panel,
 .result-panel {
-  padding: 20px;
+  padding: 18px;
 }
 
 .form-panel {
@@ -202,67 +247,58 @@ code {
 .field {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 6px;
+  margin-bottom: 12px;
 }
 
 .field-hash code {
   word-break: break-all;
+  color: var(--accent);
 }
 
 .field > span {
   font-size: 0.82rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-weight: 600;
   color: var(--muted);
+  letter-spacing: 0.01em;
 }
 
 .upload-zone {
-  border: 1px dashed #9bb5ba;
+  border: 1.5px dashed var(--edge);
   background: var(--panel-soft);
   border-radius: 12px;
-  min-height: 98px;
-  padding: 12px;
+  min-height: 64px;
+  padding: 10px;
   display: grid;
   place-items: center;
   text-align: center;
   cursor: pointer;
+  transition: all 0.2s ease;
 }
 
 .upload-zone.has-file {
   border-style: solid;
   border-color: var(--accent);
-  background: #e7f4f5;
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
 }
 
-.verification-select {
-  width: 100%;
-  border: 1px solid #9bb5ba;
-  border-radius: 12px;
-  background: var(--panel-soft);
-  color: var(--text);
-  padding: 12px 14px;
-  font: inherit;
-  min-height: 52px;
-}
-
-.verification-select:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 15%, transparent);
-}
-
+.verification-select,
 .verification-input {
   width: 100%;
-  border: 1px solid #9bb5ba;
-  border-radius: 12px;
-  background: var(--panel-soft);
+  border: 1.5px solid var(--edge);
+  border-radius: 8px;
+  background: var(--panel);
   color: var(--text);
-  padding: 12px 14px;
+  padding: 10px 14px;
   font: inherit;
-  min-height: 52px;
+  font-size: 0.95rem;
+  min-height: 48px;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
+.verification-select:focus,
 .verification-input:focus {
   outline: none;
   border-color: var(--accent);
@@ -279,7 +315,7 @@ code {
 
 .upload-trigger {
   font-weight: 700;
-  color: var(--accent-strong);
+  color: var(--accent);
 }
 
 .upload-file-icon {
@@ -305,13 +341,19 @@ code {
 .primary-button {
   width: 100%;
   border: 0;
-  border-radius: 10px;
-  padding: 12px 14px;
+  border-radius: 8px;
+  padding: 12px;
   font-size: 0.95rem;
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: 0.01em;
   color: white;
-  background: linear-gradient(100deg, var(--accent), var(--accent-strong));
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
   cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.primary-button:hover {
+  filter: brightness(1.1);
 }
 
 .primary-button:disabled {
@@ -321,10 +363,10 @@ code {
 
 .config-strip {
   display: grid;
-  gap: 6px;
-  margin-top: 14px;
-  padding: 10px;
-  border-radius: 10px;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
   border: 1px solid var(--edge);
   background: color-mix(in oklab, var(--panel-soft) 55%, var(--panel) 45%);
 }
@@ -351,25 +393,28 @@ code {
 }
 
 .result-idle .idle-icon {
-  font-size: 2rem;
+  font-size: 2.5rem;
   line-height: 1;
   margin-bottom: 4px;
 }
 
 .result-idle p {
   margin: 0;
-  font-size: 0.92rem;
+  font-size: 0.95rem;
   line-height: 1.5;
 }
 
 .status-line {
   display: grid;
   gap: 6px;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 .status-line strong {
-  font-size: 1.04rem;
+  font-family: "Raleway", sans-serif;
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .status-line strong.is-match {
@@ -387,14 +432,14 @@ code {
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .summary-item {
   border: 1px solid var(--edge);
-  border-radius: 10px;
-  background: color-mix(in oklab, var(--panel-soft) 45%, var(--panel) 55%);
-  padding: 10px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 12px;
   display: grid;
   gap: 4px;
 }
@@ -402,14 +447,15 @@ code {
 .summary-item span {
   color: var(--muted);
   font-size: 0.82rem;
+  font-weight: 500;
 }
 
 .dns-status {
-  margin-top: 12px;
+  margin-top: 14px;
   border: 1px solid var(--edge);
-  border-radius: 10px;
-  background: color-mix(in oklab, var(--panel-soft) 45%, var(--panel) 55%);
-  padding: 10px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 12px;
   color: var(--muted);
   font-size: 0.9rem;
 }
@@ -433,21 +479,21 @@ code {
 }
 
 .detail-grid {
-  margin-top: 14px;
+  margin-top: 16px;
   border-top: 1px solid var(--edge);
-  padding-top: 12px;
+  padding-top: 16px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .detail-card {
   display: grid;
   gap: 4px;
-  padding: 10px;
+  padding: 12px;
   border: 1px solid var(--edge);
-  border-radius: 10px;
-  background: color-mix(in oklab, var(--panel-soft) 45%, var(--panel) 55%);
+  border-radius: 8px;
+  background: var(--panel-soft);
 }
 
 .detail-card-wide {
@@ -456,18 +502,21 @@ code {
 
 .detail-card span {
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-weight: 700;
+  letter-spacing: 0.1em;
 }
 
 .detail-card code {
   word-break: break-word;
+  color: var(--text);
 }
 
 .detail-card a {
-  color: var(--accent-strong);
+  color: var(--accent);
   font-weight: 600;
+  text-decoration: none;
 }
 
 .wallet-result-panel {
@@ -477,15 +526,15 @@ code {
 .wallet-event-list {
   display: grid;
   gap: 12px;
-  margin-top: 14px;
+  margin-top: 16px;
   max-height: none;
 }
 
 .wallet-event-card {
   border: 1px solid var(--edge);
   border-radius: 12px;
-  background: color-mix(in oklab, var(--panel-soft) 45%, var(--panel) 55%);
-  padding: 14px;
+  background: var(--panel-soft);
+  padding: 16px;
 }
 
 .wallet-event-card-top {
@@ -493,36 +542,39 @@ code {
   justify-content: space-between;
   gap: 12px;
   align-items: center;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .wallet-event-chip {
-  padding: 6px 10px;
+  padding: 4px 12px;
   border-radius: 999px;
-  font-size: 0.78rem;
-  font-weight: 800;
+  font-size: 0.75rem;
+  font-weight: 700;
   letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .wallet-event-chip.is-photo {
-  background: color-mix(in oklab, var(--ok) 18%, transparent);
+  background: color-mix(in oklab, var(--ok) 15%, transparent);
   color: var(--ok);
 }
 
 .wallet-event-chip.is-file {
-  background: color-mix(in oklab, var(--accent) 18%, transparent);
-  color: var(--accent-strong);
+  background: color-mix(in oklab, var(--accent) 15%, transparent);
+  color: var(--accent);
 }
 
 .wallet-event-title {
+  font-family: "Raleway", sans-serif;
   font-weight: 700;
-  margin-bottom: 10px;
+  font-size: 1.1rem;
+  margin-bottom: 12px;
 }
 
 .wallet-event-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .wallet-event-grid > div {
@@ -532,9 +584,10 @@ code {
 
 .wallet-event-grid span {
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-weight: 700;
+  letter-spacing: 0.1em;
 }
 
 .wallet-event-grid code {
@@ -542,8 +595,9 @@ code {
 }
 
 .wallet-event-grid a {
-  color: var(--accent-strong);
+  color: var(--accent);
   font-weight: 600;
+  text-decoration: none;
 }
 
 @media (max-width: 860px) {
@@ -551,9 +605,8 @@ code {
     padding: 18px 12px 22px;
   }
 
-  .hero-top {
-    align-items: flex-start;
-    flex-direction: row;
+  .site-header-inner {
+    padding: 0 12px;
   }
 
   .workspace {
