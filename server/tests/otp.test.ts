@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-process.env.DOMAIN = "acme.com";
+process.env.DOMAINS = "acme.com";
 process.env.CLIENT_ID = "acme";
 process.env.ADMIN_WALLET = "0xabc";
 process.env.ADMIN_API_KEY = "admin-key";

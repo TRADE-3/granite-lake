@@ -19,12 +19,24 @@ const optionalStringFromEnv = z.preprocess(blankStringToUndefined, z.string().op
 
 const vaultAuthMethodFromEnv = z.preprocess(blankStringToUndefined, z.enum(["token", "approle"]).default("token"));
 
+const domainSchema = z
+  .string()
+  .regex(/^[a-zA-Z0-9.-]+$/)
+  .optional();
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "staging", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(8080),
   HOST: z.string().default("0.0.0.0"),
   CLIENT_ID: z.string().min(1),
-  DOMAIN: z.string().min(1),
+  DOMAINS: z
+    .string()
+    .min(1)
+    .refine((val) => {
+      const domains = val.split(",").map((d) => d.trim());
+      return domains.every((d) => domainSchema.safeParse(d).success);
+    })
+    .transform((val) => val.split(",").map((d) => d.trim())),
   ADMIN_WALLET: z.string().min(1),
   ADMIN_API_KEY: z.string().min(1),
   APP_API_KEY: z.string().min(1),
@@ -66,6 +78,7 @@ export const env = {
   POSTGRES_DB: postgresDb,
   DATABASE_URL: `postgres://${encodeURIComponent(parsedEnv.POSTGRES_USER)}:${encodeURIComponent(parsedEnv.POSTGRES_PASSWORD)}@${parsedEnv.POSTGRES_HOST}:${parsedEnv.POSTGRES_PORT}/${postgresDb}`,
 };
+console.log(env.DOMAINS);
 
 export type AppEnv = typeof env;
 

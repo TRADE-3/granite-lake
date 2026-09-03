@@ -142,7 +142,6 @@ export class SuiService {
     });
 
     // Check for failed transaction
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (result.$kind === "FailedTransaction") {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const status = (result as any).FailedTransaction;

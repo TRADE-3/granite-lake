@@ -7,7 +7,7 @@ const env = {
   PORT: 8080,
   HOST: "0.0.0.0",
   CLIENT_ID: "domain_demo",
-  DOMAIN: "domain.com",
+  DOMAINS: ["domain_demo", "domain_demo2"],
   ADMIN_WALLET: "0xadmin",
   ADMIN_API_KEY: "admin-key",
   APP_API_KEY: "app-key",

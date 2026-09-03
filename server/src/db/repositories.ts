@@ -73,7 +73,7 @@ export async function createOtpSession(input: {
 
   const session: OtpSessionRecord = {
     userId,
-    domain: configuredDomain(),
+    domain: configuredDomainForEmail(userEmail),
     userEmail,
     userWallet: null,
     adminWallet: configuredAdminWallet(),
@@ -262,7 +262,7 @@ export async function disableUser(userId: string): Promise<UserRecord | null> {
   }
 
   const disableUserTxDigest = await suiService.disableUser({
-    domain: configuredDomain(),
+    domain: configuredDomainForEmail(existing.userEmail),
     userWallet: existing.userWallet,
   });
 
@@ -303,7 +303,7 @@ export async function enableUser(userId: string): Promise<UserRecord | null> {
   }
 
   const enableUserTxDigest = await suiService.enableUser({
-    domain: configuredDomain(),
+    domain: configuredDomainForEmail(existing.userEmail),
     userWallet: existing.userWallet,
   });
 
@@ -391,7 +391,7 @@ export async function completeOtpSession(input: {
   }
 
   const addUserResult = await suiService.addUser({
-    domain: configuredDomain(),
+    domain: configuredDomainForEmail(session.userEmail),
     userWallet: normalizeWallet(input.userWallet),
   });
 
@@ -442,8 +442,19 @@ function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function configuredDomain(): string {
-  return normalizeDomain(env.DOMAIN);
+function configuredDomains(): string[] {
+  return env.DOMAINS.map(normalizeDomain);
+}
+
+function configuredDomainForEmail(email: string): string {
+  const atIndex = email.lastIndexOf("@");
+  const emailDomain = atIndex === -1 ? "" : email.slice(atIndex + 1);
+
+  if (!configuredDomains().includes(emailDomain)) {
+    throw new Error(`user_email must belong to ${configuredDomains().join(", ")}.`);
+  }
+
+  return normalizeDomain(emailDomain);
 }
 
 function configuredAdminWallet(): string {
@@ -451,8 +462,10 @@ function configuredAdminWallet(): string {
 }
 
 function assertConfiguredDomain(domain: string): void {
-  if (normalizeDomain(domain) !== configuredDomain()) {
-    throw new Error(`This container is configured for ${configuredDomain()}, not ${domain}.`);
+  const configuredDomainsLst = configuredDomains();
+
+  if (!configuredDomainsLst.includes(normalizeDomain(domain))) {
+    throw new Error(`This container is configured for ${configuredDomainsLst.join(", ")}, not ${domain}.`);
   }
 }
 
@@ -461,15 +474,15 @@ function assertConfiguredEmailDomain(email: string): void {
   const atIndex = normalized.lastIndexOf("@");
   const emailDomain = atIndex === -1 ? "" : normalized.slice(atIndex + 1);
 
-  if (emailDomain !== configuredDomain()) {
-    throw new Error(`user_email must belong to ${configuredDomain()}.`);
+  if (!configuredDomains().includes(emailDomain)) {
+    throw new Error(`user_email must belong to ${configuredDomains().join(", ")}.`);
   }
 }
 
 function withConfiguredOtpFields(session: Omit<OtpSessionRecord, "domain" | "adminWallet">): OtpSessionRecord {
   return {
     ...session,
-    domain: configuredDomain(),
+    domain: configuredDomainForEmail(session.userEmail),
     adminWallet: configuredAdminWallet(),
   };
 }
@@ -477,7 +490,7 @@ function withConfiguredOtpFields(session: Omit<OtpSessionRecord, "domain" | "adm
 function withConfiguredUserFields(user: Omit<UserRecord, "domain" | "adminWallet">): UserRecord {
   return {
     ...user,
-    domain: configuredDomain(),
+    domain: configuredDomainForEmail(user.userEmail),
     adminWallet: configuredAdminWallet(),
   };
 }

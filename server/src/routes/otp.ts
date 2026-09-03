@@ -4,7 +4,7 @@ import { env } from "../config/env.js";
 import { completeOtpSession, createOtpSession, disableUser, findOtpSession } from "../db/repositories.js";
 import { VaultConnectionError } from "../services/VaultService.js";
 import { requireAppApiKey } from "../utils/auth.js";
-import { RateLimiter, otpRequestLimiter, otpVerifyLimiter, resetAllRateLimiters } from "../utils/rateLimit.js";
+import { otpRequestLimiter, otpVerifyLimiter, resetAllRateLimiters } from "../utils/rateLimit.js";
 
 // Export for testing
 export { resetAllRateLimiters };
@@ -82,10 +82,10 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
 
     const body = parsedBody.data;
 
-    if (emailDomain(body.user_email) !== env.DOMAIN.trim().toLowerCase()) {
+    if (!env.DOMAINS.includes(emailDomain(body.user_email))) {
       return reply.status(400).send({
         error: "invalid_email_domain",
-        message: `user_email must belong to ${env.DOMAIN}.`,
+        message: `user_email must belong to ${env.DOMAINS.join(", ")}.`,
       });
     }
 
