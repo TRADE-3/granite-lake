@@ -233,28 +233,43 @@ class AppUtils {
   }
 
   /// Checks if the backend configured for [domain] is reachable.
+  ///
+  /// Retries once after a short delay before giving up: the very first probe
+  /// right after app/screen start can time out while DNS/TLS are still
+  /// warming up, which otherwise reads as "offline" until the user retries.
   static Future<bool> hasBackendConnectivity({
     required String domain,
     Duration timeout = const Duration(seconds: 5),
+    int attempts = 2,
+    Duration retryDelay = const Duration(seconds: 1),
   }) async {
     final sw = Stopwatch()..start();
     debugPrint('[NET] hasBackendConnectivity start domain=$domain');
-    try {
-      await resolveOtpBackendConfig(
-        domain: domain,
-        timeout: timeout,
-        forceRefresh: true,
-      );
-      debugPrint(
-        '[NET] hasBackendConnectivity -> true elapsed=${sw.elapsedMilliseconds}ms',
-      );
-      return true;
-    } catch (error) {
-      debugPrint(
-        '[NET] hasBackendConnectivity -> false error=$error elapsed=${sw.elapsedMilliseconds}ms',
-      );
-      return false;
+    for (var attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        await resolveOtpBackendConfig(
+          domain: domain,
+          timeout: timeout,
+          forceRefresh: true,
+        );
+        debugPrint(
+          '[NET] hasBackendConnectivity -> true attempt=$attempt elapsed=${sw.elapsedMilliseconds}ms',
+        );
+        return true;
+      } catch (error) {
+        debugPrint(
+          '[NET] hasBackendConnectivity attempt=$attempt FAILED error=$error elapsed=${sw.elapsedMilliseconds}ms',
+        );
+        if (attempt == attempts) {
+          debugPrint(
+            '[NET] hasBackendConnectivity -> false elapsed=${sw.elapsedMilliseconds}ms',
+          );
+          return false;
+        }
+        await Future.delayed(retryDelay);
+      }
     }
+    return false;
   }
 
   // ── internals ─────────────────────────────────────────────────────────────
