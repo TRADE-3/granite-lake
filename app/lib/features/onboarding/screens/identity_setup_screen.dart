@@ -40,200 +40,203 @@ class _IdentitySetupScreenState extends State<IdentitySetupScreen> {
                       minHeight: constraints.maxHeight,
                     ),
                     child: IntrinsicHeight(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          TopHudOverlay(
-                            flowId: AppConstants.identityFlowId,
-                            status: AppConstants.identityStatus,
-                            encryptAlgo: AppConstants.identityEncryptMode,
-                            trailing: const ShieldBadge(size: 48),
-                          ),
-
-                          const SizedBox(height: 18),
-
-                          _FramePanel(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'READY TO START',
-                                  style: AppTextStyles.labelSmall.copyWith(
-                                    color: AppColors.textMuted,
-                                    letterSpacing: 0.9,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                ClipRect(
-                                  child: AspectRatio(
-                                    aspectRatio: 1,
-                                    child: Image.asset(
-                                      controller.isDarkMode
-                                          ? AppConstants.walletCreateAsset
-                                          : 'assets/images/wallet_create_light.png',
-                                      fit: BoxFit.cover,
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(height: 10),
-                                Row(
-                                  children: [
-                                    Container(
-                                      width: 6,
-                                      height: 6,
-                                      decoration: const BoxDecoration(
-                                        color: AppColors.secondary,
-                                        shape: BoxShape.circle,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      'DEVICE READY',
-                                      style: AppTextStyles.labelMedium.copyWith(
-                                        color: AppColors.textPrimary,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
+                      child: ClipRect(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            TopHudOverlay(
+                              flowId: AppConstants.identityFlowId,
+                              status: AppConstants.identityStatus,
+                              encryptAlgo: AppConstants.identityEncryptMode,
+                              trailing: const ShieldBadge(size: 48),
                             ),
-                          ),
 
-                          const SizedBox(height: 22),
+                            const SizedBox(height: 18),
 
-                          Text(
-                            'Set Up Your Wallet',
-                            style: AppTextStyles.displayMedium.copyWith(
-                              fontSize: 24,
-                              fontWeight: FontWeight.w800,
-                              height: 1.15,
-                            ),
-                          ),
-
-                          const SizedBox(height: 10),
-
-                          Text(
-                            identity == null
-                                ? 'Create your wallet on this device to continue. In the next step, you will protect it with your phone biometrics.'
-                                : 'Your wallet is ready on this device. Continue to the next step to protect it with biometrics.',
-                            style: AppTextStyles.bodyMedium.copyWith(
-                              color: AppColors.textSecondary,
-                              height: 1.6,
-                            ),
-                          ),
-
-                          const SizedBox(height: 22),
-
-                          if (identity != null)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 22),
+                            _FramePanel(
                               child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  _InfoTile(
-                                    label: 'WALLET ADDRESS',
-                                    value: identity.walletAddress,
+                                  Text(
+                                    'READY TO START',
+                                    style: AppTextStyles.labelSmall.copyWith(
+                                      color: AppColors.textMuted,
+                                      letterSpacing: 0.9,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  ClipRect(
+                                    child: AspectRatio(
+                                      aspectRatio: 1,
+                                      child: Image.asset(
+                                        controller.isDarkMode
+                                            ? AppConstants.walletCreateAsset
+                                            : 'assets/images/wallet_create_light.png',
+                                        fit: BoxFit.cover,
+                                      ),
+                                    ),
                                   ),
                                   const SizedBox(height: 10),
-                                  _InfoTile(
-                                    label: 'WALLET ID',
-                                    value: identity.fingerprint,
+                                  Row(
+                                    children: [
+                                      Container(
+                                        width: 6,
+                                        height: 6,
+                                        decoration: const BoxDecoration(
+                                          color: AppColors.secondary,
+                                          shape: BoxShape.circle,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'DEVICE READY',
+                                        style: AppTextStyles.labelMedium
+                                            .copyWith(
+                                              color: AppColors.textPrimary,
+                                            ),
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
                             ),
 
-                          const Row(
-                            children: [
-                              Expanded(
-                                child: _InfoTile(
-                                  label: 'STORAGE',
-                                  value: 'ON THIS DEVICE',
+                            const SizedBox(height: 22),
+
+                            Text(
+                              'Set Up Your Wallet',
+                              style: AppTextStyles.displayMedium.copyWith(
+                                fontSize: 24,
+                                fontWeight: FontWeight.w800,
+                                height: 1.15,
+                              ),
+                            ),
+
+                            const SizedBox(height: 10),
+
+                            Text(
+                              identity == null
+                                  ? 'Create your wallet on this device to continue. In the next step, you will protect it with your phone biometrics.'
+                                  : 'Your wallet is ready on this device. Continue to the next step to protect it with biometrics.',
+                              style: AppTextStyles.bodyMedium.copyWith(
+                                color: AppColors.textSecondary,
+                                height: 1.6,
+                              ),
+                            ),
+
+                            const SizedBox(height: 22),
+
+                            if (identity != null)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 22),
+                                child: Column(
+                                  children: [
+                                    _InfoTile(
+                                      label: 'WALLET ADDRESS',
+                                      value: identity.walletAddress,
+                                    ),
+                                    const SizedBox(height: 10),
+                                    _InfoTile(
+                                      label: 'WALLET ID',
+                                      value: identity.fingerprint,
+                                    ),
+                                  ],
                                 ),
                               ),
-                              SizedBox(width: 10),
-                              Expanded(
-                                child: _InfoTile(
-                                  label: 'PROTECTION',
-                                  value: 'BIOMETRIC LOCK',
+
+                            const Row(
+                              children: [
+                                Expanded(
+                                  child: _InfoTile(
+                                    label: 'STORAGE',
+                                    value: 'ON THIS DEVICE',
+                                  ),
+                                ),
+                                SizedBox(width: 10),
+                                Expanded(
+                                  child: _InfoTile(
+                                    label: 'PROTECTION',
+                                    value: 'BIOMETRIC LOCK',
+                                  ),
+                                ),
+                              ],
+                            ),
+
+                            const SizedBox(height: 24),
+
+                            ElevatedButton.icon(
+                              onPressed: _isGenerating
+                                  ? null
+                                  : () async {
+                                      if (identity != null) {
+                                        context.go(AppRoutes.biometricSetup);
+                                        return;
+                                      }
+
+                                      setState(() {
+                                        _isGenerating = true;
+                                        _errorMessage = null;
+                                      });
+
+                                      final result = await controller
+                                          .createIdentity();
+                                      if (!context.mounted) {
+                                        return;
+                                      }
+
+                                      if (!result.isSuccess) {
+                                        setState(() {
+                                          _isGenerating = false;
+                                          _errorMessage = result.message;
+                                        });
+                                        return;
+                                      }
+
+                                      setState(() => _isGenerating = false);
+                                      context.go(AppRoutes.biometricSetup);
+                                    },
+                              icon: const Icon(Icons.link_rounded, size: 18),
+                              label: Text(
+                                _isGenerating
+                                    ? 'SETTING UP WALLET'
+                                    : identity == null
+                                    ? 'CREATE WALLET'
+                                    : 'CONTINUE',
+                                style: AppTextStyles.buttonText,
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                iconColor: AppColors.textPrimary,
+                                foregroundColor: AppColors.textPrimary,
+                              ),
+                            ),
+
+                            if (_errorMessage != null) ...[
+                              const SizedBox(height: 12),
+                              Text(
+                                _errorMessage!,
+                                style: AppTextStyles.bodySmall.copyWith(
+                                  color: AppColors.statusError,
                                 ),
                               ),
                             ],
-                          ),
 
-                          const SizedBox(height: 24),
-
-                          ElevatedButton.icon(
-                            onPressed: _isGenerating
-                                ? null
-                                : () async {
-                                    if (identity != null) {
-                                      context.go(AppRoutes.biometricSetup);
-                                      return;
-                                    }
-
-                                    setState(() {
-                                      _isGenerating = true;
-                                      _errorMessage = null;
-                                    });
-
-                                    final result = await controller
-                                        .createIdentity();
-                                    if (!context.mounted) {
-                                      return;
-                                    }
-
-                                    if (!result.isSuccess) {
-                                      setState(() {
-                                        _isGenerating = false;
-                                        _errorMessage = result.message;
-                                      });
-                                      return;
-                                    }
-
-                                    setState(() => _isGenerating = false);
-                                    context.go(AppRoutes.biometricSetup);
-                                  },
-                            icon: const Icon(Icons.link_rounded, size: 18),
-                            label: Text(
-                              _isGenerating
-                                  ? 'SETTING UP WALLET'
-                                  : identity == null
-                                  ? 'CREATE WALLET'
-                                  : 'CONTINUE',
-                              style: AppTextStyles.buttonText,
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              iconColor: AppColors.textPrimary,
-                              foregroundColor: AppColors.textPrimary,
-                            ),
-                          ),
-
-                          if (_errorMessage != null) ...[
                             const SizedBox(height: 12),
-                            Text(
-                              _errorMessage!,
-                              style: AppTextStyles.bodySmall.copyWith(
-                                color: AppColors.statusError,
+
+                            Center(
+                              child: Text(
+                                identity == null
+                                    ? 'Your wallet is created on this device.'
+                                    : 'Your wallet is ready to protect.',
+                                style: AppTextStyles.labelSmall.copyWith(
+                                  color: AppColors.textMuted,
+                                  letterSpacing: 0.8,
+                                ),
                               ),
                             ),
+
+                            const Spacer(),
                           ],
-
-                          const SizedBox(height: 12),
-
-                          Center(
-                            child: Text(
-                              identity == null
-                                  ? 'Your wallet is created on this device.'
-                                  : 'Your wallet is ready to protect.',
-                              style: AppTextStyles.labelSmall.copyWith(
-                                color: AppColors.textMuted,
-                                letterSpacing: 0.8,
-                              ),
-                            ),
-                          ),
-
-                          const Spacer(),
-                        ],
+                        ),
                       ),
                     ),
                   ),

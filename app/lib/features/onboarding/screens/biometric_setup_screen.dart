@@ -41,191 +41,194 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                       minHeight: constraints.maxHeight,
                     ),
                     child: IntrinsicHeight(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          TopHudOverlay(
-                            flowId: AppConstants.biometricFlowId,
-                            status: AppConstants.biometricStatus,
-                            encryptAlgo: AppConstants.biometricEncryptMode,
-                            trailing: const ShieldBadge(size: 48),
-                          ),
-
-                          const SizedBox(height: 18),
-
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  'SECURITY',
-                                  style: AppTextStyles.labelSmall.copyWith(
-                                    color: AppColors.textMuted,
-                                    letterSpacing: 0.9,
-                                  ),
-                                ),
-                              ),
-                              Text(
-                                binding?.modalitiesLabel ?? 'DEVICE BIOMETRICS',
-                                style: AppTextStyles.labelSmall.copyWith(
-                                  color: AppColors.textSecondary,
-                                  letterSpacing: 0.9,
-                                ),
-                              ),
-                            ],
-                          ),
-
-                          const SizedBox(height: 8),
-
-                          Text(
-                            'Protect Your Wallet',
-                            style: AppTextStyles.displayMedium.copyWith(
-                              fontSize: 24,
-                              fontWeight: FontWeight.w800,
-                              height: 1.15,
+                      child: ClipRect(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            TopHudOverlay(
+                              flowId: AppConstants.biometricFlowId,
+                              status: AppConstants.biometricStatus,
+                              encryptAlgo: AppConstants.biometricEncryptMode,
+                              trailing: const ShieldBadge(size: 48),
                             ),
-                          ),
 
-                          const SizedBox(height: 10),
+                            const SizedBox(height: 18),
 
-                          Text(
-                            binding == null
-                                ? 'Use your fingerprint or face unlock to protect your wallet on this device.'
-                                : 'Biometric protection is turned on. You will use it whenever the app needs to unlock your wallet.',
-                            style: AppTextStyles.bodyMedium.copyWith(
-                              color: AppColors.textSecondary,
-                              height: 1.6,
-                            ),
-                          ),
-
-                          const SizedBox(height: 18),
-
-                          _BiometricPanel(
-                            isBinding: _isBinding,
-                            isBound: binding != null,
-                            binding: binding,
-                          ),
-
-                          const SizedBox(height: 18),
-
-                          ElevatedButton(
-                            onPressed: _isBinding
-                                ? null
-                                : () async {
-                                    if (binding != null) {
-                                      context.go(AppRoutes.registration);
-                                      return;
-                                    }
-
-                                    setState(() {
-                                      _isBinding = true;
-                                      _errorMessage = null;
-                                    });
-
-                                    final result = await controller
-                                        .bindBiometrics();
-                                    if (!context.mounted) {
-                                      return;
-                                    }
-
-                                    if (!result.isSuccess) {
-                                      setState(() {
-                                        _isBinding = false;
-                                        _errorMessage = result.message;
-                                      });
-                                      return;
-                                    }
-
-                                    setState(() => _isBinding = false);
-                                    context.go(AppRoutes.registration);
-                                  },
-                            style: ElevatedButton.styleFrom(
-                              iconColor: AppColors.textPrimary,
-                              foregroundColor: AppColors.textPrimary,
-                            ),
-                            child: Text(
-                              _isBinding
-                                  ? 'SETTING UP PROTECTION'
-                                  : binding == null
-                                  ? 'TURN ON BIOMETRICS'
-                                  : 'CONTINUE',
-                              style: AppTextStyles.buttonText,
-                            ),
-                          ),
-
-                          if (_errorMessage != null) ...[
-                            const SizedBox(height: 12),
-                            Text(
-                              _errorMessage!,
-                              style: AppTextStyles.bodySmall.copyWith(
-                                color: AppColors.statusError,
-                              ),
-                            ),
-                          ],
-
-                          const SizedBox(height: 12),
-
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 12,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppColors.surface.withAlpha(70),
-                              border: Border.all(color: AppColors.border),
-                            ),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                            Row(
                               children: [
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 2),
-                                  child: Icon(
-                                    Icons.info_outline_rounded,
-                                    size: 16,
-                                    color: AppColors.textMuted,
-                                  ),
-                                ),
-                                const SizedBox(width: 10),
                                 Expanded(
                                   child: Text(
-                                    'Your fingerprint or face data stays on your device. This app only uses it to help protect your wallet.',
-                                    style: AppTextStyles.bodySmall.copyWith(
-                                      color: AppColors.textSecondary,
-                                      height: 1.5,
+                                    'SECURITY',
+                                    style: AppTextStyles.labelSmall.copyWith(
+                                      color: AppColors.textMuted,
+                                      letterSpacing: 0.9,
                                     ),
+                                  ),
+                                ),
+                                Text(
+                                  binding?.modalitiesLabel ??
+                                      'DEVICE BIOMETRICS',
+                                  style: AppTextStyles.labelSmall.copyWith(
+                                    color: AppColors.textSecondary,
+                                    letterSpacing: 0.9,
                                   ),
                                 ),
                               ],
                             ),
-                          ),
 
-                          const Spacer(),
+                            const SizedBox(height: 8),
 
-                          Row(
-                            children: [
-                              Expanded(
-                                child: _FooterMetric(
-                                  label: 'AUTH LEVEL',
-                                  value: binding == null
-                                      ? 'NOT READY'
-                                      : 'READY',
-                                  valueColor: AppColors.textPrimary,
-                                ),
+                            Text(
+                              'Protect Your Wallet',
+                              style: AppTextStyles.displayMedium.copyWith(
+                                fontSize: 24,
+                                fontWeight: FontWeight.w800,
+                                height: 1.15,
                               ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: _FooterMetric(
-                                  label: 'COMPLIANCE',
-                                  value: binding == null
-                                      ? 'DEVICE ONLY'
-                                      : 'BIOMETRIC LOCK',
-                                  valueColor: AppColors.secondary,
-                                  alignEnd: true,
+                            ),
+
+                            const SizedBox(height: 10),
+
+                            Text(
+                              binding == null
+                                  ? 'Use your fingerprint or face unlock to protect your wallet on this device.'
+                                  : 'Biometric protection is turned on. You will use it whenever the app needs to unlock your wallet.',
+                              style: AppTextStyles.bodyMedium.copyWith(
+                                color: AppColors.textSecondary,
+                                height: 1.6,
+                              ),
+                            ),
+
+                            const SizedBox(height: 18),
+
+                            _BiometricPanel(
+                              isBinding: _isBinding,
+                              isBound: binding != null,
+                              binding: binding,
+                            ),
+
+                            const SizedBox(height: 18),
+
+                            ElevatedButton(
+                              onPressed: _isBinding
+                                  ? null
+                                  : () async {
+                                      if (binding != null) {
+                                        context.go(AppRoutes.registration);
+                                        return;
+                                      }
+
+                                      setState(() {
+                                        _isBinding = true;
+                                        _errorMessage = null;
+                                      });
+
+                                      final result = await controller
+                                          .bindBiometrics();
+                                      if (!context.mounted) {
+                                        return;
+                                      }
+
+                                      if (!result.isSuccess) {
+                                        setState(() {
+                                          _isBinding = false;
+                                          _errorMessage = result.message;
+                                        });
+                                        return;
+                                      }
+
+                                      setState(() => _isBinding = false);
+                                      context.go(AppRoutes.registration);
+                                    },
+                              style: ElevatedButton.styleFrom(
+                                iconColor: AppColors.textPrimary,
+                                foregroundColor: AppColors.textPrimary,
+                              ),
+                              child: Text(
+                                _isBinding
+                                    ? 'SETTING UP PROTECTION'
+                                    : binding == null
+                                    ? 'TURN ON BIOMETRICS'
+                                    : 'CONTINUE',
+                                style: AppTextStyles.buttonText,
+                              ),
+                            ),
+
+                            if (_errorMessage != null) ...[
+                              const SizedBox(height: 12),
+                              Text(
+                                _errorMessage!,
+                                style: AppTextStyles.bodySmall.copyWith(
+                                  color: AppColors.statusError,
                                 ),
                               ),
                             ],
-                          ),
-                        ],
+
+                            const SizedBox(height: 12),
+
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 12,
+                              ),
+                              decoration: BoxDecoration(
+                                color: AppColors.surface.withAlpha(70),
+                                border: Border.all(color: AppColors.border),
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 2),
+                                    child: Icon(
+                                      Icons.info_outline_rounded,
+                                      size: 16,
+                                      color: AppColors.textMuted,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      'Your fingerprint or face data stays on your device. This app only uses it to help protect your wallet.',
+                                      style: AppTextStyles.bodySmall.copyWith(
+                                        color: AppColors.textSecondary,
+                                        height: 1.5,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            const Spacer(),
+
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _FooterMetric(
+                                    label: 'AUTH LEVEL',
+                                    value: binding == null
+                                        ? 'NOT READY'
+                                        : 'READY',
+                                    valueColor: AppColors.textPrimary,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: _FooterMetric(
+                                    label: 'COMPLIANCE',
+                                    value: binding == null
+                                        ? 'DEVICE ONLY'
+                                        : 'BIOMETRIC LOCK',
+                                    valueColor: AppColors.secondary,
+                                    alignEnd: true,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),

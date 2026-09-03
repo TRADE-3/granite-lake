@@ -190,183 +190,171 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                     24,
                     20 + viewInsets.bottom,
                   ),
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      minHeight: constraints.maxHeight,
-                    ),
-                    child: IntrinsicHeight(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          TopHudOverlay(
-                            flowId: AppConstants.registrationFlowId,
-                            status: AppConstants.registrationStatus,
-                            encryptAlgo: AppConstants.registrationEncryptMode,
-                            trailing: const ShieldBadge(size: 64),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TopHudOverlay(
+                        flowId: AppConstants.registrationFlowId,
+                        status: AppConstants.registrationStatus,
+                        encryptAlgo: AppConstants.registrationEncryptMode,
+                        trailing: const ShieldBadge(size: 64),
+                      ),
+                      const SizedBox(height: 28),
+                      Text(
+                        AppConstants.registrationDisplayId,
+                        style: AppTextStyles.labelMedium.copyWith(
+                          color: AppColors.textMuted,
+                          letterSpacing: 1.2,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Confirm Your\nAccount',
+                        style: AppTextStyles.displayLarge.copyWith(
+                          fontSize: 34,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 1.5,
+                          height: 1.1,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Enter your company email to request a one-time code, then verify it to link this wallet to your on-chain UserCap.',
+                        style: AppTextStyles.bodyMedium.copyWith(
+                          color: AppColors.textSecondary,
+                          height: 1.6,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      _InfoCard(
+                        title: 'YOUR WALLET ADDRESS',
+                        body:
+                            identity?.walletAddress ?? 'Wallet not ready yet.',
+                      ),
+                      const SizedBox(height: 12),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: AppColors.surface.withAlpha(90),
+                          border: Border.all(
+                            color: AppColors.secondary.withAlpha(120),
                           ),
-                          const SizedBox(height: 28),
-                          Text(
-                            AppConstants.registrationDisplayId,
-                            style: AppTextStyles.labelMedium.copyWith(
-                              color: AppColors.textMuted,
-                              letterSpacing: 1.2,
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            'Confirm Your\nAccount',
-                            style: AppTextStyles.displayLarge.copyWith(
-                              fontSize: 34,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 1.5,
-                              height: 1.1,
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            'Enter your company email to request a one-time code, then verify it to link this wallet to your on-chain UserCap.',
-                            style: AppTextStyles.bodyMedium.copyWith(
-                              color: AppColors.textSecondary,
-                              height: 1.6,
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-                          _InfoCard(
-                            title: 'YOUR WALLET ADDRESS',
-                            body:
-                                identity?.walletAddress ??
-                                'Wallet not ready yet.',
-                          ),
-                          const SizedBox(height: 12),
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(14),
-                            decoration: BoxDecoration(
-                              color: AppColors.surface.withAlpha(90),
-                              border: Border.all(
-                                color: AppColors.secondary.withAlpha(120),
-                              ),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'ADD TEST FUNDS',
-                                  style: AppTextStyles.labelSmall.copyWith(
-                                    color: AppColors.secondary,
-                                    letterSpacing: 1,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  'Your new wallet needs a small amount of test SUI before you continue. Open the link below, paste your wallet address, and send test funds to yourself.',
-                                  style: AppTextStyles.bodyMedium.copyWith(
-                                    color: AppColors.textPrimary,
-                                    height: 1.5,
-                                  ),
-                                ),
-                                const SizedBox(height: 10),
-                                SelectableText(
-                                  AppConstants.suiTestnetFaucetUrl,
-                                  style: AppTextStyles.labelLarge.copyWith(
-                                    color: AppColors.actionFill,
-                                  ),
-                                ),
-                                const SizedBox(height: 12),
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: OutlinedButton(
-                                        onPressed: identity == null
-                                            ? null
-                                            : () => _copyWalletAddress(
-                                                identity.walletAddress,
-                                              ),
-                                        child: Text(
-                                          'COPY ADDRESS',
-                                          style: AppTextStyles.buttonText
-                                              .copyWith(
-                                                color: AppColors.textPrimary,
-                                              ),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          _InfoCard(
-                            title: 'BEFORE YOU CONTINUE',
-                            body:
-                                'Add test funds first, then request an OTP for your company email. The OTP is delivered through the configured backend channel.',
-                          ),
-                          const SizedBox(height: 24),
-                          _LabeledField(
-                            label: 'COMPANY DOMAIN',
-                            controller: _domainController,
-                            hintText: 'example: acme.com',
-                          ),
-                          const SizedBox(height: 16),
-                          _LabeledField(
-                            label: 'COMPANY EMAIL',
-                            controller: _emailController,
-                            hintText: 'example: alice@acme.com',
-                            keyboardType: TextInputType.emailAddress,
-                          ),
-                          const SizedBox(height: 16),
-                          OutlinedButton(
-                            onPressed: _isRequestingOtp || _isSubmitting
-                                ? null
-                                : _requestOtp,
-                            child: Text(
-                              _isRequestingOtp
-                                  ? 'REQUESTING OTP'
-                                  : 'REQUEST OTP',
-                              style: AppTextStyles.buttonText.copyWith(
-                                color: AppColors.textPrimary,
-                              ),
-                            ),
-                          ),
-                          if (_statusText != null) ...[
-                            const SizedBox(height: 12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
                             Text(
-                              [
-                                _statusText,
-                                _otpExpiryLabel,
-                              ].whereType<String>().join(' '),
+                              'ADD TEST FUNDS',
+                              style: AppTextStyles.labelSmall.copyWith(
+                                color: AppColors.secondary,
+                                letterSpacing: 1,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Your new wallet needs a small amount of test SUI before you continue. Open the link below, paste your wallet address, and send test funds to yourself.',
                               style: AppTextStyles.bodyMedium.copyWith(
-                                color: AppColors.statusActive,
+                                color: AppColors.textPrimary,
                                 height: 1.5,
                               ),
                             ),
-                          ],
-                          const SizedBox(height: 16),
-                          _LabeledField(
-                            label: 'ONE-TIME CODE',
-                            controller: _otpController,
-                            hintText: 'example: 123456',
-                            keyboardType: TextInputType.number,
-                            errorText: _errorText,
-                          ),
-                          const SizedBox(height: 24),
-                          ElevatedButton(
-                            onPressed:
-                                _isSubmitting ||
-                                    _isRequestingOtp ||
-                                    _otpUserId == null
-                                ? null
-                                : _submit,
-                            child: Text(
-                              _isSubmitting ? 'VERIFYING OTP' : 'CONTINUE',
-                              style: AppTextStyles.buttonText,
+                            const SizedBox(height: 10),
+                            SelectableText(
+                              AppConstants.suiTestnetFaucetUrl,
+                              style: AppTextStyles.labelLarge.copyWith(
+                                color: AppColors.actionFill,
+                              ),
                             ),
-                          ),
-                          const Spacer(),
-                        ],
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: OutlinedButton(
+                                    onPressed: identity == null
+                                        ? null
+                                        : () => _copyWalletAddress(
+                                            identity.walletAddress,
+                                          ),
+                                    child: Text(
+                                      'COPY ADDRESS',
+                                      style: AppTextStyles.buttonText.copyWith(
+                                        color: AppColors.textPrimary,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
+                      const SizedBox(height: 12),
+                      _InfoCard(
+                        title: 'BEFORE YOU CONTINUE',
+                        body:
+                            'Add test funds first, then request an OTP for your company email. The OTP is delivered through the configured backend channel.',
+                      ),
+                      const SizedBox(height: 24),
+                      _LabeledField(
+                        label: 'COMPANY DOMAIN',
+                        controller: _domainController,
+                        hintText: 'example: acme.com',
+                      ),
+                      const SizedBox(height: 16),
+                      _LabeledField(
+                        label: 'COMPANY EMAIL',
+                        controller: _emailController,
+                        hintText: 'example: alice@acme.com',
+                        keyboardType: TextInputType.emailAddress,
+                      ),
+                      const SizedBox(height: 16),
+                      OutlinedButton(
+                        onPressed: _isRequestingOtp || _isSubmitting
+                            ? null
+                            : _requestOtp,
+                        child: Text(
+                          _isRequestingOtp ? 'REQUESTING OTP' : 'REQUEST OTP',
+                          style: AppTextStyles.buttonText.copyWith(
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                      ),
+                      if (_statusText != null) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          [
+                            _statusText,
+                            _otpExpiryLabel,
+                          ].whereType<String>().join(' '),
+                          style: AppTextStyles.bodyMedium.copyWith(
+                            color: AppColors.statusActive,
+                            height: 1.5,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+                      _LabeledField(
+                        label: 'ONE-TIME CODE',
+                        controller: _otpController,
+                        hintText: 'example: 123456',
+                        keyboardType: TextInputType.number,
+                        errorText: _errorText,
+                      ),
+                      const SizedBox(height: 24),
+                      ElevatedButton(
+                        onPressed:
+                            _isSubmitting ||
+                                _isRequestingOtp ||
+                                _otpUserId == null
+                            ? null
+                            : _submit,
+                        child: Text(
+                          _isSubmitting ? 'VERIFYING OTP' : 'CONTINUE',
+                          style: AppTextStyles.buttonText,
+                        ),
+                      ),
+                    ],
                   ),
                 );
               },
@@ -416,6 +404,10 @@ class _LabeledField extends StatelessWidget {
           decoration: InputDecoration(
             hintText: hintText,
             errorText: errorText,
+            // Flutter truncates errorText to a single ellipsized line unless
+            // errorMaxLines is set explicitly, even though the field grows
+            // to fit it. These messages can run several sentences.
+            errorMaxLines: 6,
             errorStyle: AppTextStyles.labelSmall.copyWith(
               color: AppColors.statusError,
               letterSpacing: 0.8,

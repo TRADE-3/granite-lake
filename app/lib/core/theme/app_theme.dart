@@ -36,6 +36,44 @@ final class AppTheme {
     );
   }
 
+  /// Trade3 type pairing: Raleway for display/headline/title, Karla for
+  /// body/label. See Work/T3/design.md section 3.
+  static TextTheme _buildTextTheme(bool isDark) {
+    final base = isDark
+        ? ThemeData.dark().textTheme
+        : ThemeData.light().textTheme;
+    return GoogleFonts.karlaTextTheme(base).copyWith(
+      displayLarge: GoogleFonts.raleway(
+        textStyle: base.displayLarge,
+        fontWeight: FontWeight.w800,
+      ),
+      displayMedium: GoogleFonts.raleway(
+        textStyle: base.displayMedium,
+        fontWeight: FontWeight.w800,
+      ),
+      displaySmall: GoogleFonts.raleway(
+        textStyle: base.displaySmall,
+        fontWeight: FontWeight.w700,
+      ),
+      headlineLarge: GoogleFonts.raleway(
+        textStyle: base.headlineLarge,
+        fontWeight: FontWeight.w700,
+      ),
+      headlineMedium: GoogleFonts.raleway(
+        textStyle: base.headlineMedium,
+        fontWeight: FontWeight.w600,
+      ),
+      headlineSmall: GoogleFonts.raleway(
+        textStyle: base.headlineSmall,
+        fontWeight: FontWeight.w600,
+      ),
+      titleLarge: GoogleFonts.raleway(
+        textStyle: base.titleLarge,
+        fontWeight: FontWeight.w600,
+      ),
+    );
+  }
+
   static ThemeData _buildTheme({
     required Brightness brightness,
     required Color backgroundColor,
@@ -82,9 +120,7 @@ final class AppTheme {
               onError: textPrimary,
               outline: border,
             ),
-      textTheme: GoogleFonts.interTextTheme(
-        isDark ? ThemeData.dark().textTheme : ThemeData.light().textTheme,
-      ),
+      textTheme: _buildTextTheme(isDark),
       appBarTheme: AppBarTheme(
         backgroundColor: backgroundColor,
         surfaceTintColor: Colors.transparent,
@@ -101,7 +137,9 @@ final class AppTheme {
           backgroundColor: actionFill,
           foregroundColor: actionText,
           minimumSize: const Size(double.infinity, 52),
-          shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8), // radius-md
+          ),
           elevation: 0,
           shadowColor: Colors.transparent,
         ),
@@ -111,7 +149,7 @@ final class AppTheme {
         foregroundColor: actionText,
         elevation: 0,
         shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.all(Radius.circular(20)),
+          borderRadius: BorderRadius.all(Radius.circular(16)), // radius-lg
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
@@ -119,7 +157,9 @@ final class AppTheme {
           foregroundColor: textPrimary,
           minimumSize: const Size(double.infinity, 52),
           side: BorderSide(color: border),
-          shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8), // radius-md
+          ),
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -130,45 +170,44 @@ final class AppTheme {
           vertical: 16,
         ),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.zero,
+          borderRadius: BorderRadius.circular(8), // radius-md
           borderSide: BorderSide(color: border),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.zero,
+          borderRadius: BorderRadius.circular(8),
           borderSide: BorderSide(color: border),
         ),
-        focusedBorder: const OutlineInputBorder(
-          borderRadius: BorderRadius.zero,
-          borderSide: BorderSide(color: AppColors.primary, width: 1.5),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
         ),
         errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.zero,
+          borderRadius: BorderRadius.circular(8),
           borderSide: BorderSide(color: AppColors.statusError),
         ),
         focusedErrorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.zero,
+          borderRadius: BorderRadius.circular(8),
           borderSide: BorderSide(color: AppColors.statusError, width: 1.5),
         ),
-        hintStyle: GoogleFonts.jetBrainsMono(
+        hintStyle: GoogleFonts.karla(fontSize: 14, color: textMuted),
+        labelStyle: GoogleFonts.karla(
           fontSize: 13,
+          fontWeight: FontWeight.w600,
           color: textMuted,
-          letterSpacing: 0.8,
-        ),
-        labelStyle: GoogleFonts.jetBrainsMono(
-          fontSize: 11,
-          color: textMuted,
-          letterSpacing: 0.6,
         ),
       ),
       dividerTheme: DividerThemeData(color: border, thickness: 0.5),
       snackBarTheme: SnackBarThemeData(
         backgroundColor: surfaceElevated,
-        contentTextStyle: GoogleFonts.jetBrainsMono(
-          fontSize: 12,
+        contentTextStyle: GoogleFonts.karla(
+          fontSize: 13,
+          fontWeight: FontWeight.w400,
           color: textPrimary,
         ),
         behavior: SnackBarBehavior.floating,
-        shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8), // radius-md
+        ),
       ),
     );
   }

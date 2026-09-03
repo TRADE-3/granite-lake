@@ -75,7 +75,7 @@ class MainActivity : FlutterFragmentActivity() {
 			pendingCreateAliasForCleanup = alias
 			authenticate(
 				title = "Bind biometrics",
-				subtitle = "Create a secure biometric gate for Granite Lake.",
+				subtitle = "Create a secure biometric gate for Trade3.",
 				cipher = cipher,
 				onSuccess = { authenticatedCipher ->
 					val ciphertext = authenticatedCipher.doFinal(payload.toByteArray(Charsets.UTF_8))
@@ -116,7 +116,7 @@ class MainActivity : FlutterFragmentActivity() {
 		val ivBase64 = call.argument<String>("ivBase64")
 		val title = call.argument<String>("title")?.takeIf { it.isNotBlank() } ?: "Unlock secure session"
 		val subtitle = call.argument<String>("subtitle")?.takeIf { it.isNotBlank() }
-			?: "Verify biometrics to unlock Granite Lake."
+			?: "Verify biometrics to unlock Trade3."
 
 		if (alias.isNullOrBlank() || ciphertextBase64.isNullOrBlank() || ivBase64.isNullOrBlank()) {
 			result.error("invalid_arguments", "Missing biometric gate payload.", null)
