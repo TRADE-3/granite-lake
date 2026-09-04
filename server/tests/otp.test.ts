@@ -39,6 +39,8 @@ vi.mock("../src/db/repositories.js", () => ({
   enableUser: vi.fn(),
   findOtpSession: vi.fn(),
   listUsers: vi.fn(async () => []),
+  isAcceptedEmailDomain: vi.fn((email: string) => email.trim().toLowerCase().endsWith("@acme.com")),
+  listAcceptedEmailDomains: vi.fn(() => ["acme.com"]),
 }));
 
 const { buildApp } = await import("../src/app.js");

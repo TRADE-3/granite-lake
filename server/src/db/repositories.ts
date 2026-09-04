@@ -446,15 +446,46 @@ function configuredDomains(): string[] {
   return env.DOMAINS.map(normalizeDomain);
 }
 
+function configuredEmailDomainAliases(): Record<string, string> {
+  return env.EMAIL_DOMAIN_ALIASES;
+}
+
+// Resolves an email domain to its registry domain via EMAIL_DOMAIN_ALIASES,
+// falling back to itself. Null if the result isn't a configured domain.
+function registeredDomainForEmailDomain(emailDomain: string): string | null {
+  const normalized = normalizeDomain(emailDomain);
+  const aliasTarget = configuredEmailDomainAliases()[normalized];
+  const registeredDomain = normalizeDomain(aliasTarget ?? normalized);
+
+  return configuredDomains().includes(registeredDomain) ? registeredDomain : null;
+}
+
+function acceptedEmailDomains(): string[] {
+  return Array.from(new Set([...configuredDomains(), ...Object.keys(configuredEmailDomainAliases())]));
+}
+
+export function isAcceptedEmailDomain(email: string): boolean {
+  const normalized = normalizeEmail(email);
+  const atIndex = normalized.lastIndexOf("@");
+  const emailDomain = atIndex === -1 ? "" : normalized.slice(atIndex + 1);
+
+  return registeredDomainForEmailDomain(emailDomain) !== null;
+}
+
+export function listAcceptedEmailDomains(): string[] {
+  return acceptedEmailDomains();
+}
+
 function configuredDomainForEmail(email: string): string {
   const atIndex = email.lastIndexOf("@");
   const emailDomain = atIndex === -1 ? "" : email.slice(atIndex + 1);
+  const registeredDomain = registeredDomainForEmailDomain(emailDomain);
 
-  if (!configuredDomains().includes(emailDomain)) {
-    throw new Error(`user_email must belong to ${configuredDomains().join(", ")}.`);
+  if (!registeredDomain) {
+    throw new Error(`user_email must belong to ${acceptedEmailDomains().join(", ")}.`);
   }
 
-  return normalizeDomain(emailDomain);
+  return registeredDomain;
 }
 
 function configuredAdminWallet(): string {
@@ -470,12 +501,8 @@ function assertConfiguredDomain(domain: string): void {
 }
 
 function assertConfiguredEmailDomain(email: string): void {
-  const normalized = normalizeEmail(email);
-  const atIndex = normalized.lastIndexOf("@");
-  const emailDomain = atIndex === -1 ? "" : normalized.slice(atIndex + 1);
-
-  if (!configuredDomains().includes(emailDomain)) {
-    throw new Error(`user_email must belong to ${configuredDomains().join(", ")}.`);
+  if (!isAcceptedEmailDomain(email)) {
+    throw new Error(`user_email must belong to ${acceptedEmailDomains().join(", ")}.`);
   }
 }
 

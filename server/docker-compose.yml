@@ -33,6 +33,7 @@ services:
       NODE_ENV: ${NODE_ENV:-development}
       CLIENT_ID: ${CLIENT_ID:-domain_demo}
       DOMAINS: ${DOMAINS:-${DOMAIN:-domain.com}}
+      EMAIL_DOMAIN_ALIASES: ${EMAIL_DOMAIN_ALIASES:-}
       ADMIN_WALLET: ${ADMIN_WALLET:?ADMIN_WALLET must be set}
       ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set}
       APP_API_KEY: ${APP_API_KEY:?APP_API_KEY must be set}
@@ -72,6 +73,7 @@ services:
       HOST: ${HOST:-0.0.0.0}
       CLIENT_ID: ${CLIENT_ID:-domain_demo}
       DOMAINS: ${DOMAINS:-${DOMAIN:-domain.com}}
+      EMAIL_DOMAIN_ALIASES: ${EMAIL_DOMAIN_ALIASES:-}
       ADMIN_WALLET: ${ADMIN_WALLET:?ADMIN_WALLET must be set}
       ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set}
       APP_API_KEY: ${APP_API_KEY:?APP_API_KEY must be set}
