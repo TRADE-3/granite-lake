@@ -17,5 +17,5 @@ COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist
 COPY src/db/migrations ./dist/src/db/migrations
-EXPOSE 7779
+EXPOSE 8080
 CMD ["node", "dist/src/server.js"]
