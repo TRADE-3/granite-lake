@@ -24,6 +24,36 @@ const domainSchema = z
   .regex(/^[a-zA-Z0-9.-]+$/)
   .optional();
 
+// emailDomain -> registeredDomain, e.g. "tr3.io:trade3.io".
+const emailDomainAliasesSchema = z
+  .string()
+  .default("")
+  .refine((val) => {
+    if (!val) return true;
+
+    return val
+      .split(",")
+      .map((pair) => pair.trim())
+      .filter(Boolean)
+      .every((pair) => {
+        const parts = pair.split(":").map((part) => part.trim());
+        return parts.length === 2 && parts.every((d) => domainSchema.safeParse(d).success);
+      });
+  }, "EMAIL_DOMAIN_ALIASES must be a comma-separated list of emailDomain:registeredDomain pairs")
+  .transform((val) => {
+    const aliases: Record<string, string> = {};
+
+    for (const pair of val
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean)) {
+      const [emailDomain, registeredDomain] = pair.split(":").map((p) => p.trim().toLowerCase());
+      aliases[emailDomain] = registeredDomain;
+    }
+
+    return aliases;
+  });
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "staging", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(8080),
@@ -37,6 +67,7 @@ const envSchema = z.object({
       return domains.every((d) => domainSchema.safeParse(d).success);
     })
     .transform((val) => val.split(",").map((d) => d.trim())),
+  EMAIL_DOMAIN_ALIASES: emailDomainAliasesSchema,
   ADMIN_WALLET: z.string().min(1),
   ADMIN_API_KEY: z.string().min(1),
   APP_API_KEY: z.string().min(1),

@@ -8,6 +8,7 @@ const env = {
   HOST: "0.0.0.0",
   CLIENT_ID: "domain_demo",
   DOMAINS: ["domain_demo", "domain_demo2"],
+  EMAIL_DOMAIN_ALIASES: {},
   ADMIN_WALLET: "0xadmin",
   ADMIN_API_KEY: "admin-key",
   APP_API_KEY: "app-key",

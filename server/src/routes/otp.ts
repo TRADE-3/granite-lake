@@ -1,7 +1,14 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { env } from "../config/env.js";
-import { completeOtpSession, createOtpSession, disableUser, findOtpSession } from "../db/repositories.js";
+import {
+  completeOtpSession,
+  createOtpSession,
+  disableUser,
+  findOtpSession,
+  isAcceptedEmailDomain,
+  listAcceptedEmailDomains,
+} from "../db/repositories.js";
 import { VaultConnectionError } from "../services/VaultService.js";
 import { requireAppApiKey } from "../utils/auth.js";
 import { otpRequestLimiter, otpVerifyLimiter, resetAllRateLimiters } from "../utils/rateLimit.js";
@@ -82,10 +89,10 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
 
     const body = parsedBody.data;
 
-    if (!env.DOMAINS.includes(emailDomain(body.user_email))) {
+    if (!isAcceptedEmailDomain(body.user_email)) {
       return reply.status(400).send({
         error: "invalid_email_domain",
-        message: `user_email must belong to ${env.DOMAINS.join(", ")}.`,
+        message: `user_email must belong to ${listAcceptedEmailDomains().join(", ")}.`,
       });
     }
 
@@ -268,13 +275,6 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 };
-
-function emailDomain(email: string): string {
-  const normalized = email.trim().toLowerCase();
-  const atIndex = normalized.lastIndexOf("@");
-
-  return atIndex === -1 ? "" : normalized.slice(atIndex + 1);
-}
 
 function parseJsonStringBody(body: unknown): unknown {
   if (typeof body !== "string") {
