@@ -1,4 +1,4 @@
-package com.favoritemedium.granite_lake
+package io.trade3.app
 
 import android.os.Build
 import android.os.Bundle

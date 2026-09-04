@@ -1485,7 +1485,7 @@ class PhotoAttestationService {
       }
 
       final targetHint = kDebugMode ? ' URL: $uri' : '';
-      return 'The OTP verification endpoint was not found on the configured backend. Check that GL_OTP_BACKEND_CONFIG points to the Granite Lake API for this domain and that the latest API is deployed.$targetHint';
+      return 'The OTP verification endpoint was not found on the configured backend. Check that GL_OTP_BACKEND_CONFIG points to the Trade3 API for this domain and that the latest API is deployed.$targetHint';
     }
 
     return backendMessage ?? 'OTP verification failed.';
