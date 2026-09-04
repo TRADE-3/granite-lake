@@ -27,6 +27,7 @@ dependencies:
   sqflite: ^2.4.2
   http: ^1.5.0
   file_picker: ^8.1.2
+  flutter_svg: ^2.2.1
 
 dev_dependencies:
   flutter_test:
@@ -36,27 +37,28 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.4
 
 flutter_native_splash:
-  color: "#0A0A0A"
-  image: assets/logos/granite_lake_splash.png
+  color: "#FDF5EF"
+  image: assets/logos/trade3/trade3_logo_on_light.png
   android: true
   ios: true
   web: false
   android_12:
-    color: "#0A0A0A"
-    image: assets/logos/granite_lake_splash.png
+    color: "#FDF5EF"
+    image: assets/logos/trade3/trade3_icon_foreground.png
 
 flutter_launcher_icons:
   android: true
   ios: false
-  image_path: assets/logos/granite_lake_splash.png
-  adaptive_icon_background: "#0A0A0A"
-  adaptive_icon_foreground: assets/logos/granite_lake_splash.png
+  image_path: assets/logos/trade3/trade3_icon_flat.png
+  adaptive_icon_background: "#FDF5EF"
+  adaptive_icon_foreground: assets/logos/trade3/trade3_icon_foreground.png
   min_sdk_android: 23
 
 flutter:
   uses-material-design: true
   assets:
     - assets/logos/
+    - assets/logos/trade3/
     - assets/images/
 
   # An image asset can refer to one or more resolution-specific "variants", see

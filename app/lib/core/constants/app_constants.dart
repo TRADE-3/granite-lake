@@ -11,8 +11,8 @@ class DomainBackendConfig {
 
 abstract final class AppConstants {
   // ── App meta ───────────────────────────────────────────────────────────────
-  static const String appName = 'GRANITE LAKE';
-  static const String appTitle = 'Granite Lake';
+  static const String appName = 'TRADE3';
+  static const String appTitle = 'Trade3';
   static const String appVersion = 'V1.0';
   static const String walletCreateAsset = 'assets/images/wallet_create.png';
   static const int captureSessionDurationMinutes = 30;

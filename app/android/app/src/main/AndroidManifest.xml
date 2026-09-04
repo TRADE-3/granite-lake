@@ -22,7 +22,7 @@
         android:required="true" />
 
     <application
-        android:label="Granite Lake"
+        android:label="Trade3"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
