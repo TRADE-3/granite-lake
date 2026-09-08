@@ -60,6 +60,12 @@ export async function createOtpSession(input: {
     throw new Error(`User email ${userEmail} is already registered.`);
   }
 
+  // otp_sessions_pending_email_unique only excludes rows whose status is not
+  // 'pending_verification'. A session past its TTL keeps that status until
+  // something loads it, so without this it still blocks the insert below
+  // with a duplicate key error instead of the friendly "in progress" one.
+  await expireStalePendingOtpSessionsByEmail(userEmail);
+
   const pendingSession = await findActivePendingOtpSessionByEmail(userEmail);
 
   if (pendingSession) {
@@ -162,6 +168,19 @@ export async function findOtpSession(userId: string): Promise<OtpSessionRecord |
   );
 
   return result.rows[0] ? withConfiguredOtpFields(result.rows[0]) : null;
+}
+
+async function expireStalePendingOtpSessionsByEmail(userEmail: string): Promise<void> {
+  await pool.query(
+    `
+      update otp_sessions
+      set status = 'expired', error = 'OTP expired.'
+      where user_email = $1
+        and status = 'pending_verification'
+        and expires_at <= now()
+    `,
+    [userEmail]
+  );
 }
 
 async function findActivePendingOtpSessionByEmail(userEmail: string): Promise<OtpSessionRecord | null> {
