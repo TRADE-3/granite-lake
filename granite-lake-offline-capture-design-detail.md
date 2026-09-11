@@ -312,6 +312,111 @@ independently of the chain-submission step.
   `online`, and app foreground/resume via a `WidgetsBindingObserver` registered at the app
   root (`app/lib/app.dart`), so it runs even when the capture screen isn't mounted.
 
+### 7.1 Signing needs a live biometric session — the queue sweep must account for that
+
+Every existing signing call (`persistCaptureWithMetadata`/`persistFileWithMetadata`,
+`granite_lake_controller.dart:617-636,758-778`) reads an in-memory
+`SuiED25519PrivateKey? _sessionSigningKey`, populated only by an explicit,
+user-initiated `startSession()` biometric prompt (`capture_tab_screen.dart:177`) and
+cached for `AppConstants.captureSessionDurationMinutes` (30, `app_constants.dart:18`).
+Nothing in the codebase re-prompts biometrics transparently at signing time — if the
+cached key is gone, signing fails outright. Two things clear it:
+
+- the 30-minute window elapsing while the app stays running (`_sessionTicker`,
+  `granite_lake_controller.dart:1553-1568`), and
+- **any process kill and relaunch, unconditionally** — `loadPersistedState()` deletes the
+  persisted session record on every cold start regardless of remaining time
+  (`granite_lake_secure_state_service.dart:185-188`), so closing the app always requires
+  a fresh unlock next time, never a resume.
+
+This means `retryPendingAttestations()` cannot assume it can sign. Its two triggers
+(connectivity restored, app foreground/resume) are exactly the cases where a session may
+well be gone — a crew reconnecting after being offline for over 30 minutes, or reopening
+the app after it was closed, are the normal case here, not an edge case.
+
+**The fix is not to make signing more automatic — biometric unlock is one thing that
+already works fully offline** (`_unlockBiometricGate` is a native
+`MethodChannel`/Android Keystore call, `granite_lake_secure_state_service.dart:579-593`,
+no network involved), so a crew can keep capturing past the 30-minute mark in a dead zone
+by simply re-touching the sensor, the same as they would online. The gap is specifically
+the _unattended_ resubmission path, which has no human present to authorize a prompt:
+
+- `retryPendingAttestations()` checks `hasActiveSession && _sessionSigningKey != null`
+  before touching anything. If false, it does nothing — no row is retried, none is marked
+  `FAILED_SUBMISSION`, `sui_error_message` is left untouched. A missing signing key is not
+  a network-class or rejection failure; treating it as either would misfile it in §5's
+  unified classifier and could surface a misleading "failed" state for a capture that
+  simply hasn't had a human unlock it yet.
+- `GraniteLakeController` gains a `pendingAttestationsNeedUnlock` getter (alongside the
+  existing `pendingAttestationCount`, §9): true when there are `PENDING_SUBMISSION` rows
+  and no active session. The history screen (and an app-bar affordance, §9) surfaces this
+  as an explicit "N captures ready to submit — unlock to continue" call to action that
+  calls `controller.startSession()` — the _same_ call site already wired to the existing
+  "Start Capture" button (`capture_tab_screen.dart:177`), not a new biometric-prompt code
+  path. The app never pops a biometric prompt on its own from a background trigger.
+- `startSession()` gains a third trigger for `retryPendingAttestations()`: on success,
+  regardless of which UI entry point called it (starting a capture session, or this new
+  unlock-to-submit prompt), the sweep runs immediately. One unlock clears the whole queue
+  without a separate step.
+
+This is unrelated to §5/connectivity — a fully `online` device with an expired session
+hits the same gate, and is handled the same way.
+
+### 7.2 Notifying when connectivity returns, even if the app isn't open
+
+§7.1's "unlock to submit" CTA only helps if the crew has the app open to see it. A crew
+that backgrounds or closes the app while waiting to reconnect — the realistic case, e.g.
+driving back toward town with the phone away — won't see it until they happen to reopen
+the app themselves. A local (device, not push/server) notification fired the moment
+connectivity actually returns closes that gap.
+
+**Why this can't just piggyback on §5's poll timer.** `ConnectivityHeuristicService`'s
+`Timer.periodic` only runs while the Flutter engine is alive; Android suspends or kills a
+backgrounded engine after some time (Doze, OEM background-kill policies vary but are
+typically minutes, not hours). A crew with the app backgrounded for the drive back would
+get nothing from it — there'd be no running timer left to notice reconnection at all, so
+there's nothing to hang a notification off.
+
+**Design:** use `workmanager` (new dependency) instead of the in-app timer for this one
+purpose. Register a one-off task with a `NetworkType.connected` constraint whenever
+`PENDING_SUBMISSION` rows exist (right after a capture that couldn't submit immediately,
+§6/§7); re-register after each time it fires, for as long as the queue stays non-empty.
+This is backed by Android's `JobScheduler` — a system service that wakes a background
+task specifically when the network constraint is met, independent of whether the app
+process is alive, which is the actual guarantee needed here.
+
+- The background task runs in its own minimal Dart isolate (`workmanager`'s callback
+  dispatcher) with its own connection to the same sqflite database file — it is **not**
+  the same isolate as the running `GraniteLakeController`, and critically has **no access
+  to the decrypted signing key**, which only ever exists in the foreground app's memory
+  immediately after a biometric prompt (§7.1). So this task's job is strictly
+  check-and-notify, never sign-and-submit — it queries `PENDING_SUBMISSION` count and, if
+  non-zero, shows a local notification (`flutter_local_notifications`, new dependency):
+  "N captures ready to submit." It never attempts a resubmission itself, by construction,
+  not just by choice — keeping decrypted key material confined to the interactive
+  foreground session is a property worth preserving, not just an implementation detail.
+- Tapping the notification deep-links to the history screen's unlock-to-submit CTA
+  (§7.1/§9) — the same flow as opening the app normally, not a separate path.
+- Debounced: track the pending count (or newest `captured_at`) at the last notification
+  shown (a config key, same mechanism as §3/§4); re-notify only if the pending set changed
+  since then. Otherwise a marginal-signal area reconnecting and dropping repeatedly would
+  refire the same notification every time, which trains crews to ignore it.
+- The task is cancelled once the queue drains to zero (all rows submitted) — no reason to
+  keep waking a background job to report nothing.
+- Runtime `POST_NOTIFICATIONS` permission (required on Android 13+) is requested the first
+  time a capture actually lands in the offline queue, not upfront during onboarding, so
+  the ask is contextual rather than a blanket permission grab.
+
+This is additive to, not a replacement for, §7.1's in-app CTA and the existing
+foreground/reconnect sweep (§7) — when the app _is_ open with a live session, those
+still submit immediately without waiting on a background task or a tap.
+
+Android-only for the same reason the rest of this design is (§5): no `ios/` platform
+target exists in this project today. Flagging for the record since it's more pointed here
+— iOS's background execution model (`BGTaskScheduler`) has no equivalent reliable
+"network became available" wake trigger, so this specific mechanism would need real
+rework, not just a platform-channel swap, if iOS support is ever added (§12).
+
 ## 8. Local persistence: `is_online`, `is_forced_offline`, and timestamp provenance
 
 **New columns.** Unlike `captured_at`, neither `is_online` nor `is_forced_offline` had a
@@ -351,7 +456,9 @@ above.
   offline capture is active automatically; when the toggle is on while §5 _is_ `online`,
   it explains the crew is overriding a working connection.
 - History screen shows a pending-sync count, from a new `pendingAttestationCount` getter
-  on `GraniteLakeController`.
+  on `GraniteLakeController`. When `pendingAttestationsNeedUnlock` (§7.1) is also true, the
+  count becomes an explicit "N ready to submit — unlock to continue" action that calls
+  `startSession()`, rather than a passive number.
 - Capture-detail screen shows the on-chain `captured_at`/`attested_at`/`is_online`/
   `is_forced_offline` alongside the local provenance label, next to the existing
   submission-status detail.
@@ -365,20 +472,26 @@ above.
 lookup code.
 
 **New app files:** `app/lib/core/services/time_sync_service.dart`,
-`app/lib/core/services/connectivity_heuristic_service.dart` (§5), and a shared
-`isTransientNetworkError` helper extracted from `sui_graphql_service.dart` and reused by
-`granite_lake_controller.dart`'s verification-retry classifier (§5).
+`app/lib/core/services/connectivity_heuristic_service.dart` (§5),
+`app/lib/core/services/reconnect_notification_service.dart` (§7.2: `workmanager`
+registration/cancellation, the background callback dispatcher, and the
+`flutter_local_notifications` wrapper), and a shared `isTransientNetworkError` helper
+extracted from `sui_graphql_service.dart` and reused by `granite_lake_controller.dart`'s
+verification-retry classifier (§5).
 
 **Modified app files:** `photo_attestation_service.dart`, `capture_screen.dart`
 (force-offline toggle UI + shutter/timestamp changes + connectivity-service wiring),
-`file_attestation_screen.dart`, `granite_lake_controller.dart`,
-`granite_lake_capture_workflow_service.dart`, `config_data_controller.dart` (new config
-key: `offlineCaptureForced`, replacing the old `offlineCaptureAllowed`), `migrations.dart`
-
-- `granite_lake_database_service.dart` (version-10 migration: `is_online`/
-  `is_forced_offline` columns, §8), `app.dart` (lifecycle observer), `history_screen.dart`,
-  `capture_detail_screen.dart`, `app_constants.dart` (connectivity thresholds/cadences),
-  `pubspec.yaml` (new `connectivity_plus` dependency).
+`file_attestation_screen.dart`, `granite_lake_controller.dart` (`retryPendingAttestations()`,
+`pendingAttestationsNeedUnlock`, §7.1; registers/cancels the §7.2 background task as the
+pending queue changes), `granite_lake_capture_workflow_service.dart`,
+`config_data_controller.dart` (new config keys: `offlineCaptureForced` replacing the old
+`offlineCaptureAllowed`, and the §7.2 last-notified pending count), `migrations.dart` +
+`granite_lake_database_service.dart` (version-10 migration: `is_online`/
+`is_forced_offline` columns, §8), `app.dart` (lifecycle observer), `capture_tab_screen.dart`
+(retry-on-unlock wiring, §7.1), `history_screen.dart` (unlock-to-submit CTA, §9),
+`capture_detail_screen.dart`, `app_constants.dart` (connectivity thresholds/cadences),
+`AndroidManifest.xml` (`POST_NOTIFICATIONS` permission, §7.2), `pubspec.yaml` (new
+`connectivity_plus`, `workmanager`, `flutter_local_notifications` dependencies).
 
 ## 11. Verification / testing
 
@@ -387,11 +500,18 @@ key: `offlineCaptureForced`, replacing the old `offlineCaptureAllowed`), `migrat
 - After a testnet package upgrade: confirm a historical (V1) attestation and a new V2
   attestation both verify correctly through `verification_api`/`verification_portal`.
 - Manual airplane-mode pass: with airplane mode on (toggle off, so offline is purely
-  automatic), capture succeeds offline and records `is_online: false`,
-  `is_forced_offline: false`; the row appears as `PENDING_SUBMISSION`; reconnecting (via
-  timer and via app foreground) triggers submission with the original `captured_at` and a
-  fresh `attested_at`; the detail screen and `verification_portal` show matching values.
-  Repeat for the file-upload path.
+  automatic) and an active biometric session, capture succeeds offline and records
+  `is_online: false`, `is_forced_offline: false`; the row appears as
+  `PENDING_SUBMISSION`; reconnecting (via timer and via app foreground) triggers
+  submission with the original `captured_at` and a fresh `attested_at`; the detail screen
+  and `verification_portal` show matching values. Repeat for the file-upload path.
+- Manual expired-session pass (§7.1): capture offline, then let the 30-minute session
+  expire (or kill and relaunch the app) before reconnecting. Confirm reconnecting does
+  _not_ attempt a submission, does _not_ mark the row `FAILED_SUBMISSION`, and that
+  `pendingAttestationsNeedUnlock` surfaces the unlock CTA; confirm tapping it (one
+  biometric prompt) submits all queued rows immediately. Also confirm capturing a _new_
+  photo after the session has expired, while still offline, only requires re-touching the
+  sensor — no connectivity needed to keep capturing.
 - Manual force-offline pass: with connectivity good (§5 reports `online`) and the toggle
   on, capture still routes through the offline/queued path and records `is_online: true`,
   `is_forced_offline: true`; confirm this is distinguishable in the detail screen and
@@ -407,6 +527,17 @@ key: `offlineCaptureForced`, replacing the old `offlineCaptureAllowed`), `migrat
   low-signal location): confirm the status label doesn't flap on every 10-30s tick, and
   that the shutter switches to offline-available automatically once §5 leaves `online`
   (no toggle interaction required).
+- Manual background-reconnect pass (§7.2): capture offline, force-stop or background the
+  app (not just navigate away — actually leave it backgrounded long enough that Android
+  would suspend a plain in-app timer), then restore connectivity at the OS level.
+  Confirm the notification appears without the app having been reopened, and that tapping
+  it lands on the unlock-to-submit CTA. Separately, confirm reconnecting twice in a row
+  without submitting doesn't produce two notifications (debounce), and that a new capture
+  added to the queue after the first notification does produce a fresh one.
+- Confirm the §7.2 background task never has access to signing material: with
+  `flutter_local_notifications`/`workmanager` mocked or logged, assert the background
+  isolate's code path never touches `_sessionSigningKey` or the biometric-gate channel —
+  only a read-only query against the pending count.
 
 ## 12. Open items
 
@@ -429,7 +560,14 @@ key: `offlineCaptureForced`, replacing the old `offlineCaptureAllowed`), `migrat
    that middle state — this design currently treats `degraded` the same as `offline` for
    eligibility (§5), which is the more conservative choice for submission reliability but
    means a merely-slow connection also loses the "try online first" behavior.
-7. Decide whether the "enable offline capture?" prompt (§5) should be dismissible for the
-   rest of the session (to avoid nagging a crew that's deliberately working online-first
-   near the edge of coverage) or reappear on every sustained `offline` transition.
-   on").
+7. Decide whether §5's automatic online/offline banner copy should be dismissible or
+   persistent while `degraded`/`offline` holds, so it informs without nagging a crew
+   that's deliberately working near the edge of coverage.
+8. §7.2's background reconnect task rides on Android `JobScheduler` via `workmanager`,
+   which some OEMs (Xiaomi, Huawei, and others with aggressive custom battery-management)
+   restrict or delay beyond stock Android's Doze behavior. The in-app §7.1 CTA is the
+   guaranteed fallback — the notification is a best-effort improvement on top of it, not
+   a dependency — but worth field-testing on the specific device models crews are issued.
+9. Decide the exact timing/copy for the `POST_NOTIFICATIONS` permission request (§7.2) —
+   at first offline capture, as designed, or bundled into the biometric-binding onboarding
+   flow (`biometric_setup_screen.dart`) where the crew is already granting permissions.
