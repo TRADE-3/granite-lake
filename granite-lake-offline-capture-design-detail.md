@@ -73,12 +73,22 @@ public entry fun attest_photo(
 `attest_photo`'s full parameter list is therefore: `user_cap, registry, hash, gps,
 altitude, project_id, captured_at, is_online, is_forced_offline,
 internet_null_reason_hash, has_gps, is_gps_forced_null, gps_null_reason_hash, clock,
-ctx`; `attest_file` mirrors this without the three GPS-specific params. The contract does
-not validate that a reason hash is non-empty exactly when the corresponding field is
-null — that invariant is enforced client-side (§6) and re-checked during verification
-(§2), not on-chain, to keep the entry function's own logic a plain pass-through of
-client-supplied values (consistent with how `is_online`/`is_forced_offline` are already
-handled).
+ctx`; `attest_file` mirrors this without the three GPS-specific params.
+
+**The contract enforces the mandatory-reason invariant on-chain**, not just client-side:
+`attest_photo` asserts `internet_null_reason_hash.is_empty() == (is_online &&
+!is_forced_offline)` (new error `E_INTERNET_NULL_REASON_MISMATCH`) and
+`gps_null_reason_hash.is_empty() == (has_gps && !is_gps_forced_null)` (new error
+`E_GPS_NULL_REASON_MISMATCH`); `attest_file` asserts only the first. Each is a single
+bidirectional equality check — a reason hash must be non-empty in every state except the
+one unambiguous "present, not overridden" case (see §4/§4a's truth tables — a reason is
+required not only when the field is genuinely null, but also whenever the crew overrode an
+available one via its force toggle) — so a malformed transaction (a reason supplied when
+not needed, or omitted when required) is rejected before it can land on-chain, rather than
+only being caught after the fact client-side (§6) or during verification (§2). `is_online`/
+`is_forced_offline` and `has_gps`/`is_gps_forced_null` themselves remain unvalidated
+pass-through values, same as before — only the reason-hash/field-state relationship is
+checked.
 
 `sui::clock` is already a framework dependency (present under
 `contracts/build/granite_lake/sources/dependencies/Sui/clock.move`), so no new package
@@ -89,9 +99,21 @@ dependency is needed.
 `is_gps_forced_null`/`gps_null_reason_hash` (a clock is constructed via
 `sui::clock::create_for_testing` in every test that calls `attest_photo`/`attest_file`).
 `test_attest_photo_records_online_and_forced_offline_combinations` exercises all four
-`is_online`/`is_forced_offline` combinations from §4's truth table, and an equivalent
-test exercises the four `has_gps`/`is_gps_forced_null` combinations from §4a's truth
-table.
+`is_online`/`is_forced_offline` combinations from §4's truth table (with a reason hash
+supplied for every state that now requires one), and an equivalent test exercises the
+four `has_gps`/`is_gps_forced_null` combinations from §4a's truth table. Eight tests
+confirm the on-chain reason-hash enforcement directly: rejecting a reason hash in the one
+no-reason-needed state per axis, rejecting a missing reason in every other state per axis
+(including the "field present but overridden" case), and accepting a correctly-supplied
+reason in the overridden-but-present case —
+`test_attest_photo_rejects_reason_hash_when_online_and_not_forced`,
+`test_attest_photo_rejects_missing_reason_hash_when_offline`,
+`test_attest_photo_rejects_missing_reason_hash_when_forced_offline_despite_online`,
+`test_attest_photo_requires_reason_hash_when_forced_offline_despite_online`,
+`test_attest_photo_rejects_reason_hash_when_gps_available_and_not_overridden`,
+`test_attest_photo_rejects_missing_reason_hash_when_gps_unavailable`,
+`test_attest_photo_requires_reason_hash_when_gps_forced_null_despite_fix`,
+`test_attest_file_rejects_reason_hash_mismatch`. 26/26 tests passing.
 
 **Deployment:** a fresh `sui client publish` (or `sui client upgrade` if something has
 already been deployed by the time this ships) — no compatibility constraint with prior
@@ -139,8 +161,9 @@ input wired to the same hash-comparison logic when a `*_null_reason_hash` is non
   value, and `timestampWithinTolerance` becomes `attested_at - captured_at <=
 AppConstants.maximumAttestationTimeGapMinutes`, computed from two on-chain values. A
   new check compares the locally stored plaintext reason's hash (computed the same way as
-  at capture time) against the on-chain `*_null_reason_hash` whenever the corresponding
-  field is `false`/absent, surfacing a mismatch the same way `capturedAtMatches` does.
+  at capture time) against the on-chain `*_null_reason_hash` whenever one is expected
+  (field `false`, or field `true` with its force toggle on), surfacing a mismatch the
+  same way `capturedAtMatches` does.
 
 ## 3. `TimeSyncService`
 
@@ -215,9 +238,12 @@ read both fields together and distinguish all four cases without any hidden logi
 | `false`     | `false`             | Automatic offline — §5 found no usable connectivity.            |
 | `false`     | `true`              | Toggle was on, but moot — offline was required either way.      |
 
-Whenever `is_online` is `false` (either row above), §4b's mandatory reason requirement
-applies: the crew must supply a reason before the shutter proceeds, hashed into
-`internet_null_reason_hash`.
+§4b's mandatory reason requirement applies whenever `is_online` is `false`, **or** whenever
+`is_forced_offline` is `true` — i.e. every row except the first: a reason is needed not
+only when connectivity was genuinely absent, but also when the crew overrode a working
+connection, so that override is justified on the record too. The crew must supply a
+reason before the shutter proceeds, hashed into `internet_null_reason_hash`; the only case
+requiring an empty hash is `is_online: true, is_forced_offline: false`.
 
 ## 4a. GPS eligibility: the same treatment, as an independent axis
 
@@ -228,17 +254,27 @@ good connection but standing somewhere GPS can't get a fix (indoors, urban canyo
 site that deliberately shields location) should not have to also go through the
 offline/queued submission path just to skip GPS.
 
-- **Fix available:** capture proceeds with `has_gps: true`, `gps`/`altitude` populated as
-  today — no change from current behavior.
+- **Fix available, toggle off:** capture proceeds with `has_gps: true`, `gps`/`altitude`
+  populated as today — no change from current behavior.
 - **No fix available** (GPS disabled, no signal, fix timeout): capture is still allowed
   automatically, with no prior toggle needed — `has_gps: false`, `gps`/`altitude` recorded
   as empty `vector<u8>`.
+- **Fix available, toggle on:** see below — `has_gps: true` (ground truth), but
+  `gps`/`altitude` are recorded empty because the toggle withholds them.
 
 **"Force No GPS" toggle** mirrors §4's "Force Offline Mode": an independent, app-only,
 off-by-default override, living as its own persistent quick-toggle icon in the capture
 screen's app bar (alongside, not combined with, the connectivity toggle — a crew may want
-to force one without the other). With it on, a capture always records `has_gps: false`
-and empty `gps`/`altitude`, regardless of whether a fix was actually available.
+to force one without the other). `has_gps` records ground truth — was a real fix actually
+obtained — exactly the way `is_online` records ground-truth connectivity regardless of
+`is_forced_offline` (§4); the toggle does not change `has_gps`'s meaning. What the toggle
+does change is `gps`/`altitude`: they are recorded as empty `vector<u8>` whenever the
+toggle is on, even if `has_gps` is `true`, because the point of forcing "no GPS" is to
+withhold the location data itself, not to misreport whether a fix existed. So a capture
+can have `has_gps: true` with empty `gps`/`altitude` (fix available, withheld by choice) —
+this is exactly the `true`/`true` row below, and is the reason this is a 4-state table
+rather than 3: it lets a verifier distinguish "GPS genuinely unavailable" from "available
+but deliberately withheld," the same distinction §4's table already draws for connectivity.
 
 **This does not touch mock-location detection.** `_detectMockLocation`/
 `_isMockLocationDetected` (`capture_screen.dart`) still hard-blocks the shutter exactly as
@@ -257,23 +293,30 @@ the exact same shape as `is_forced_offline`/`is_online`:
 | `false`   | `false`              | Automatic — no fix could be obtained.                      |
 | `false`   | `true`               | Toggle was on, but moot — no fix was available either way. |
 
-Whenever `has_gps` is `false` (either row above), §4b's mandatory reason requirement
-applies: the crew must supply a reason before the shutter proceeds, hashed into
-`gps_null_reason_hash`.
+§4b's mandatory reason requirement applies whenever `has_gps` is `false`, **or** whenever
+`is_gps_forced_null` is `true` — i.e. every row except the first, mirroring §4's internet
+axis exactly: a reason is needed not only when no fix could be obtained, but also when the
+crew withheld an available one, so that override is justified on the record too. The crew
+must supply a reason before the shutter proceeds, hashed into `gps_null_reason_hash`; the
+only case requiring an empty hash is `has_gps: true, is_gps_forced_null: false`.
 
 ## 4b. Mandatory null reason + hashing
 
-Neither axis (§4, §4a) is allowed to go null silently. The instant the capture flow
-determines that internet, GPS, or both will be null for this capture — whether
-automatically or via one of the force toggles — the crew is required to enter a
-non-empty, free-text reason before the shutter is allowed to proceed. This is enforced
-per axis independently: a capture missing both internet and GPS requires two separate
-reasons, one for each.
+Neither axis (§4, §4a) is allowed to go null, nor have a working state overridden,
+silently. The instant the capture flow determines that internet, GPS, or both will be
+null **or force-overridden** for this capture — automatically, or via one of the force
+toggles even when the underlying field is still `true` — the crew is required to enter a
+non-empty, free-text reason before the shutter is allowed to proceed. This is enforced per
+axis independently: a capture missing both internet and GPS (or overriding both) requires
+two separate reasons, one for each. Concretely, a reason is required in every state
+_except_ the single unambiguous one per axis — `is_online: true` with
+`is_forced_offline: false`, and `has_gps: true` with `is_gps_forced_null: false` — per the
+§4/§4a truth tables.
 
 - **UI:** a mandatory text-entry prompt (blocking — the shutter stays disabled until
-  satisfied) appears in `capture_screen.dart` the moment §5/§4a's checks (or the
-  corresponding force toggle) determine a field will be null for the pending capture.
-  Distinct prompts for the internet reason and the GPS reason when both apply.
+  satisfied) appears in `capture_screen.dart` the moment §5/§4a's checks, or the
+  corresponding force toggle, put either axis into a state requiring a reason. Distinct
+  prompts for the internet reason and the GPS reason when both apply.
 - **Hashing:** each reason is hashed with the same algorithm and encoding already used
   for `photo_hash` (so `internet_null_reason_hash`/`gps_null_reason_hash` are 32-byte
   hashes, decoded the same way verification already decodes `photo_hash` — see §2).
@@ -282,9 +325,15 @@ reasons, one for each.
   hash — never discarded — so it can be disclosed later (to a verifier, an auditor, or
   displayed back to the crew) and checked against the on-chain hash. Only the hash goes
   on-chain; the reason text itself never does.
-- **When not applicable:** if a field is present (`is_online`/`has_gps` is `true`), the
-  corresponding reason is not collected and the corresponding `*_null_reason_hash` is an
+- **When not applicable:** only in the one no-reason-needed state per axis (field present,
+  toggle off) is the reason not collected and the corresponding `*_null_reason_hash` an
   empty `vector<u8>` on-chain.
+- **Enforced on-chain, not just client-side (§1).** `attest_photo`/`attest_file` assert
+  `internet_null_reason_hash.is_empty() == (is_online && !is_forced_offline)`, and
+  `attest_photo` additionally asserts
+  `gps_null_reason_hash.is_empty() == (has_gps && !is_gps_forced_null)` — a transaction
+  that gets this wrong reverts (`E_INTERNET_NULL_REASON_MISMATCH`/
+  `E_GPS_NULL_REASON_MISMATCH`) rather than only being caught later by verification.
 - **Verification:** given a disclosed reason, verification (§2) recomputes its hash and
   compares against the on-chain `*_null_reason_hash`; a mismatch is surfaced the same way
   a `capturedAtMatches` mismatch is (§2, §12 open item on hard-failure vs. informational).
@@ -385,9 +434,12 @@ recorded alongside it from the toggle's raw state, independently of this classif
   the shutter is available without a GPS fix whenever no fix was obtained, or the §4a
   "Force No GPS" toggle is on. Mock-location detection remains a hard block in all cases
   (§4a) — it is not an optionality question.
-- Whenever the pending capture will have `is_online: false` and/or `has_gps: false`, §4b's
-  mandatory reason prompt(s) must be completed before the shutter proceeds — the shutter
-  stays disabled, not just warned, until each required reason is non-empty.
+- Whenever the pending capture will have `is_online: false`, `is_forced_offline: true`,
+  `has_gps: false`, or `is_gps_forced_null: true`, §4b's mandatory reason prompt(s) must
+  be completed before the shutter proceeds — the shutter stays disabled, not just warned,
+  until each required reason is non-empty. The only axis states needing no prompt are
+  `is_online: true, is_forced_offline: false` and `has_gps: true, is_gps_forced_null:
+false`.
 - `capturedAtUtc`/`submittedAtUtc` are sourced by preferring a live timestamp fetch (as
   today, when connectivity is available) and falling back to `TimeSyncService.nowUtc()`
   otherwise. `is_online` passed to `attest_photo`/`attest_file` (§2) is read from
@@ -395,7 +447,8 @@ recorded alongside it from the toggle's raw state, independently of this classif
   success/failure; `is_forced_offline` is read from the toggle's current state (§4).
   `has_gps`/`is_gps_forced_null` are read from the GPS-fix check and the §4a toggle the
   same way. `internet_null_reason_hash`/`gps_null_reason_hash` are computed from §4b's
-  prompt input at the moment of capture, empty when the corresponding field is present.
+  prompt input at the moment of capture, empty only in the two no-prompt states above —
+  getting this wrong causes `attest_photo`/`attest_file` to revert on-chain (§1).
 
 `app/lib/core/state/granite_lake_controller.dart`:
 

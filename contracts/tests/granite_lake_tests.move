@@ -18,6 +18,8 @@ const E_NOT_ADMIN: u64 = 3;
 const E_USER_EXISTS: u64 = 4;
 const E_NOT_USER: u64 = 5;
 const E_USER_DISABLED: u64 = 6;
+const E_INTERNET_NULL_REASON_MISMATCH: u64 = 8;
+const E_GPS_NULL_REASON_MISMATCH: u64 = 9;
 
 fun setup_domain(scenario: &mut ts::Scenario, domain: vector<u8>) {
     scenario.next_tx(OWNER);
@@ -380,7 +382,8 @@ fun test_attest_photo_records_online_and_forced_offline_combinations() {
         );
         pa::attest_photo(
             &user_cap, &registry, b"hash-online-deferred", b"gps", b"alt", b"project",
-            1_700_000_000_001, true, true, b"", true, false, b"", &clock, scenario.ctx(),
+            1_700_000_000_001, true, true, b"deferred-despite-online-reason-hash", true, false, b"",
+            &clock, scenario.ctx(),
         );
         pa::attest_photo(
             &user_cap, &registry, b"hash-auto-offline", b"gps", b"alt", b"project",
@@ -428,7 +431,8 @@ fun test_attest_photo_records_gps_availability_combinations() {
         );
         pa::attest_photo(
             &user_cap, &registry, b"hash-gps-deferred", b"gps", b"alt", b"project",
-            1_700_000_000_001, true, false, b"", true, true, b"", &clock, scenario.ctx(),
+            1_700_000_000_001, true, false, b"", true, true, b"withheld-despite-fix-reason-hash",
+            &clock, scenario.ctx(),
         );
         pa::attest_photo(
             &user_cap, &registry, b"hash-gps-auto-null", b"", b"", b"project",
@@ -443,6 +447,255 @@ fun test_attest_photo_records_gps_availability_combinations() {
 
         assert_eq!(event::num_events(), 4);
         assert_eq!(event::events_by_type<pa::PhotoAttested>().length(), 4);
+
+        clock::destroy_for_testing(clock);
+        ts::return_shared(registry);
+        scenario.return_to_sender(user_cap);
+    };
+
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = E_INTERNET_NULL_REASON_MISMATCH, location = granite_lake::photo_attestation)]
+fun test_attest_photo_rejects_reason_hash_when_online_and_not_forced() {
+    let mut scenario = ts::begin(OWNER);
+    let domain = b"internet-reason-not-allowed.com";
+    pa::init_for_testing(scenario.ctx());
+
+    setup_domain_and_user(&mut scenario, domain, USER);
+
+    scenario.next_tx(USER);
+    {
+        let user_cap: pa::UserCap = scenario.take_from_sender();
+        let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
+
+        // is_online: true, is_forced_offline: false - a reason is only
+        // forbidden in this exact case (connected, nothing overridden).
+        // Supplying one anyway is rejected.
+        pa::attest_photo(
+            &user_cap, &registry, b"hash", b"gps", b"alt", b"project",
+            1_700_000_000_000, true, false, b"unwarranted-reason-hash", true, false, b"",
+            &clock, scenario.ctx(),
+        );
+
+        clock::destroy_for_testing(clock);
+        ts::return_shared(registry);
+        scenario.return_to_sender(user_cap);
+    };
+
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = E_INTERNET_NULL_REASON_MISMATCH, location = granite_lake::photo_attestation)]
+fun test_attest_photo_rejects_missing_reason_hash_when_offline() {
+    let mut scenario = ts::begin(OWNER);
+    let domain = b"internet-reason-required.com";
+    pa::init_for_testing(scenario.ctx());
+
+    setup_domain_and_user(&mut scenario, domain, USER);
+
+    scenario.next_tx(USER);
+    {
+        let user_cap: pa::UserCap = scenario.take_from_sender();
+        let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
+
+        // is_online: false but no reason hash is supplied - a reason is
+        // mandatory whenever the field is null.
+        pa::attest_photo(
+            &user_cap, &registry, b"hash", b"gps", b"alt", b"project",
+            1_700_000_000_000, false, false, b"", true, false, b"",
+            &clock, scenario.ctx(),
+        );
+
+        clock::destroy_for_testing(clock);
+        ts::return_shared(registry);
+        scenario.return_to_sender(user_cap);
+    };
+
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = E_INTERNET_NULL_REASON_MISMATCH, location = granite_lake::photo_attestation)]
+fun test_attest_photo_rejects_missing_reason_hash_when_forced_offline_despite_online() {
+    let mut scenario = ts::begin(OWNER);
+    let domain = b"internet-forced-offline-reason-required.com";
+    pa::init_for_testing(scenario.ctx());
+
+    setup_domain_and_user(&mut scenario, domain, USER);
+
+    scenario.next_tx(USER);
+    {
+        let user_cap: pa::UserCap = scenario.take_from_sender();
+        let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
+
+        // is_online: true, is_forced_offline: true - connectivity was fine
+        // but the crew deferred anyway. A reason is required to justify the
+        // override, even though is_online is true.
+        pa::attest_photo(
+            &user_cap, &registry, b"hash", b"gps", b"alt", b"project",
+            1_700_000_000_000, true, true, b"", true, false, b"",
+            &clock, scenario.ctx(),
+        );
+
+        clock::destroy_for_testing(clock);
+        ts::return_shared(registry);
+        scenario.return_to_sender(user_cap);
+    };
+
+    scenario.end();
+}
+
+#[test]
+fun test_attest_photo_requires_reason_hash_when_forced_offline_despite_online() {
+    let mut scenario = ts::begin(OWNER);
+    let domain = b"internet-forced-offline-with-reason.com";
+    pa::init_for_testing(scenario.ctx());
+
+    setup_domain_and_user(&mut scenario, domain, USER);
+
+    scenario.next_tx(USER);
+    {
+        let user_cap: pa::UserCap = scenario.take_from_sender();
+        let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
+
+        // Same scenario as above, but with a reason supplied - now accepted.
+        pa::attest_photo(
+            &user_cap, &registry, b"hash", b"gps", b"alt", b"project",
+            1_700_000_000_000, true, true, b"deferred-despite-online-reason-hash", true, false, b"",
+            &clock, scenario.ctx(),
+        );
+
+        assert_eq!(event::num_events(), 1);
+        assert_eq!(event::events_by_type<pa::PhotoAttested>().length(), 1);
+
+        clock::destroy_for_testing(clock);
+        ts::return_shared(registry);
+        scenario.return_to_sender(user_cap);
+    };
+
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = E_GPS_NULL_REASON_MISMATCH, location = granite_lake::photo_attestation)]
+fun test_attest_photo_rejects_reason_hash_when_gps_available_and_not_overridden() {
+    let mut scenario = ts::begin(OWNER);
+    let domain = b"gps-reason-not-allowed.com";
+    pa::init_for_testing(scenario.ctx());
+
+    setup_domain_and_user(&mut scenario, domain, USER);
+
+    scenario.next_tx(USER);
+    {
+        let user_cap: pa::UserCap = scenario.take_from_sender();
+        let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
+
+        // has_gps: true, is_gps_forced_null: false (no override) - a reason
+        // is only forbidden in this exact case, since a fix was present and
+        // nothing was overridden. Supplying one anyway is rejected.
+        pa::attest_photo(
+            &user_cap, &registry, b"hash", b"gps", b"alt", b"project",
+            1_700_000_000_000, true, false, b"", true, false, b"unwarranted-reason-hash",
+            &clock, scenario.ctx(),
+        );
+
+        clock::destroy_for_testing(clock);
+        ts::return_shared(registry);
+        scenario.return_to_sender(user_cap);
+    };
+
+    scenario.end();
+}
+
+#[test]
+fun test_attest_photo_requires_reason_hash_when_gps_forced_null_despite_fix() {
+    let mut scenario = ts::begin(OWNER);
+    let domain = b"gps-forced-null-reason-required.com";
+    pa::init_for_testing(scenario.ctx());
+
+    setup_domain_and_user(&mut scenario, domain, USER);
+
+    scenario.next_tx(USER);
+    {
+        let user_cap: pa::UserCap = scenario.take_from_sender();
+        let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
+
+        // has_gps: true, is_gps_forced_null: true - a fix was available but
+        // the crew withheld it via the toggle. A reason is required even
+        // though has_gps is true, since the override needs justifying.
+        pa::attest_photo(
+            &user_cap, &registry, b"hash", b"", b"", b"project",
+            1_700_000_000_000, true, false, b"", true, true, b"withheld-despite-fix-reason-hash",
+            &clock, scenario.ctx(),
+        );
+
+        assert_eq!(event::num_events(), 1);
+        assert_eq!(event::events_by_type<pa::PhotoAttested>().length(), 1);
+
+        clock::destroy_for_testing(clock);
+        ts::return_shared(registry);
+        scenario.return_to_sender(user_cap);
+    };
+
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = E_GPS_NULL_REASON_MISMATCH, location = granite_lake::photo_attestation)]
+fun test_attest_photo_rejects_missing_reason_hash_when_gps_unavailable() {
+    let mut scenario = ts::begin(OWNER);
+    let domain = b"gps-reason-required.com";
+    pa::init_for_testing(scenario.ctx());
+
+    setup_domain_and_user(&mut scenario, domain, USER);
+
+    scenario.next_tx(USER);
+    {
+        let user_cap: pa::UserCap = scenario.take_from_sender();
+        let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
+
+        // has_gps: false but no gps_null_reason_hash is supplied - a reason
+        // is mandatory whenever the field is null.
+        pa::attest_photo(
+            &user_cap, &registry, b"hash", b"", b"", b"project",
+            1_700_000_000_000, true, false, b"", false, false, b"",
+            &clock, scenario.ctx(),
+        );
+
+        clock::destroy_for_testing(clock);
+        ts::return_shared(registry);
+        scenario.return_to_sender(user_cap);
+    };
+
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = E_INTERNET_NULL_REASON_MISMATCH, location = granite_lake::photo_attestation)]
+fun test_attest_file_rejects_reason_hash_mismatch() {
+    let mut scenario = ts::begin(OWNER);
+    let domain = b"file-internet-reason-mismatch.com";
+    pa::init_for_testing(scenario.ctx());
+
+    setup_domain_and_user(&mut scenario, domain, USER);
+
+    scenario.next_tx(USER);
+    {
+        let user_cap: pa::UserCap = scenario.take_from_sender();
+        let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
+
+        // Same invariant applies to attest_file: is_online true with a
+        // non-empty reason hash is rejected.
+        pa::attest_file(
+            &user_cap, &registry, b"file-hash", b"file-id", b"project",
+            1_700_000_000_000, true, false, b"unwarranted-reason-hash",
+            &clock, scenario.ctx(),
+        );
 
         clock::destroy_for_testing(clock);
         ts::return_shared(registry);

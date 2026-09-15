@@ -13,6 +13,13 @@ module granite_lake::photo_attestation {
     const E_NOT_USER: u64 = 5;
     const E_USER_DISABLED: u64 = 6;
     const E_USER_NOT_FOUND: u64 = 7;
+    // A null-reason hash must be present exactly when the field it explains
+    // is null, and absent otherwise - never both empty and non-empty in the
+    // wrong direction. Enforced on-chain rather than trusted to the client,
+    // so a malformed transaction can't land a capture whose reason
+    // disclosure is unverifiable or missing.
+    const E_INTERNET_NULL_REASON_MISMATCH: u64 = 8;
+    const E_GPS_NULL_REASON_MISMATCH: u64 = 9;
 
     // `store` lets OwnerCap move via sui::transfer::public_transfer, Sui's
     // standard object-transfer path (the same reason the Sui framework's own
@@ -71,11 +78,19 @@ module granite_lake::photo_attestation {
     // sui::clock so it can't be spoofed by the client. is_online/
     // is_forced_offline record the device's connectivity state and whether
     // the offline path was a deliberate override, so a verifier can read a
-    // capture's offline provenance directly off the event. Internet and GPS
-    // are each independently optional; whenever one is null, the client is
-    // required to supply a reason, hashed into internet_null_reason_hash /
-    // gps_null_reason_hash (empty when the corresponding field is present) -
-    // the plaintext reason itself is never stored on-chain, only its hash.
+    // capture's offline provenance directly off the event. has_gps is the
+    // same kind of ground-truth flag for location: whether a real fix was
+    // available, independent of is_gps_forced_null - a fix can be available
+    // (has_gps: true) yet still be withheld (is_gps_forced_null: true), in
+    // which case gps/altitude are empty despite has_gps being true, letting a
+    // verifier distinguish "unavailable" from "available but withheld".
+    // Internet and GPS are each independently optional; a reason is required
+    // whenever a field is null OR the crew overrode an available one via its
+    // force toggle - the only case that needs no reason is the field present
+    // with no override. The reason is hashed into internet_null_reason_hash /
+    // gps_null_reason_hash (empty exactly in that one no-reason-needed case,
+    // enforced below) - the plaintext reason itself is never stored on-chain,
+    // only its hash.
     public struct PhotoAttested has copy, drop {
         photo_hash: vector<u8>,
         gps: vector<u8>,
@@ -270,6 +285,20 @@ module granite_lake::photo_attestation {
 
         assert!(sender == user_cap.user_wallet, E_NOT_USER);
         assert_user_enabled(registry, user_cap, sender);
+        // A reason hash is mandatory whenever the field it explains is null
+        // OR the crew overrode an available one via the force toggle - i.e.
+        // it's forbidden only in the single unambiguous case where the field
+        // is present and nothing was overridden, and mandatory otherwise.
+        // Checked both directions in one equality, since "hash empty" and
+        // "field present with no override" must agree.
+        assert!(
+            internet_null_reason_hash.is_empty() == (is_online && !is_forced_offline),
+            E_INTERNET_NULL_REASON_MISMATCH,
+        );
+        assert!(
+            gps_null_reason_hash.is_empty() == (has_gps && !is_gps_forced_null),
+            E_GPS_NULL_REASON_MISMATCH,
+        );
 
         event::emit(PhotoAttested {
             photo_hash: hash,
@@ -306,6 +335,10 @@ module granite_lake::photo_attestation {
 
         assert!(sender == user_cap.user_wallet, E_NOT_USER);
         assert_user_enabled(registry, user_cap, sender);
+        assert!(
+            internet_null_reason_hash.is_empty() == (is_online && !is_forced_offline),
+            E_INTERNET_NULL_REASON_MISMATCH,
+        );
 
         event::emit(FileAttested {
             file_hash: hash,
