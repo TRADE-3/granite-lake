@@ -519,6 +519,71 @@ code {
   text-decoration: none;
 }
 
+.secondary-button {
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--panel);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.secondary-button:hover {
+  border-color: var(--accent);
+}
+
+.secondary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.reason-check {
+  margin-top: 8px;
+}
+
+.reason-check summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.reason-check-body {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.reason-check-input {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--panel);
+}
+
+.reason-check-result {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.reason-check-result.is-match {
+  color: var(--ok);
+}
+
+.reason-check-result.is-nomatch {
+  color: var(--error);
+}
+
 .wallet-result-panel {
   min-height: 0;
 }

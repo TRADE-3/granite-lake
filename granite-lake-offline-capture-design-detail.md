@@ -133,13 +133,27 @@ existing `PHOTO_ATTESTED_EVENT_TYPES`/`FILE_ATTESTED_EVENT_TYPES` constants are 
 `has_gps`/`is_gps_forced_null` as plain `bool`s (unlike the vector-decoded `gps`/
 `project_id` fields); `internet_null_reason_hash`/`gps_null_reason_hash` are decoded as
 32-byte hashes using the same `decodePhotoHash`-style path already used for `photo_hash`.
-The service additionally exposes a reason-hash check: given a disclosed plaintext reason,
-hash it with the same algorithm and compare against the on-chain `*_null_reason_hash`,
-returning whether it matches — this is the mechanism by which "checking all of them
-during verification" (design doc §2) is actually performed, since the reason text itself
-is never on-chain. **`verification_portal`** mirrors this and displays the timestamps,
-the connectivity/GPS badges reflecting §4/§4a's tables, and a "verify disclosed reason"
-input wired to the same hash-comparison logic when a `*_null_reason_hash` is non-empty.
+
+**Reason-hash checking is its own endpoint, deliberately separate from
+`/verify-attestation`.** `POST /verify-null-reason` (`src/routes/verifyNullReason.ts`)
+takes `{ reasonText, onChainHashHex }` and returns `{ matches }`, hashing with the same
+SHA-256 convention `verifyAttestation.ts` already uses for uploaded files. This is the
+mechanism by which "checking all of them during verification" (top-level design doc §2)
+is actually performed, since the reason text itself is never on-chain. It is kept apart
+from the photo/file upload flow rather than added as extra multipart fields there: the
+upload in `/verify-attestation` is always compulsory, while a reason disclosure is
+optional, arrives independently (often after the fact, from whoever the attester told),
+and is checked against a hash the caller already has from an `AttestationRecord` — folding
+it into the upload endpoint would tie two unrelated concerns to the same request.
+
+**`verification_portal`** mirrors the decode logic and displays the timestamps and
+connectivity/GPS badges reflecting §4/§4a's tables in the result panel. The reason check
+itself is **not** a separate tab or an upload-time field — it's a foldable (`<details>`)
+control inline next to each Connectivity/GPS Provenance card, shown only once a record is
+already loaded and only when that record's `*_null_reason_hash` is non-empty: paste a
+disclosed reason, it hashes client-side (Web Crypto `SHA-256`, same as `sha256File` already
+uses) and reports match/mismatch against the record's own hash — no network round-trip
+needed since the portal already has everything it needs once a record is resolved.
 
 **App side** (`app/lib/core/services/photo_attestation_service.dart`):
 
@@ -938,20 +952,24 @@ permission, §7.2), `pubspec.yaml` (new `connectivity_plus`, `workmanager`,
     place. Also decide whether a `TAMPER_DETECTED` row should be reported anywhere beyond
     the device itself (e.g. a local-only audit note), given the whole point is that it
     can no longer be trusted enough to submit on-chain.
-13. Confirm the hash algorithm/encoding for `internet_null_reason_hash`/
-    `gps_null_reason_hash` matches whatever `photo_hash`/`file_hash` already use
-    (presumed SHA-256 given the 32-byte hex fields `verification_api` already decodes) —
-    reuse the existing hashing utility rather than introducing a second one.
+13. ~~Confirm the hash algorithm/encoding for `internet_null_reason_hash`/
+    `gps_null_reason_hash`~~ Resolved: SHA-256, confirmed as this codebase's existing
+    convention (`verification_api/src/routes/verifyAttestation.ts` already hashes
+    uploads with `createHash("sha256")`; `verification_portal/src/lib/fileHash.ts` with
+    `crypto.subtle.digest("SHA-256", ...)`) and reused directly rather than introducing a
+    second hashing scheme, in both `hashNullReason` implementations (§2).
 14. Decide input constraints on the mandatory reason text (§4b): minimum/maximum length,
     whether free text is sufficient or a short preset-reason list (e.g. "no signal",
     "GPS disabled", "indoors", "privacy-sensitive site") should be offered with an
     "other" free-text fallback — a preset list would also make the disclosed-reason
     verification flow (§2) more predictable to review at scale.
-15. Decide whether disclosure of the plaintext null reason during verification is
-    self-service (anyone with the record can type in the reason they were told and see if
-    it matches) or gated to specific roles (e.g. only a domain admin can pull the
-    plaintext reason from the device/backup and disclose it) — this affects whether
-    `verification_portal`'s reason-check input is public or behind auth.
+15. **Currently implemented as self-service, unauthenticated** — `POST
+/verify-null-reason` has no auth, and `verification_portal`'s inline `NullReasonCheck`
+    control is visible to anyone viewing a result. Still open whether that's the right
+    final call, or whether disclosure should be gated to specific roles (e.g. only a
+    domain admin can pull the plaintext reason from the device/backup and disclose it) —
+    revisit before this ships broadly, since the current default was an implementation
+    default, not a deliberate product decision.
 16. Decide whether a `TAMPER_DETECTED` classification (§7.3) should also apply if only a
     `*_null_reason`/`*_null_reason_hash` column is altered post-capture, independent of
     whether `photo_hash`/`captured_at` are also altered — i.e. whether the null-reason

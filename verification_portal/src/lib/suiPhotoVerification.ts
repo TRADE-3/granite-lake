@@ -54,25 +54,48 @@ export type ScanProgress = {
   eventsScanned: number;
 };
 
-export type PhotoAttestationRecord = {
-  txDigest: string;
-  eventSeq: string;
-  timestampMs: string | null;
-  checkpointTime: string;
-  photoHashHex: string;
-  gpsRawHex: string;
-  gpsDecoded: string;
-  altitudeRawHex: string;
-  altitudeDecoded: string;
-  projectIdRawHex: string;
-  projectIdDecoded: string;
-  userWallet: string;
-  domain: string | null;
-  domainAdminWallet: string | null;
-  userEnabledAtAttestation: boolean | null;
+// Offline-capture provenance shared by both record shapes below.
+// capturedAtMs/attestedAtMs are decimal-string u64 millisecond timestamps
+// (kept as strings, same convention as timestampMs, to avoid precision
+// loss). *NullReasonHashHex is empty ("") exactly in the one state needing
+// no reason: field present and its force toggle off - see the
+// offline-capture design doc §4/§4a/§4b.
+type OfflineCaptureFields = {
+  capturedAtMs: string | null;
+  attestedAtMs: string | null;
+  isOnline: boolean;
+  isForcedOffline: boolean;
+  internetNullReasonHashHex: string;
 };
 
-export type FileAttestationRecord = {
+// GPS provenance - photo attestations only, since file attestation never
+// carried location data.
+type GpsProvenanceFields = {
+  hasGps: boolean;
+  isGpsForcedNull: boolean;
+  gpsNullReasonHashHex: string;
+};
+
+export type PhotoAttestationRecord = OfflineCaptureFields &
+  GpsProvenanceFields & {
+    txDigest: string;
+    eventSeq: string;
+    timestampMs: string | null;
+    checkpointTime: string;
+    photoHashHex: string;
+    gpsRawHex: string;
+    gpsDecoded: string;
+    altitudeRawHex: string;
+    altitudeDecoded: string;
+    projectIdRawHex: string;
+    projectIdDecoded: string;
+    userWallet: string;
+    domain: string | null;
+    domainAdminWallet: string | null;
+    userEnabledAtAttestation: boolean | null;
+  };
+
+export type FileAttestationRecord = OfflineCaptureFields & {
   txDigest: string;
   eventSeq: string;
   timestampMs: string | null;
@@ -130,7 +153,7 @@ export type FileVerificationResult =
 
 export type WalletAttestType = "attest_photo" | "attest_file";
 
-export type WalletAttestationRecord = {
+export type WalletAttestationRecord = OfflineCaptureFields & {
   attestType: WalletAttestType;
   txDigest: string;
   eventSeq: string;
@@ -152,6 +175,9 @@ export type WalletAttestationRecord = {
   gpsDecoded?: string;
   altitudeRawHex?: string;
   altitudeDecoded?: string;
+  hasGps?: boolean;
+  isGpsForcedNull?: boolean;
+  gpsNullReasonHashHex?: string;
 };
 
 export type WalletAttestationsResult = {
@@ -281,6 +307,73 @@ function decodePhotoHash(value: unknown): string {
 
 function safeAddress(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+// captured_at/attested_at are Move u64 values (ms since epoch); GraphQL can
+// represent them as either a JSON number or a decimal string depending on
+// magnitude. Kept as a decimal string, same convention as timestampMs, to
+// avoid precision loss for values beyond Number.MAX_SAFE_INTEGER.
+function parseU64(value: unknown): string | null {
+  if (typeof value === "string" && /^\d+$/.test(value)) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(Math.trunc(value));
+  return null;
+}
+
+function parseBool(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return value.toLowerCase() === "true";
+  return false;
+}
+
+// internet_null_reason_hash / gps_null_reason_hash use the same 32-byte
+// hash convention as photo_hash/file_hash (decodePhotoHash already handles
+// this: 64 lowercase hex chars, "" for anything else - including the empty
+// vector<u8> the contract requires when no reason is needed).
+function decodeReasonHash(value: unknown): string {
+  return decodePhotoHash(value);
+}
+
+function bytesToHexDigest(bytes: Uint8Array): string {
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+// SHA-256 of a disclosed plaintext null-reason, for comparison against the
+// on-chain internetNullReasonHashHex/gpsNullReasonHashHex - matches this
+// codebase's existing hash convention (src/lib/fileHash.ts hashes uploaded
+// files the same way). The app-side hashing utility built in the
+// offline-capture design's app phase must use the same algorithm for a
+// disclosed reason to ever match.
+export async function hashNullReason(reasonText: string): Promise<string> {
+  const buffer = new TextEncoder().encode(reasonText);
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return bytesToHexDigest(new Uint8Array(digest));
+}
+
+// Returns false (not a match) for an on-chain hash that's empty - an empty
+// hash means no reason was required for that field, so there is nothing to
+// disclose or check against.
+export async function reasonMatchesHash(reasonText: string, onChainHashHex: string): Promise<boolean> {
+  if (!onChainHashHex) return false;
+  const computed = await hashNullReason(reasonText);
+  return computed === normalizeHex(onChainHashHex);
+}
+
+function offlineCaptureFields(parsed: Record<string, unknown>): OfflineCaptureFields {
+  return {
+    capturedAtMs: parseU64(parsed.captured_at),
+    attestedAtMs: parseU64(parsed.attested_at),
+    isOnline: parseBool(parsed.is_online),
+    isForcedOffline: parseBool(parsed.is_forced_offline),
+    internetNullReasonHashHex: decodeReasonHash(parsed.internet_null_reason_hash),
+  };
+}
+
+function gpsProvenanceFields(parsed: Record<string, unknown>): GpsProvenanceFields {
+  return {
+    hasGps: parseBool(parsed.has_gps),
+    isGpsForcedNull: parseBool(parsed.is_gps_forced_null),
+    gpsNullReasonHashHex: decodeReasonHash(parsed.gps_null_reason_hash),
+  };
 }
 
 function isAllowedPackageId(packageId: string): boolean {
@@ -725,6 +818,8 @@ function toRecord(
   const timestampMs = event.timestampMs ?? null;
 
   return {
+    ...offlineCaptureFields(parsed),
+    ...gpsProvenanceFields(parsed),
     txDigest: event.id.txDigest,
     eventSeq: event.id.eventSeq,
     timestampMs,
@@ -764,6 +859,7 @@ function toFileRecord(
   const timestampMs = event.timestampMs ?? null;
 
   return {
+    ...offlineCaptureFields(parsed),
     txDigest: event.id.txDigest,
     eventSeq: event.id.eventSeq,
     timestampMs,
@@ -814,6 +910,8 @@ function toWalletPhotoRecord(
   const timestampMs = event.timestampMs ?? null;
 
   return {
+    ...offlineCaptureFields(parsed),
+    ...gpsProvenanceFields(parsed),
     attestType: "attest_photo",
     txDigest: event.id.txDigest,
     eventSeq: event.id.eventSeq,
@@ -856,6 +954,7 @@ function toWalletFileRecord(
   const timestampMs = event.timestampMs ?? null;
 
   return {
+    ...offlineCaptureFields(parsed),
     attestType: "attest_file",
     txDigest: event.id.txDigest,
     eventSeq: event.id.eventSeq,

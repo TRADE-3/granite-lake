@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   FILE_ATTESTED_EVENT_TYPES,
   GRANITE_LAKE_ORIGINAL_PACKAGE_ID,
@@ -171,6 +172,48 @@ function decodePhotoHash(value: unknown): string {
 
 function safeAddress(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+// captured_at/attested_at are Move u64 values (ms since epoch); GraphQL can
+// represent them as either a JSON number or a decimal string depending on
+// magnitude. Kept as a decimal string, same convention as eventTimestampMs,
+// to avoid precision loss for values beyond Number.MAX_SAFE_INTEGER.
+function parseU64(value: unknown): string | null {
+  if (typeof value === "string" && /^\d+$/.test(value)) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(Math.trunc(value));
+  return null;
+}
+
+function parseBool(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return value.toLowerCase() === "true";
+  return false;
+}
+
+// internet_null_reason_hash / gps_null_reason_hash use the same 32-byte
+// hash convention as photo_hash/file_hash (decodePhotoHash already handles
+// this: 64 lowercase hex chars, "" for anything else - including the empty
+// vector<u8> the contract requires when no reason is needed).
+function decodeReasonHash(value: unknown): string {
+  return decodePhotoHash(value);
+}
+
+// SHA-256 of a disclosed plaintext null-reason, for comparison against the
+// on-chain internet_null_reason_hash/gps_null_reason_hash. SHA-256 matches
+// this codebase's existing hash convention (verifyAttestation.ts hashes
+// uploaded files with createHash("sha256").update(buffer).digest("hex")) -
+// the app-side hashing utility built in the offline-capture design's app
+// phase must use the same algorithm for a disclosed reason to ever match.
+export function hashNullReason(reasonText: string): string {
+  return createHash("sha256").update(reasonText, "utf8").digest("hex");
+}
+
+// Returns false (not a match) for an on-chain hash that's empty - an empty
+// hash means no reason was required for that field, so there is nothing to
+// disclose or check against.
+export function reasonMatchesHash(reasonText: string, onChainHashHex: string): boolean {
+  if (!onChainHashHex) return false;
+  return hashNullReason(reasonText) === normalizeHex(onChainHashHex);
 }
 
 const SUI_RPC_TIMEOUT_MS = 10_000;
@@ -809,6 +852,11 @@ export async function verifyAttestationHashDetailed(
       checkpointTimeIso: event.timestampMs ? new Date(Number(event.timestampMs)).toISOString() : null,
       userCapObjectId,
       hashHex: eventHash,
+      capturedAtMs: parseU64(parsed.captured_at),
+      attestedAtMs: parseU64(parsed.attested_at),
+      isOnline: parseBool(parsed.is_online),
+      isForcedOffline: parseBool(parsed.is_forced_offline),
+      internetNullReasonHashHex: decodeReasonHash(parsed.internet_null_reason_hash),
       ...(attestType === "attest_photo"
         ? {
             photoHashHex: eventHash,
@@ -816,6 +864,9 @@ export async function verifyAttestationHashDetailed(
             gpsDecoded: gps?.decoded ?? "",
             altitudeRawHex: altitude?.hex ?? "",
             altitudeDecoded: altitude?.decoded ?? "",
+            hasGps: parseBool(parsed.has_gps),
+            isGpsForcedNull: parseBool(parsed.is_gps_forced_null),
+            gpsNullReasonHashHex: decodeReasonHash(parsed.gps_null_reason_hash),
           }
         : {
             fileHashHex: eventHash,
@@ -943,6 +994,11 @@ export async function getAttestationsByWallet(
             checkpointTimeIso: event.timestampMs ? new Date(Number(event.timestampMs)).toISOString() : null,
             userCapObjectId,
             hashHex: eventHash,
+            capturedAtMs: parseU64(parsed.captured_at),
+            attestedAtMs: parseU64(parsed.attested_at),
+            isOnline: parseBool(parsed.is_online),
+            isForcedOffline: parseBool(parsed.is_forced_offline),
+            internetNullReasonHashHex: decodeReasonHash(parsed.internet_null_reason_hash),
             ...(group.attestType === "attest_photo"
               ? {
                   photoHashHex: eventHash,
@@ -950,6 +1006,9 @@ export async function getAttestationsByWallet(
                   gpsDecoded: gps?.decoded ?? "",
                   altitudeRawHex: altitude?.hex ?? "",
                   altitudeDecoded: altitude?.decoded ?? "",
+                  hasGps: parseBool(parsed.has_gps),
+                  isGpsForcedNull: parseBool(parsed.is_gps_forced_null),
+                  gpsNullReasonHashHex: decodeReasonHash(parsed.gps_null_reason_hash),
                 }
               : {
                   fileHashHex: eventHash,

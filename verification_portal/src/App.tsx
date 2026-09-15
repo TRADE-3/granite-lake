@@ -12,6 +12,7 @@ import {
   type PhotoAttestationRecord,
   type WalletAttestationRecord,
   getWalletAttestationsByWallet,
+  reasonMatchesHash,
   verifyFileHash,
   verifyPhotoHash,
 } from "./lib/suiPhotoVerification";
@@ -21,6 +22,7 @@ type ThemeMode = "light" | "dark";
 type PortalTab = "verify" | "wallets";
 type VerificationKind = "field_photo" | "uploaded_file";
 type VerificationRecord = PhotoAttestationRecord | FileAttestationRecord;
+type ReasonCheckState = "idle" | "working" | "match" | "mismatch" | "error";
 
 const THEME_STORAGE_KEY = "granite-lake-portal-theme";
 
@@ -52,6 +54,88 @@ function isFileRecord(record: VerificationRecord): record is FileAttestationReco
 
 function attestationTypeLabel(record: WalletAttestationRecord): string {
   return record.attestType === "attest_photo" ? "PHOTO" : "FILE";
+}
+
+// Offline-capture design doc §4's truth table, rendered as a label.
+function connectivityLabel(isOnline: boolean, isForcedOffline: boolean): string {
+  if (isOnline && !isForcedOffline) return "Online";
+  if (isOnline && isForcedOffline) return "Online (deferred by crew)";
+  if (!isOnline && !isForcedOffline) return "Offline (no connectivity)";
+  return "Offline (forced, no connectivity either way)";
+}
+
+// Offline-capture design doc §4a's truth table, rendered as a label.
+function gpsLabel(hasGps: boolean, isGpsForcedNull: boolean): string {
+  if (hasGps && !isGpsForcedNull) return "GPS fix used";
+  if (hasGps && isGpsForcedNull) return "GPS fix withheld by crew";
+  if (!hasGps && !isGpsForcedNull) return "No GPS fix available";
+  return "No GPS fix (forced, unavailable either way)";
+}
+
+function msToLocaleString(ms: string | null | undefined): string {
+  if (!ms) return "Unavailable";
+  const num = Number(ms);
+  return Number.isFinite(num) ? new Date(num).toLocaleString() : "Unavailable";
+}
+
+// Foldable, inline check for a disclosed plaintext null-reason (offline-
+// capture design doc §4b) against the record's on-chain reason hash,
+// already loaded alongside the rest of the result. Renders nothing when
+// onChainHashHex is empty - that field was present, no reason was ever
+// required, so there is nothing to check.
+function NullReasonCheck({ label, onChainHashHex }: { label: string; onChainHashHex: string }) {
+  const [reasonText, setReasonText] = useState("");
+  const [status, setStatus] = useState<ReasonCheckState>("idle");
+
+  if (!onChainHashHex) {
+    return null;
+  }
+
+  async function onCheck() {
+    const trimmed = reasonText.trim();
+    if (!trimmed) return;
+
+    setStatus("working");
+    try {
+      const matches = await reasonMatchesHash(trimmed, onChainHashHex);
+      setStatus(matches ? "match" : "mismatch");
+    } catch {
+      setStatus("error");
+    }
+  }
+
+  return (
+    <details className="reason-check">
+      <summary>Check disclosed {label} reason</summary>
+      <div className="reason-check-body">
+        <textarea
+          className="reason-check-input"
+          rows={2}
+          value={reasonText}
+          placeholder={`Paste the ${label} reason the attester disclosed...`}
+          onChange={(event) => {
+            setReasonText(event.target.value);
+            setStatus("idle");
+          }}
+        />
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={onCheck}
+          disabled={status === "working" || !reasonText.trim()}
+        >
+          {status === "working" ? "Checking..." : "Check hash"}
+        </button>
+        {status === "match" && (
+          <div className="reason-check-result is-match">Matches the on-chain {label} reason hash.</div>
+        )}
+        {status === "mismatch" && (
+          <div className="reason-check-result is-nomatch">Does not match the on-chain {label} reason hash.</div>
+        )}
+        {status === "error" && <div className="reason-check-result is-nomatch">Could not compute the hash.</div>}
+      </div>
+    </details>
+  );
 }
 
 export default function App() {
@@ -452,6 +536,19 @@ export default function App() {
                             <code>{record.userWallet}</code>
                           </div>
                           <div className="detail-card">
+                            <span>Captured At</span>
+                            <code>{msToLocaleString(record.capturedAtMs)}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>Attested At (on-chain)</span>
+                            <code>{msToLocaleString(record.attestedAtMs)}</code>
+                          </div>
+                          <div className="detail-card detail-card-wide">
+                            <span>Connectivity</span>
+                            <code>{connectivityLabel(record.isOnline, record.isForcedOffline)}</code>
+                            <NullReasonCheck label="internet" onChainHashHex={record.internetNullReasonHashHex} />
+                          </div>
+                          <div className="detail-card">
                             <span>Domain (from UserCap)</span>
                             <code>{record.domain ?? "Unavailable"}</code>
                           </div>
@@ -499,6 +596,24 @@ export default function App() {
                           <div className="detail-card detail-card-wide">
                             <span>Attesting Wallet</span>
                             <code>{record.userWallet}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>Captured At</span>
+                            <code>{msToLocaleString(record.capturedAtMs)}</code>
+                          </div>
+                          <div className="detail-card">
+                            <span>Attested At (on-chain)</span>
+                            <code>{msToLocaleString(record.attestedAtMs)}</code>
+                          </div>
+                          <div className="detail-card detail-card-wide">
+                            <span>Connectivity</span>
+                            <code>{connectivityLabel(record.isOnline, record.isForcedOffline)}</code>
+                            <NullReasonCheck label="internet" onChainHashHex={record.internetNullReasonHashHex} />
+                          </div>
+                          <div className="detail-card detail-card-wide">
+                            <span>GPS Provenance</span>
+                            <code>{gpsLabel(record.hasGps, record.isGpsForcedNull)}</code>
+                            <NullReasonCheck label="GPS" onChainHashHex={record.gpsNullReasonHashHex} />
                           </div>
                           <div className="detail-card">
                             <span>Domain (from UserCap)</span>
@@ -655,6 +770,10 @@ export default function App() {
                               <span>Domain</span>
                               <code>{entry.domain ?? "Unavailable"}</code>
                             </div>
+                            <div>
+                              <span>Connectivity</span>
+                              <code>{connectivityLabel(entry.isOnline, entry.isForcedOffline)}</code>
+                            </div>
                             {entry.attestType === "attest_photo" ? (
                               <>
                                 <div>
@@ -666,6 +785,10 @@ export default function App() {
                                   <code>
                                     {displayDecodedOrHex(entry.altitudeDecoded ?? "", entry.altitudeRawHex ?? "")}
                                   </code>
+                                </div>
+                                <div>
+                                  <span>GPS Provenance</span>
+                                  <code>{gpsLabel(entry.hasGps ?? false, entry.isGpsForcedNull ?? false)}</code>
                                 </div>
                               </>
                             ) : (
