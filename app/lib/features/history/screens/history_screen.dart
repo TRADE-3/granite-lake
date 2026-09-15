@@ -9,9 +9,26 @@ import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 
-enum _VerificationFilter { any, anchored, pending, failed }
+enum _VerificationFilter {
+  any,
+  anchored,
+  pending,
+  submissionFailed,
+  verificationFailed,
+}
 
-enum _VerificationStatus { anchored, pending, failed }
+// submissionFailed: the transaction itself never made it on-chain
+// (FAILED_SUBMISSION/FAILED_NOT_CONFIGURED) - a real, definite failure.
+// verificationFailed: the transaction succeeded on-chain, but a later,
+// separate check (verifyAttestationOnChain) found the on-chain event
+// doesn't match what was expected locally - a materially different kind of
+// problem (possible tampering/mismatch) from the submission ever failing.
+enum _VerificationStatus {
+  anchored,
+  pending,
+  submissionFailed,
+  verificationFailed,
+}
 
 enum _AssetTypeFilter { all, photos, files }
 
@@ -34,6 +51,38 @@ class _HistoryScreenState extends State<HistoryScreen> {
   _VerificationFilter _verificationFilter = _VerificationFilter.any;
   _AssetTypeFilter _assetTypeFilter = _AssetTypeFilter.all;
   _PeriodFilter _periodFilter = _PeriodFilter.allTime;
+  bool _isUnlockingQueue = false;
+  bool _isRetryingQueue = false;
+
+  Future<void> _unlockPendingQueue() async {
+    if (_isUnlockingQueue) {
+      return;
+    }
+    setState(() => _isUnlockingQueue = true);
+    // startSession() itself triggers retryPendingAttestations() on success -
+    // the queue's own biometric gate (offline-capture design doc §7).
+    await GraniteLakeScope.of(context).startSession();
+    if (!mounted) {
+      return;
+    }
+    setState(() => _isUnlockingQueue = false);
+  }
+
+  Future<void> _retryPendingQueue() async {
+    if (_isRetryingQueue) {
+      return;
+    }
+    setState(() => _isRetryingQueue = true);
+    // Manual escape hatch for when the session is still active (so the
+    // Unlock CTA below doesn't even show) but nothing has triggered a sweep
+    // yet - background/foreground and connectivity-change triggers can lag
+    // by up to their own poll interval.
+    await GraniteLakeScope.of(context).retryPendingAttestations();
+    if (!mounted) {
+      return;
+    }
+    setState(() => _isRetryingQueue = false);
+  }
 
   @override
   void dispose() {
@@ -129,6 +178,65 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   ),
                 ],
               ),
+              if (controller.pendingAttestationCount > 0) ...[
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceElevated,
+                    border: Border.all(color: AppColors.borderActive),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.cloud_upload_outlined,
+                        size: 16,
+                        color: AppColors.textSecondary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          controller.pendingAttestationsNeedUnlock
+                              ? '${controller.pendingAttestationCount} capture(s) queued - unlock to submit.'
+                              : '${controller.pendingAttestationCount} capture(s) queued for submission.',
+                          style: AppTextStyles.bodySmall.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ),
+                      if (controller.pendingAttestationsNeedUnlock)
+                        TextButton(
+                          onPressed: _isUnlockingQueue
+                              ? null
+                              : _unlockPendingQueue,
+                          child: Text(
+                            _isUnlockingQueue ? 'UNLOCKING...' : 'UNLOCK',
+                            style: AppTextStyles.labelMedium.copyWith(
+                              color: AppColors.primary,
+                            ),
+                          ),
+                        )
+                      else
+                        TextButton(
+                          onPressed: _isRetryingQueue
+                              ? null
+                              : _retryPendingQueue,
+                          child: Text(
+                            _isRetryingQueue ? 'RETRYING...' : 'RETRY NOW',
+                            style: AppTextStyles.labelMedium.copyWith(
+                              color: AppColors.primary,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
               if (_isSearchVisible) ...[
                 const SizedBox(height: 14),
                 TextField(
@@ -338,8 +446,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
         return status == _VerificationStatus.anchored;
       case _VerificationFilter.pending:
         return status == _VerificationStatus.pending;
-      case _VerificationFilter.failed:
-        return status == _VerificationStatus.failed;
+      case _VerificationFilter.submissionFailed:
+        return status == _VerificationStatus.submissionFailed;
+      case _VerificationFilter.verificationFailed:
+        return status == _VerificationStatus.verificationFailed;
     }
   }
 
@@ -385,7 +495,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
       _VerificationFilter.any => 'Any',
       _VerificationFilter.anchored => 'Anchored',
       _VerificationFilter.pending => 'Pending',
-      _VerificationFilter.failed => 'Failed',
+      _VerificationFilter.submissionFailed => 'Submission Failed',
+      _VerificationFilter.verificationFailed => 'Verification Failed',
     };
   }
 
@@ -410,24 +521,32 @@ class _HistoryScreenState extends State<HistoryScreen> {
     AttestationRecord capture,
     AttestationChainVerificationRecord? verification,
   ) {
-    if (verification?.isVerified == true) {
-      return _VerificationStatus.anchored;
-    }
-    if (verification != null &&
-        !verification.isVerified &&
-        !verification.isPending) {
-      return _VerificationStatus.failed;
-    }
-    if (verification?.isPending == true) {
-      return _VerificationStatus.pending;
-    }
+    // Submission status (did the transaction actually land on-chain) and
+    // verification status (has a live check since confirmed it) are two
+    // different things - the transaction's own success is ground truth and
+    // takes priority. Every anchored record starts with a local "pending"
+    // verification placeholder (see GraniteLakeController._localVerification)
+    // until a live check resolves it; without connectivity that check can
+    // never run, which previously showed an already-anchored capture as
+    // PENDING indefinitely. Only a verification that actually resolved to a
+    // genuine mismatch/failure should downgrade an anchored capture - never
+    // the mere absence of a completed check.
     if (capture.isAttestationAnchored) {
+      if (verification != null &&
+          !verification.isVerified &&
+          !verification.isPending) {
+        // The transaction landed on-chain fine - this is a mismatch found
+        // by a later, separate check, not a submission problem.
+        return _VerificationStatus.verificationFailed;
+      }
       return _VerificationStatus.anchored;
     }
     if (capture.isAttestationPending) {
       return _VerificationStatus.pending;
     }
-    return _VerificationStatus.failed;
+    // Not anchored and not pending: the transaction itself never made it
+    // on-chain (FAILED_SUBMISSION/FAILED_NOT_CONFIGURED).
+    return _VerificationStatus.submissionFailed;
   }
 }
 
@@ -742,8 +861,14 @@ class _VerificationBadge extends StatelessWidget {
         AppColors.primary.withAlpha(70),
         AppColors.primary,
       ),
-      _VerificationStatus.failed => (
-        'FAILED',
+      _VerificationStatus.submissionFailed => (
+        'SUBMIT FAILED',
+        AppColors.statusError.withAlpha(18),
+        AppColors.statusError.withAlpha(70),
+        AppColors.statusError,
+      ),
+      _VerificationStatus.verificationFailed => (
+        'VERIFY MISMATCH',
         AppColors.statusError.withAlpha(18),
         AppColors.statusError.withAlpha(70),
         AppColors.statusError,

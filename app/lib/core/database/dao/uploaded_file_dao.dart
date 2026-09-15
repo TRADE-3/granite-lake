@@ -48,6 +48,15 @@ class UploadedFileDao {
         'file_extension': uploadedFile['fileExtension'],
         'preview_kind': uploadedFile['previewKind'] ?? 'document',
         'storage_mode': uploadedFile['storageMode'] ?? 'LOCAL_ONLY',
+        'is_online': (uploadedFile['isOnline'] as bool? ?? true) ? 1 : 0,
+        'is_forced_offline': (uploadedFile['isForcedOffline'] as bool? ?? false)
+            ? 1
+            : 0,
+        'internet_null_reason': uploadedFile['internetNullReason'],
+        'internet_null_reason_hash': uploadedFile['internetNullReasonHash'],
+        'submission_attempt_count':
+            uploadedFile['submissionAttemptCount'] as int? ?? 0,
+        'last_attempt_at': uploadedFile['lastAttemptAt'],
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );

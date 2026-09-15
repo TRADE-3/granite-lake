@@ -9,6 +9,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app.dart';
 import '../../../core/router/app_router.dart';
+import '../../../core/services/connectivity_heuristic_service.dart';
+import '../../../core/services/time_sync_service.dart';
 import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
@@ -87,6 +89,9 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
     for (final stage in AttestationSubmissionStage.values)
       stage: AttestationSubmissionStageState.pending,
   };
+  final ConnectivityHeuristicService _connectivityService =
+      ConnectivityHeuristicService();
+  final TimeSyncService _timeSyncService = TimeSyncService();
 
   @override
   void initState() {
@@ -189,6 +194,90 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
     }
   }
 
+  /// Blocking modal collecting the mandatory free-text reason for an
+  /// offline/forced-offline file attestation (offline-capture design doc
+  /// §4b) - "Minimal now, polish later." Returns null if the crew cancels.
+  Future<String?> _collectNullReason() {
+    final reasonController = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            final canContinue = reasonController.text.trim().isNotEmpty;
+            return AlertDialog(
+              backgroundColor: AppColors.surfaceElevated,
+              title: Text(
+                'Reason Required',
+                style: AppTextStyles.headlineMedium,
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'This file will be attested without internet. Explain why before continuing - this is stored with the attestation and hashed on-chain.',
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: reasonController,
+                    maxLines: 2,
+                    style: AppTextStyles.bodyMedium.copyWith(
+                      color: AppColors.textPrimary,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: 'Why is internet unavailable/overridden?',
+                      hintStyle: AppTextStyles.bodyMedium.copyWith(
+                        color: AppColors.textMuted,
+                      ),
+                      filled: true,
+                      fillColor: AppColors.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: BorderSide(color: AppColors.borderActive),
+                      ),
+                    ),
+                    onChanged: (_) => setDialogState(() {}),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: Text(
+                    'CANCEL',
+                    style: AppTextStyles.buttonText.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: canContinue
+                      ? () => Navigator.of(
+                          dialogContext,
+                        ).pop(reasonController.text.trim())
+                      : null,
+                  child: Text(
+                    'CONTINUE',
+                    style: AppTextStyles.buttonText.copyWith(
+                      color: canContinue
+                          ? AppColors.primary
+                          : AppColors.textMuted,
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   Future<DateTime?> _fetchBackendUtcTimestamp() async {
     final domain = GraniteLakeScope.of(context).employee?.companyDomain;
     if (domain == null || domain.isEmpty) {
@@ -213,6 +302,36 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
       return;
     }
 
+    // isForcedOffline distinguishes *why* this is offline, not just whether
+    // the app toggle happens to be on (matches capture_screen.dart): the
+    // toggle always means forced (a deliberate override, skipping the
+    // network call entirely rather than just ignoring its result); absent
+    // that, forced only when there's no OS interface at all (wifi/data off,
+    // airplane mode - itself a deliberate device-level action), never when
+    // an interface is present but genuinely can't reach anything (a dead
+    // zone isn't the crew's doing).
+    final appToggleForcedOffline = controller.isOfflineCaptureForced;
+    final bool isOnline;
+    final bool isForcedOffline;
+    if (appToggleForcedOffline) {
+      isOnline = false;
+      isForcedOffline = true;
+    } else {
+      final domain = GraniteLakeScope.of(context).employee?.companyDomain;
+      final classification = await _connectivityService.check(domain: domain);
+      isOnline = classification == ConnectivityClass.online;
+      isForcedOffline = isOnline ? false : !_connectivityService.hasOsInterface;
+    }
+
+    String? internetNullReason;
+    if (!isOnline || isForcedOffline) {
+      internetNullReason = await _collectNullReason();
+      if (internetNullReason == null) {
+        // Crew cancelled the mandatory reason prompt - abort submission.
+        return;
+      }
+    }
+
     _submissionRunId++;
     final submissionRunId = _submissionRunId;
     setState(() {
@@ -226,18 +345,13 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
     // GraniteLakeCaptureWorkflowService.persistFile), so it must come from
     // a clock the client doesn't control. The file's own local
     // last-modified time is not that: it only records when a copy was last
-    // written on this device, not a verifiable attestation moment.
-    final attestedAtUtc = await _fetchBackendUtcTimestamp();
-    if (attestedAtUtc == null) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _flow = _FileFlow.review;
-        _errorMessage = 'Could not reach the backend clock. Try again.';
-      });
-      return;
-    }
+    // written on this device, not a verifiable attestation moment. Falls
+    // back to the offline-safe clock rather than hard-failing when there's
+    // no live backend to ask (offline-capture design doc §6).
+    final liveTimestamp = (isOnline && !isForcedOffline)
+        ? await _fetchBackendUtcTimestamp()
+        : null;
+    final attestedAtUtc = liveTimestamp ?? _timeSyncService.nowUtc();
 
     final result = await controller.persistFileWithMetadata(
       sourceFilePath: selectedFile.path,
@@ -251,6 +365,9 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
       capturedAtUtc: attestedAtUtc,
       submittedAtUtc: attestedAtUtc,
       buildLabel: 'FILE_IMPORT_V1',
+      isOnline: isOnline,
+      isForcedOffline: isForcedOffline,
+      internetNullReason: internetNullReason,
       onProgress: (progress) {
         unawaited(_applySubmissionProgress(progress, submissionRunId));
       },

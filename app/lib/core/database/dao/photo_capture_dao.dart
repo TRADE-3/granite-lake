@@ -44,6 +44,20 @@ class PhotoCaptureDao {
         'note': photoCapture['note'],
         'preview_kind': photoCapture['previewKind'] ?? 'image',
         'storage_mode': photoCapture['storageMode'] ?? 'LOCAL_ONLY',
+        'is_online': (photoCapture['isOnline'] as bool? ?? true) ? 1 : 0,
+        'is_forced_offline': (photoCapture['isForcedOffline'] as bool? ?? false)
+            ? 1
+            : 0,
+        'has_gps': (photoCapture['hasGps'] as bool? ?? true) ? 1 : 0,
+        'is_gps_forced_null':
+            (photoCapture['isGpsForcedNull'] as bool? ?? false) ? 1 : 0,
+        'internet_null_reason': photoCapture['internetNullReason'],
+        'internet_null_reason_hash': photoCapture['internetNullReasonHash'],
+        'gps_null_reason': photoCapture['gpsNullReason'],
+        'gps_null_reason_hash': photoCapture['gpsNullReasonHash'],
+        'submission_attempt_count':
+            photoCapture['submissionAttemptCount'] as int? ?? 0,
+        'last_attempt_at': photoCapture['lastAttemptAt'],
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );

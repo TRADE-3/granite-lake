@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'app.dart';
+import 'core/services/time_sync_service.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Lock to portrait — forensic capture apps operate in portrait only.
@@ -18,6 +19,10 @@ void main() {
       statusBarBrightness: Brightness.dark,
     ),
   );
+
+  // Must run before anything reads TimeSyncService.nowUtc() — never throws,
+  // even with no connectivity on a first cold launch (see the class doc).
+  await TimeSyncService.initializeAtStartup();
 
   runApp(const GraniteLakeApp());
 }

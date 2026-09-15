@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
@@ -12,12 +13,21 @@ import '../../../app.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/utils/utils.dart';
 import '../../../core/router/app_router.dart';
+import '../../../core/services/connectivity_heuristic_service.dart';
+import '../../../core/services/time_sync_service.dart';
 import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../core/utils/location_settings.dart';
 
 enum _CaptureFlow { live, review, submitting, success }
+
+class _NullReasons {
+  const _NullReasons({this.internetReason, this.gpsReason});
+
+  final String? internetReason;
+  final String? gpsReason;
+}
 
 class _LocationSnapshot {
   const _LocationSnapshot({
@@ -39,6 +49,12 @@ class _CaptureMetadataSnapshot {
     required this.cameraLabel,
     required this.cameraDetailsLabel,
     required this.networkLabel,
+    required this.isOnline,
+    required this.isForcedOffline,
+    this.internetNullReason,
+    required this.hasGps,
+    required this.isGpsForcedNull,
+    this.gpsNullReason,
   });
 
   final DateTime capturedAtUtc;
@@ -49,6 +65,17 @@ class _CaptureMetadataSnapshot {
   final String cameraLabel;
   final String cameraDetailsLabel;
   final String networkLabel;
+  // Offline-capture design doc §4/§4a: ground-truth connectivity/GPS state
+  // and force-toggle state at the moment the shutter was pressed - not
+  // re-derived at submit time, since connectivity/GPS may have changed by
+  // then and the design requires the value recorded on-chain to be what was
+  // actually true at capture.
+  final bool isOnline;
+  final bool isForcedOffline;
+  final String? internetNullReason;
+  final bool hasGps;
+  final bool isGpsForcedNull;
+  final String? gpsNullReason;
 }
 
 class CaptureScreen extends StatefulWidget {
@@ -91,6 +118,11 @@ class _CaptureScreenState extends State<CaptureScreen> {
   // already in flight - let it run to its own (patient) timeLimit instead.
   bool _isFetchingLocation = false;
 
+  final ConnectivityHeuristicService _connectivityService =
+      ConnectivityHeuristicService();
+  final TimeSyncService _timeSyncService = TimeSyncService();
+  StreamSubscription<List<ConnectivityResult>>? _connectivityChangeSubscription;
+
   _CaptureFlow _flow = _CaptureFlow.live;
   int _submissionRunId = 0;
   Future<void> _submissionProgressQueue = Future<void>.value();
@@ -102,6 +134,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
   String _selectedTag = 'STRUCTURAL';
   int _submissionStep = 0;
   AttestationSubmissionStage? _activeSubmissionStage;
+  // Set once, when a submission run starts, from that capture's own
+  // isOnline/isForcedOffline (offline-capture design doc §4) - the
+  // submission-progress UI reads this to show "queued locally" framing
+  // instead of "submitting to chain" framing for the one stage where those
+  // two paths actually diverge. Online capture keeps the original framing
+  // unchanged.
+  bool _isQueuedOfflineSubmission = false;
   String _submissionProgressMessage =
       'Preparing secure capture and attestation steps.';
   final Map<AttestationSubmissionStage, AttestationSubmissionStageState>
@@ -126,11 +165,22 @@ class _CaptureScreenState extends State<CaptureScreen> {
     // retry) — which read as "network always fails on first load."
     unawaited(Future.microtask(_refreshCaptureReadiness));
     _prepareCamera();
+    // Push-based: connectivity_plus reports an OS-level radio change (wifi
+    // or mobile data toggled) the instant it happens, rather than waiting
+    // for the next scheduled poll tick (up to connectivityPollIntervalOnline
+    // - 30s - away). Re-runs the same check the timer would, just triggered
+    // early, so a crew that turns off connectivity mid-session sees the app
+    // go offline immediately instead of up to 30s later.
+    _connectivityChangeSubscription = Connectivity().onConnectivityChanged
+        .listen((_) {
+          unawaited(_refreshBackendStatus());
+        });
   }
 
   @override
   void dispose() {
     _networkTimer?.cancel();
+    unawaited(_connectivityChangeSubscription?.cancel());
     _noteController.dispose();
     _cameraController?.dispose();
     _deleteStagedImageIfNeeded();
@@ -150,8 +200,17 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
   void _startClock() {
     _networkTimer?.cancel();
-    _networkTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      unawaited(_refreshCaptureReadiness());
+    // Adaptive cadence (offline-capture design doc §5): short while
+    // degraded, long once solidly offline, standard once online - each
+    // tick reschedules itself off ConnectivityHeuristicService.pollInterval
+    // rather than a flat 30s Timer.periodic, since that interval changes
+    // based on the outcome of the tick that just ran.
+    _networkTimer = Timer(_connectivityService.pollInterval, () async {
+      await _refreshCaptureReadiness();
+      if (!mounted) {
+        return;
+      }
+      _startClock();
     });
   }
 
@@ -282,6 +341,14 @@ class _CaptureScreenState extends State<CaptureScreen> {
       debugPrint(
         '[READINESS] _refreshLocation DONE (success) totalElapsed=${sw.elapsedMilliseconds}ms',
       );
+      // Auto-clear Force No GPS once a genuine (non-mocked) fix is
+      // confirmed - same reasoning as clearing Force Offline Mode once
+      // connectivity returns (see _refreshBackendStatus).
+      if (!isMockLocationDetected &&
+          mounted &&
+          GraniteLakeScope.of(context).isGpsCaptureForcedNull) {
+        unawaited(GraniteLakeScope.of(context).setGpsCaptureForcedNull(false));
+      }
       return snapshot;
     } catch (error, stack) {
       debugPrint(
@@ -332,23 +399,45 @@ class _CaptureScreenState extends State<CaptureScreen> {
     debugPrint(
       '[READINESS] domain="$domain" elapsed=${sw.elapsedMilliseconds}ms',
     );
-    if (domain == null || domain.isEmpty) {
-      debugPrint('[READINESS] _refreshBackendStatus: no domain, bailing');
-      if (mounted) {
-        setState(() => _networkStatusLabel = 'Offline');
-      }
-      return;
-    }
 
+    final wasOnlineCapable = _connectivityService.isOnlineCapable;
     try {
-      final connected = await AppUtils.hasBackendConnectivity(domain: domain);
+      final classification = await _connectivityService.check(domain: domain);
       debugPrint(
-        '[READINESS] _refreshBackendStatus DONE connected=$connected totalElapsed=${sw.elapsedMilliseconds}ms',
+        '[READINESS] _refreshBackendStatus DONE classification=$classification label=${_connectivityService.label} totalElapsed=${sw.elapsedMilliseconds}ms',
       );
       if (!mounted) return;
       setState(() {
-        _networkStatusLabel = connected ? 'Connected' : 'Offline';
+        _networkStatusLabel = switch (_connectivityService.label) {
+          ConnectivityClass.online => 'Connected',
+          ConnectivityClass.degraded => 'Degraded',
+          ConnectivityClass.offline => 'Offline',
+        };
       });
+      // Opportunistically keep the offline-fallback clock's anchor warm the
+      // moment connectivity is confirmed, rather than waiting on its own
+      // 30-minute background refresh (design doc §3a).
+      if (!wasOnlineCapable && _connectivityService.isOnlineCapable) {
+        unawaited(_timeSyncService.ensureFreshSync());
+      }
+      // Retry whenever pending work exists and we're currently online -
+      // not just on an offline->online edge. A row can be stuck
+      // PENDING_SUBMISSION for reasons unrelated to ever having gone
+      // offline (a transient gas-coin-version race, a brief hiccup), and
+      // if the device was online throughout, that edge never fires - see
+      // the matching fix/comment in app.dart's _checkConnectivityAndRetryQueue.
+      if (_connectivityService.isOnlineCapable && mounted) {
+        unawaited(GraniteLakeScope.of(context).retryPendingAttestations());
+      }
+      // Auto-clear Force Offline Mode once real connectivity is confirmed
+      // back - a toggle left on from an earlier offline test shouldn't
+      // silently keep forcing the next capture offline once the crew
+      // actually has a connection again.
+      if (_connectivityService.isOnlineCapable &&
+          mounted &&
+          GraniteLakeScope.of(context).isOfflineCaptureForced) {
+        unawaited(GraniteLakeScope.of(context).setOfflineCaptureForced(false));
+      }
     } catch (error, stack) {
       debugPrint(
         '[READINESS] _refreshBackendStatus FAILED error=$error (${error.runtimeType}) totalElapsed=${sw.elapsedMilliseconds}ms\n$stack',
@@ -487,11 +576,83 @@ class _CaptureScreenState extends State<CaptureScreen> {
     if (controller == null || !controller.value.isInitialized || _isCapturing) {
       return;
     }
-    if (!_hasGpsFix || !_hasNetworkConnectivity || _isMockLocationDetected) {
+    if (_isMockLocationDetected) {
       setState(() {
         _errorMessage = _captureBlockedMessage;
       });
       return;
+    }
+
+    // Fresh, on-demand check right at shutter press - covers wifi, mobile
+    // data, and airplane mode (which surfaces as "no active interface" the
+    // same as both being off) in one call. Deliberately not the background
+    // poll's cached label: that can be up to pollInterval stale, which is
+    // exactly what let a crew turn off connectivity mid-session without the
+    // app noticing before this check ran.
+    if (mounted) {
+      final domain = GraniteLakeScope.of(context).employee?.companyDomain;
+      await _connectivityService.check(domain: domain);
+      if (mounted) {
+        setState(() {
+          _networkStatusLabel = switch (_connectivityService.label) {
+            ConnectivityClass.online => 'Connected',
+            ConnectivityClass.degraded => 'Degraded',
+            ConnectivityClass.offline => 'Offline',
+          };
+        });
+      }
+    }
+
+    final isOnline = _hasNetworkConnectivity;
+    final appToggleForcedOffline = appController.isOfflineCaptureForced;
+    final hasGps = _hasGpsFix;
+    final isGpsForcedNull = appController.isGpsCaptureForcedNull;
+
+    // Missing GPS/connectivity only bypass the block when the crew has
+    // explicitly opted in via the corresponding force toggle - matches the
+    // shutter's own canCapture gate (offline-capture design doc §4/§4a).
+    // Gating uses the app toggle specifically, not the broader
+    // isForcedOffline below - a genuine dead zone (interface up, no signal)
+    // must not silently unblock just because the device happens to be
+    // reporting no interface elsewhere.
+    if ((!isOnline && !appToggleForcedOffline) ||
+        (!hasGps && !isGpsForcedNull)) {
+      setState(() {
+        _errorMessage = _captureBlockedMessage;
+      });
+      return;
+    }
+
+    // What actually gets recorded/hashed distinguishes *why* this capture
+    // is offline, not just whether the app toggle happens to be on:
+    // - online but the crew toggled offline anyway -> forced (a deliberate
+    //   override of a working connection).
+    // - offline because no OS interface at all (wifi + data both off, or
+    //   airplane mode) -> forced, regardless of the toggle - disabling
+    //   connectivity at the device level is itself the deliberate action.
+    // - offline despite an interface being present (weak/no signal, a
+    //   router with no upstream) -> not forced, regardless of the toggle -
+    //   the crew didn't cause this, it would have happened either way.
+    final isForcedOffline = isOnline
+        ? appToggleForcedOffline
+        : !_connectivityService.hasOsInterface;
+
+    final needsInternetReason = !isOnline || isForcedOffline;
+    final needsGpsReason = !hasGps || isGpsForcedNull;
+
+    String? internetNullReason;
+    String? gpsNullReason;
+    if (needsInternetReason || needsGpsReason) {
+      final reasons = await _collectNullReasons(
+        needsInternetReason: needsInternetReason,
+        needsGpsReason: needsGpsReason,
+      );
+      if (reasons == null) {
+        // Crew cancelled the mandatory reason prompt - abort the capture.
+        return;
+      }
+      internetNullReason = reasons.internetReason;
+      gpsNullReason = reasons.gpsReason;
     }
 
     setState(() {
@@ -500,10 +661,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
     });
 
     try {
-      final capturedAtUtc = await _fetchBackendUtcTimestamp();
-      if (capturedAtUtc == null) {
-        throw const HttpException('Backend UTC timestamp unavailable.');
-      }
+      // Prefer a live fetch only when effectively online - forcing offline
+      // means never making the network call in the first place, not just
+      // ignoring its result (offline-capture design doc §6).
+      final liveTimestamp = (isOnline && !isForcedOffline)
+          ? await _fetchBackendUtcTimestamp()
+          : null;
+      final capturedAtUtc = liveTimestamp ?? _timeSyncService.nowUtc();
       final imageFile = await controller.takePicture();
       if (!mounted) {
         return;
@@ -513,7 +677,15 @@ class _CaptureScreenState extends State<CaptureScreen> {
       setState(() {
         _isCapturing = false;
         _stagedImagePath = imageFile.path;
-        _stagedMetadata = _buildMetadataSnapshot(capturedAtUtc);
+        _stagedMetadata = _buildMetadataSnapshot(
+          capturedAtUtc,
+          isOnline: isOnline,
+          isForcedOffline: isForcedOffline,
+          internetNullReason: internetNullReason,
+          hasGps: hasGps,
+          isGpsForcedNull: isGpsForcedNull,
+          gpsNullReason: gpsNullReason,
+        );
         _flow = _CaptureFlow.review;
       });
     } catch (error) {
@@ -525,6 +697,117 @@ class _CaptureScreenState extends State<CaptureScreen> {
         _errorMessage = '$error';
       });
     }
+  }
+
+  /// Blocking modal collecting the mandatory free-text reason(s) for
+  /// whichever axis (internet, GPS) is null or force-overridden for this
+  /// capture (offline-capture design doc §4b) - "Minimal now, polish later."
+  /// Returns null if the crew cancels, in which case the caller aborts the
+  /// capture rather than proceeding with a missing required reason.
+  Future<_NullReasons?> _collectNullReasons({
+    required bool needsInternetReason,
+    required bool needsGpsReason,
+  }) {
+    final internetController = TextEditingController();
+    final gpsController = TextEditingController();
+    return showDialog<_NullReasons>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            final canContinue =
+                (!needsInternetReason ||
+                    internetController.text.trim().isNotEmpty) &&
+                (!needsGpsReason || gpsController.text.trim().isNotEmpty);
+            return AlertDialog(
+              backgroundColor: AppColors.surfaceElevated,
+              title: Text(
+                'Reason Required',
+                style: AppTextStyles.headlineMedium,
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'This capture will be recorded without internet and/or GPS. Explain why before continuing - this is stored with the capture and hashed on-chain.',
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  if (needsInternetReason) ...[
+                    const SizedBox(height: 14),
+                    Text('INTERNET', style: AppTextStyles.labelMedium),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: internetController,
+                      maxLines: 2,
+                      style: AppTextStyles.bodyMedium.copyWith(
+                        color: AppColors.textPrimary,
+                      ),
+                      decoration: _inputDecoration(
+                        hintText: 'Why is internet unavailable/overridden?',
+                      ),
+                      onChanged: (_) => setDialogState(() {}),
+                    ),
+                  ],
+                  if (needsGpsReason) ...[
+                    const SizedBox(height: 14),
+                    Text('GPS', style: AppTextStyles.labelMedium),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: gpsController,
+                      maxLines: 2,
+                      style: AppTextStyles.bodyMedium.copyWith(
+                        color: AppColors.textPrimary,
+                      ),
+                      decoration: _inputDecoration(
+                        hintText: 'Why is GPS unavailable/overridden?',
+                      ),
+                      onChanged: (_) => setDialogState(() {}),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: Text(
+                    'CANCEL',
+                    style: AppTextStyles.buttonText.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: canContinue
+                      ? () => Navigator.of(dialogContext).pop(
+                          _NullReasons(
+                            internetReason: needsInternetReason
+                                ? internetController.text.trim()
+                                : null,
+                            gpsReason: needsGpsReason
+                                ? gpsController.text.trim()
+                                : null,
+                          ),
+                        )
+                      : null,
+                  child: Text(
+                    'CONTINUE',
+                    style: AppTextStyles.buttonText.copyWith(
+                      color: canContinue
+                          ? AppColors.primary
+                          : AppColors.textMuted,
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _discardStagedCapture() async {
@@ -563,19 +846,25 @@ class _CaptureScreenState extends State<CaptureScreen> {
       return;
     }
     final metadata = _stagedMetadata;
+    // GPS/altitude are only mandatory when a fix was actually available at
+    // capture time (offline-capture design doc §4a) - metadata.hasGps false
+    // means they were deliberately left blank, not missing data.
     if (metadata == null ||
         selectedProject.projectId.trim().isEmpty ||
-        metadata.gpsLabel.trim().isEmpty ||
-        metadata.altitudeLabel.trim().isEmpty) {
+        (metadata.hasGps &&
+            (metadata.gpsLabel.trim().isEmpty ||
+                metadata.altitudeLabel.trim().isEmpty))) {
       setState(() {
         _errorMessage =
-            'Submission failed. Captured time, GPS, altitude, and project id are required.';
+            'Submission failed. Captured time and project id are required.';
       });
       return;
     }
 
     setState(() {
       _resetSubmissionProgress();
+      _isQueuedOfflineSubmission =
+          !metadata.isOnline || metadata.isForcedOffline;
       _isCapturing = true;
       _errorMessage = null;
       _flow = _CaptureFlow.submitting;
@@ -602,19 +891,16 @@ class _CaptureScreenState extends State<CaptureScreen> {
     //   return;
     // }
 
-    final submittedAtUtc = await _fetchBackendUtcTimestamp();
-    if (submittedAtUtc == null) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _isCapturing = false;
-        _flow = _CaptureFlow.review;
-        _submissionStep = 0;
-        _errorMessage = 'Backend UTC timestamp unavailable.';
-      });
-      return;
-    }
+    // Only attempt a live fetch when the capture was actually taken online -
+    // otherwise this sat here cycling through every candidate backend URL's
+    // timeout (5s each) with wifi off, which read as "stuck forever" even
+    // though it was bounded. The value recorded on-chain for eligibility is
+    // metadata.isOnline/isForcedOffline (captured at shutter press), not
+    // whether this fetch happens to succeed - so an offline capture must
+    // never make this call at all, matching _capturePhoto()'s same gate.
+    final submittedAtUtc = (metadata.isOnline && !metadata.isForcedOffline)
+        ? (await _fetchBackendUtcTimestamp() ?? _timeSyncService.nowUtc())
+        : _timeSyncService.nowUtc();
     final result = await appController.persistCaptureWithMetadata(
       stagedImagePath,
       projectId: selectedProject.projectId,
@@ -629,6 +915,12 @@ class _CaptureScreenState extends State<CaptureScreen> {
       altitudeLabel: metadata.altitudeLabel,
       cameraLabel: metadata.cameraLabel,
       cameraDetailsLabel: metadata.cameraDetailsLabel,
+      isOnline: metadata.isOnline,
+      isForcedOffline: metadata.isForcedOffline,
+      internetNullReason: metadata.internetNullReason,
+      hasGps: metadata.hasGps,
+      isGpsForcedNull: metadata.isGpsForcedNull,
+      gpsNullReason: metadata.gpsNullReason,
       onProgress: (progress) {
         unawaited(_applySubmissionProgress(progress, submissionRunId));
       },
@@ -667,6 +959,12 @@ class _CaptureScreenState extends State<CaptureScreen> {
         cameraLabel: metadata.cameraLabel,
         cameraDetailsLabel: metadata.cameraDetailsLabel,
         networkLabel: metadata.networkLabel,
+        isOnline: metadata.isOnline,
+        isForcedOffline: metadata.isForcedOffline,
+        internetNullReason: metadata.internetNullReason,
+        hasGps: metadata.hasGps,
+        isGpsForcedNull: metadata.isGpsForcedNull,
+        gpsNullReason: metadata.gpsNullReason,
       );
       _stagedMetadata = null;
     });
@@ -854,12 +1152,18 @@ class _CaptureScreenState extends State<CaptureScreen> {
     );
     final liveCameraLabel = _cameraLabel;
     final liveCameraDetails = _cameraDetailsLabel;
+    // Missing GPS/connectivity only bypass the shutter block when the crew
+    // has explicitly opted into that via the corresponding force toggle -
+    // without it, a missing fix or missing connectivity still blocks
+    // capture same as before (offline-capture design doc §4/§4a: the
+    // toggles are what make either axis optional, not automatic detection
+    // of their absence). Mock location is always a hard block regardless.
     final canCapture =
         !_isPreparing &&
         !_isCapturing &&
-        _hasGpsFix &&
-        _hasNetworkConnectivity &&
-        !_isMockLocationDetected;
+        !_isMockLocationDetected &&
+        (_hasGpsFix || appController.isGpsCaptureForcedNull) &&
+        (_hasNetworkConnectivity || appController.isOfflineCaptureForced);
 
     return Column(
       key: const ValueKey('live-capture'),
@@ -902,6 +1206,40 @@ class _CaptureScreenState extends State<CaptureScreen> {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  IconButton(
+                    tooltip: appController.isOfflineCaptureForced
+                        ? 'Force Offline Mode: ON'
+                        : 'Force Offline Mode',
+                    icon: Icon(
+                      appController.isOfflineCaptureForced
+                          ? Icons.wifi_off_rounded
+                          : Icons.wifi_rounded,
+                      size: 20,
+                      color: appController.isOfflineCaptureForced
+                          ? AppColors.statusError
+                          : AppColors.textSecondary,
+                    ),
+                    onPressed: () => appController.setOfflineCaptureForced(
+                      !appController.isOfflineCaptureForced,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: appController.isGpsCaptureForcedNull
+                        ? 'Force No GPS: ON'
+                        : 'Force No GPS',
+                    icon: Icon(
+                      appController.isGpsCaptureForcedNull
+                          ? Icons.location_off_rounded
+                          : Icons.location_on_outlined,
+                      size: 20,
+                      color: appController.isGpsCaptureForcedNull
+                          ? AppColors.statusError
+                          : AppColors.textSecondary,
+                    ),
+                    onPressed: () => appController.setGpsCaptureForcedNull(
+                      !appController.isGpsCaptureForcedNull,
+                    ),
+                  ),
                   _IdentityBadge(
                     initials: _resolveInitials(identity?.walletAddress),
                   ),
@@ -1479,14 +1817,26 @@ class _CaptureScreenState extends State<CaptureScreen> {
                           .savingLocalRecord]!,
                 ),
                 _SubmissionStep(
-                  title: 'Submitting To Sui Testnet',
-                  value: _submissionStageValue(
-                    AttestationSubmissionStage.submittingToChain,
-                    activeLabel:
-                        'Calling `attest_photo` with UserCap, Registry, hash, GPS, altitude, and project id',
-                    completeLabel: 'Sui attestation transaction submitted',
-                    failedLabel: 'Sui attestation transaction failed',
-                  ),
+                  title: _isQueuedOfflineSubmission
+                      ? 'Queuing For Submission'
+                      : 'Submitting To Sui Testnet',
+                  value: _isQueuedOfflineSubmission
+                      ? _submissionStageValue(
+                          AttestationSubmissionStage.submittingToChain,
+                          activeLabel:
+                              'Recording capture for automatic submission once online',
+                          completeLabel:
+                              'Capture queued locally - no connectivity needed yet',
+                          failedLabel: 'Queuing the capture locally failed',
+                        )
+                      : _submissionStageValue(
+                          AttestationSubmissionStage.submittingToChain,
+                          activeLabel:
+                              'Calling `attest_photo` with UserCap, Registry, hash, GPS, altitude, and project id',
+                          completeLabel:
+                              'Sui attestation transaction submitted',
+                          failedLabel: 'Sui attestation transaction failed',
+                        ),
                   state:
                       _submissionStageStates[AttestationSubmissionStage
                           .submittingToChain]!,
@@ -1728,15 +2078,29 @@ class _CaptureScreenState extends State<CaptureScreen> {
     );
   }
 
-  _CaptureMetadataSnapshot _buildMetadataSnapshot(DateTime capturedAtUtc) {
+  _CaptureMetadataSnapshot _buildMetadataSnapshot(
+    DateTime capturedAtUtc, {
+    required bool isOnline,
+    required bool isForcedOffline,
+    String? internetNullReason,
+    required bool hasGps,
+    required bool isGpsForcedNull,
+    String? gpsNullReason,
+  }) {
     return _CaptureMetadataSnapshot(
       capturedAtUtc: capturedAtUtc,
       buildLabel: _buildLabel,
-      gpsLabel: _gpsStatusLabel,
-      altitudeLabel: _altitudeStatusLabel,
+      gpsLabel: hasGps ? _gpsStatusLabel : '',
+      altitudeLabel: hasGps ? _altitudeStatusLabel : '',
       cameraLabel: _cameraLabel,
       cameraDetailsLabel: _cameraDetailsLabel,
       networkLabel: _networkStatusLabel,
+      isOnline: isOnline,
+      isForcedOffline: isForcedOffline,
+      internetNullReason: internetNullReason,
+      hasGps: hasGps,
+      isGpsForcedNull: isGpsForcedNull,
+      gpsNullReason: gpsNullReason,
     );
   }
 
@@ -1881,28 +2245,57 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
   bool get _hasGpsFix => _gpsStatusLabel.contains(', ');
 
-  bool get _hasNetworkConnectivity => _networkStatusLabel == 'Connected';
+  bool get _hasNetworkConnectivity => _connectivityService.isOnlineCapable;
 
+  // GPS/connectivity only stop blocking the shutter once the matching force
+  // toggle is on (offline-capture design doc §4/§4a) - phrase each case as
+  // a block asking for the toggle, or as informational once it's already
+  // set, rather than always implying "blocked."
   String get _captureBlockedMessage {
     if (_isMockLocationDetected) {
       return 'Mock location detected. Disable mock location before using camera capture.';
     }
-    if (_gpsStatusLabel == 'Location off') {
-      // This is the device-wide Location services toggle (Settings >
-      // Location), not this app's own Location permission - the app
-      // permission page can say "Allowed" while this is still off, and
-      // no app can get a fix until it's on.
-      return 'Turn on Location in your device Settings (Settings > Location) - '
-          "this is separate from this app's own Location permission, which "
-          'can already be granted while the device-wide toggle is off.';
+    final appController = GraniteLakeScope.of(context);
+    if (!_hasGpsFix && !appController.isGpsCaptureForcedNull) {
+      if (_gpsStatusLabel == 'Location off') {
+        // This is the device-wide Location services toggle (Settings >
+        // Location), not this app's own Location permission - the app
+        // permission page can say "Allowed" while this is still off, and
+        // no app can get a fix until it's on.
+        return 'Location is off in device Settings. Turn it on, or enable '
+            "Force No GPS to capture without a fix - this is separate from "
+            "this app's own Location permission, which can already be "
+            'granted while the device-wide toggle is off.';
+      }
+      final debugError = _gpsDebugError;
+      final base =
+          'No GPS fix yet - capture is blocked until a fix is acquired, or '
+          'enable Force No GPS to capture without one. Status: $_gpsStatusLabel';
+      return debugError == null ? base : '$base\n\n$debugError';
+    }
+    if (!_hasNetworkConnectivity && !appController.isOfflineCaptureForced) {
+      if (!_connectivityService.hasBothWifiAndMobileActive) {
+        // Deliberately stricter than the actual is_online/shutter-gate
+        // logic (which correctly treats a single active radio as online -
+        // see ConnectivityHeuristicService.hasOsInterface). This message
+        // specifically asks for both Wi-Fi and mobile data on, per explicit
+        // direction, so it also covers the "only one radio is on" case, not
+        // just "both off." Since airplane mode disables every radio, both
+        // being simultaneously active already proves airplane mode is off
+        // too - no separate check needed.
+        return 'Turn on both Wi-Fi and mobile data, and make sure Airplane '
+            'Mode is off, to restore connectivity - or enable Force Offline '
+            'Mode to capture without it.';
+      }
+      return 'No internet connectivity - capture is blocked until connectivity '
+          'returns, or enable Force Offline Mode to capture without it. '
+          'Status: $_networkStatusLabel';
     }
     if (!_hasGpsFix) {
-      final debugError = _gpsDebugError;
-      return debugError == null
-          ? 'Position data is required before capture. Status: $_gpsStatusLabel'
-          : 'Position data is required before capture. Status: $_gpsStatusLabel\n\n$debugError';
+      // Force No GPS is on, so this no longer blocks - informational only.
+      return 'Force No GPS is on - this capture will be recorded without location.';
     }
-    return 'Internet connectivity is required before capture. Status: $_networkStatusLabel';
+    return 'Force Offline Mode is on - this capture will be queued for submission.';
   }
 
   bool _hasAttestationFailure(AttestationRecord record) {
@@ -1920,7 +2313,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
       AttestationSubmissionStage.signing || null => 'Preparing Secure Evidence',
       AttestationSubmissionStage.savingLocalRecord => 'Saving Local Proof',
       AttestationSubmissionStage.submittingToChain =>
-        'Writing Attestation To Chain',
+        _isQueuedOfflineSubmission
+            ? 'Queuing For Later Submission'
+            : 'Writing Attestation To Chain',
       AttestationSubmissionStage.refreshingHistory => 'Updating Capture Ledger',
     };
   }

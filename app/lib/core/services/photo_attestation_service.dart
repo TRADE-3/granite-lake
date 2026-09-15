@@ -8,6 +8,7 @@ import 'package:on_chain/on_chain.dart';
 
 import '../constants/app_constants.dart';
 import '../state/granite_lake_models.dart';
+import '../utils/network_error_classifier.dart';
 import '../utils/utils.dart';
 import 'sui_graphql_service.dart';
 
@@ -175,6 +176,10 @@ class PhotoAttestationException implements Exception {
     }
     if (lower.contains('timed out') || lower.contains('timeout')) {
       return 'The Sui request timed out. Check your network connection and try again.';
+    }
+    if (looksLikeObjectVersionRaceFailure(lower)) {
+      return 'A recently-used wallet object was still updating on the network. '
+          "This resolves on its own - it's queued and will retry automatically.";
     }
     if (lower.contains('registry object') && lower.contains('not found')) {
       return 'The configured contract registry was not found on-chain. This app build may be pointing at an outdated contract.';
@@ -359,6 +364,10 @@ class PhotoAttestationService {
 
   final http.Client _httpClient;
   final SuiGraphQlService _graphQlService;
+
+  // Well-known shared Clock object every Sui network exposes at this fixed
+  // address (sui::clock::Clock, id 0x6).
+  static const String _suiClockObjectId = '0x6';
 
   Future<BigInt> getWalletSuiBalanceMist({
     required PhotoAttestationContractConfig config,
@@ -555,6 +564,13 @@ class PhotoAttestationService {
     required String gps,
     required String altitude,
     required String projectId,
+    required int capturedAtMs,
+    required bool isOnline,
+    required bool isForcedOffline,
+    String? internetNullReasonHashHex,
+    required bool hasGps,
+    required bool isGpsForcedNull,
+    String? gpsNullReasonHashHex,
   }) async {
     try {
       final owner = SuiAddress(identity.walletAddress);
@@ -562,9 +578,13 @@ class PhotoAttestationService {
         config.rpcUrl,
         claim.userCapObjectId,
       );
-      final registry = await _loadRegistryObjectArg(
+      final registry = await _loadSharedObjectArg(
         config.rpcUrl,
         config.registryId,
+      );
+      final clock = await _loadSharedObjectArg(
+        config.rpcUrl,
+        _suiClockObjectId,
       );
 
       var tx = SuiTransactionDataV1(
@@ -587,6 +607,14 @@ class PhotoAttestationService {
               SuiCallArgPure.bytes(utf8.encode(gps)),
               SuiCallArgPure.bytes(utf8.encode(altitude)),
               SuiCallArgPure.bytes(utf8.encode(projectId)),
+              SuiCallArgPure.u64(BigInt.from(capturedAtMs)),
+              SuiCallArgPure.boolean(isOnline),
+              SuiCallArgPure.boolean(isForcedOffline),
+              SuiCallArgPure.bytes(_hexToBytes(internetNullReasonHashHex)),
+              SuiCallArgPure.boolean(hasGps),
+              SuiCallArgPure.boolean(isGpsForcedNull),
+              SuiCallArgPure.bytes(_hexToBytes(gpsNullReasonHashHex)),
+              SuiCallArgObject(clock),
             ],
             commands: [
               SuiCommandMoveCall(
@@ -601,6 +629,14 @@ class PhotoAttestationService {
                     SuiArgumentInput(3),
                     SuiArgumentInput(4),
                     SuiArgumentInput(5),
+                    SuiArgumentInput(6),
+                    SuiArgumentInput(7),
+                    SuiArgumentInput(8),
+                    SuiArgumentInput(9),
+                    SuiArgumentInput(10),
+                    SuiArgumentInput(11),
+                    SuiArgumentInput(12),
+                    SuiArgumentInput(13),
                   ],
                 ),
               ),
@@ -609,8 +645,11 @@ class PhotoAttestationService {
         ),
       );
 
-      tx = await _prepareTransaction(config.rpcUrl, tx);
-      final response = await _execute(config.rpcUrl, tx, signingKey);
+      final response = await _prepareAndExecuteWithRetry(
+        config.rpcUrl,
+        tx,
+        signingKey,
+      );
       return PhotoAttestationSubmissionResult(
         transactionDigest: response.digest,
         status: response.status,
@@ -704,7 +743,7 @@ class PhotoAttestationService {
         projectId == (capture.attestedProjectId?.trim() ?? '');
     final chainTimestamp = _resolveChainTimestamp(response, event);
     final timestampWithinTolerance = _isTimestampWithinTolerance(
-      localTimestamp: capture.effectiveSubmittedAt,
+      capture: capture,
       chainTimestamp: chainTimestamp,
     );
 
@@ -736,7 +775,10 @@ class PhotoAttestationService {
     required PhotoAttestationClaimRecord claim,
     required AttestationRecord record,
     required String projectId,
-    required int timestampMs,
+    required int capturedAtMs,
+    required bool isOnline,
+    required bool isForcedOffline,
+    String? internetNullReasonHashHex,
   }) async {
     try {
       final owner = SuiAddress(identity.walletAddress);
@@ -744,9 +786,13 @@ class PhotoAttestationService {
         config.rpcUrl,
         claim.userCapObjectId,
       );
-      final registry = await _loadRegistryObjectArg(
+      final registry = await _loadSharedObjectArg(
         config.rpcUrl,
         config.registryId,
+      );
+      final clock = await _loadSharedObjectArg(
+        config.rpcUrl,
+        _suiClockObjectId,
       );
 
       var tx = SuiTransactionDataV1(
@@ -768,6 +814,11 @@ class PhotoAttestationService {
               SuiCallArgPure.bytes(utf8.encode(record.contentSha256)),
               SuiCallArgPure.bytes(utf8.encode(record.fileId)),
               SuiCallArgPure.bytes(utf8.encode(projectId)),
+              SuiCallArgPure.u64(BigInt.from(capturedAtMs)),
+              SuiCallArgPure.boolean(isOnline),
+              SuiCallArgPure.boolean(isForcedOffline),
+              SuiCallArgPure.bytes(_hexToBytes(internetNullReasonHashHex)),
+              SuiCallArgObject(clock),
             ],
             commands: [
               SuiCommandMoveCall(
@@ -781,6 +832,11 @@ class PhotoAttestationService {
                     SuiArgumentInput(2),
                     SuiArgumentInput(3),
                     SuiArgumentInput(4),
+                    SuiArgumentInput(5),
+                    SuiArgumentInput(6),
+                    SuiArgumentInput(7),
+                    SuiArgumentInput(8),
+                    SuiArgumentInput(9),
                   ],
                 ),
               ),
@@ -789,8 +845,11 @@ class PhotoAttestationService {
         ),
       );
 
-      tx = await _prepareTransaction(config.rpcUrl, tx);
-      final response = await _execute(config.rpcUrl, tx, signingKey);
+      final response = await _prepareAndExecuteWithRetry(
+        config.rpcUrl,
+        tx,
+        signingKey,
+      );
       return FileAttestationSubmissionResult(
         transactionDigest: response.digest,
         status: response.status,
@@ -800,7 +859,6 @@ class PhotoAttestationService {
           walletAddress: identity.walletAddress,
           record: record,
           projectId: projectId,
-          timestampMs: timestampMs,
         ),
       );
     } catch (error) {
@@ -879,7 +937,7 @@ class PhotoAttestationService {
     final projectIdMatches =
         projectId == (capture.attestedProjectId?.trim() ?? '');
     final timestampWithinTolerance = _isTimestampWithinTolerance(
-      localTimestamp: capture.effectiveSubmittedAt,
+      capture: capture,
       chainTimestamp: chainTimestamp,
     );
 
@@ -916,22 +974,26 @@ class PhotoAttestationService {
     return response;
   }
 
-  Future<SuiObjectArg> _loadRegistryObjectArg(
+  /// Loads any shared object (the Registry, or the well-known Clock at
+  /// [_suiClockObjectId]) as a transaction argument, resolving its current
+  /// `initialSharedVersion` from chain state rather than assuming a fixed
+  /// value.
+  Future<SuiObjectArg> _loadSharedObjectArg(
     String graphqlUrl,
-    String registryId,
+    String objectId,
   ) async {
-    final normalizedRegistryId = registryId.trim();
-    if (normalizedRegistryId.isEmpty) {
+    final normalizedObjectId = objectId.trim();
+    if (normalizedObjectId.isEmpty) {
       throw StateError('Contract registry id is missing.');
     }
 
     final data = await _graphQlService.getObject(
       graphqlUrl,
-      objectId: normalizedRegistryId,
+      objectId: normalizedObjectId,
     );
     if (data == null) {
       throw StateError(
-        'Configured registry object $normalizedRegistryId was not found on-chain.',
+        'Configured registry object $normalizedObjectId was not found on-chain.',
       );
     }
 
@@ -1201,6 +1263,45 @@ class PhotoAttestationService {
     return coins.fold<BigInt>(BigInt.zero, (sum, coin) => sum + coin.balance);
   }
 
+  /// Prepares (dry-runs + fills gas payment) and executes [tx], retrying
+  /// the whole prepare+execute cycle from scratch when the failure is a
+  /// transient object-version race: `_fillGasPayment` queries the wallet's
+  /// gas coins fresh via GraphQL every call, but right after a transaction
+  /// executes, the indexer that query reads from can briefly lag before
+  /// reflecting that coin's new version - so a transaction submitted
+  /// immediately after (e.g. the next row in retryPendingAttestations'
+  /// sequential sweep) can pick a coin reference that's already stale by
+  /// the time it reaches consensus. Re-preparing re-queries everything
+  /// fresh, which is enough once the indexer catches up - not retried for
+  /// any other failure class, since those are genuine rejections.
+  Future<SuiGraphQlTransactionResult> _prepareAndExecuteWithRetry(
+    String graphqlUrl,
+    SuiTransactionDataV1 tx,
+    SuiED25519PrivateKey signingKey,
+  ) async {
+    const maxAttempts = 3;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        // _prepareTransaction's dry-run can itself reject a stale gas-coin
+        // reference (the same race _fillGasPayment is exposed to) before
+        // _execute is ever reached - both steps must be inside the retry,
+        // not just the final execute call, or a version mismatch caught at
+        // dry-run time would skip the retry entirely and fail on attempt 1.
+        final prepared = await _prepareTransaction(graphqlUrl, tx);
+        return await _execute(graphqlUrl, prepared, signingKey);
+      } catch (error) {
+        if (attempt == maxAttempts || !_isObjectVersionRaceError(error)) {
+          rethrow;
+        }
+        await Future<void>.delayed(Duration(milliseconds: 800 * attempt));
+      }
+    }
+    throw StateError('Unreachable: retry loop exited without returning.');
+  }
+
+  bool _isObjectVersionRaceError(Object error) =>
+      looksLikeObjectVersionRaceFailure('$error');
+
   Future<SuiGraphQlTransactionResult> _execute(
     String graphqlUrl,
     SuiTransactionDataV1 tx,
@@ -1279,7 +1380,6 @@ class PhotoAttestationService {
     required String walletAddress,
     required AttestationRecord record,
     required String projectId,
-    required int timestampMs,
   }) {
     final event = _findFileAttestedEvent(response.events, config);
     if (event == null) {
@@ -1304,13 +1404,13 @@ class PhotoAttestationService {
         _addressesMatch(userWallet, walletAddress);
     final fileIdMatches = fileId == record.fileId;
     final projectIdMatches = eventProjectId == projectId;
-    final timestampWithinTolerance = _isTimestampWithinTolerance(
-      localTimestamp: DateTime.fromMillisecondsSinceEpoch(
-        timestampMs,
-        isUtc: true,
-      ),
-      chainTimestamp: chainTimestamp,
-    );
+    // Always within tolerance here - this result is built immediately after
+    // a transaction we just executed (whether the original attempt or a
+    // later queue retry), so chainTimestamp is definitionally "now."
+    // Matches _buildImmediateVerificationResult's (photo) same treatment;
+    // the meaningful captured_at/attested_at check belongs to the later,
+    // standalone verifyFileAttestation pass instead.
+    const timestampWithinTolerance = true;
 
     return FileAttestationVerificationResult(
       transactionDigest: response.digest,
@@ -1394,6 +1494,22 @@ class PhotoAttestationService {
     final dePadded = noPrefix.replaceFirst(RegExp(r'^0+'), '');
     final normalized = dePadded.isEmpty ? '0' : dePadded;
     return '0x$normalized';
+  }
+
+  /// Decodes a hex-encoded hash (as persisted in `*_null_reason_hash`
+  /// columns) back to raw bytes for a `vector<u8>` transaction argument. A
+  /// null/empty input becomes an empty vector, matching what the contract's
+  /// `is_empty()` check expects in the one no-reason-needed state per axis.
+  List<int> _hexToBytes(String? hex) {
+    final normalized = hex?.trim() ?? '';
+    if (normalized.isEmpty) {
+      return const <int>[];
+    }
+    final bytes = <int>[];
+    for (var i = 0; i + 1 < normalized.length; i += 2) {
+      bytes.add(int.parse(normalized.substring(i, i + 2), radix: 16));
+    }
+    return bytes;
   }
 
   String _decodeMoveBytesValue(Object? value) {
@@ -1513,15 +1629,31 @@ class PhotoAttestationService {
     return BigInt.parse(balance.toString());
   }
 
+  /// Compares the on-chain `attested_at` (execution time, via
+  /// [chainTimestamp]) against [capture]'s own `captured_at` - never the
+  /// local `submittedAt` field, which is frozen at the moment a capture was
+  /// first queued and never updated on a later retry (see
+  /// GraniteLakeController), so comparing against it would flag every
+  /// delayed offline resubmission as a false mismatch.
+  ///
+  /// Offline and forced-offline captures are exempt entirely: they can
+  /// legitimately sit queued for an arbitrary length of time before
+  /// connectivity returns and the transaction actually executes, so a large
+  /// captured_at/attested_at gap there is expected by design, not a sign of
+  /// tampering. The tolerance window only means something for a capture
+  /// that was online at capture time and should have submitted promptly.
   bool _isTimestampWithinTolerance({
-    required DateTime localTimestamp,
+    required AttestationRecord capture,
     required DateTime? chainTimestamp,
   }) {
     if (chainTimestamp == null) {
       return false;
     }
+    if (!capture.isOnline || capture.isForcedOffline) {
+      return true;
+    }
 
-    final difference = chainTimestamp.difference(localTimestamp).abs();
+    final difference = chainTimestamp.difference(capture.capturedAt).abs();
     return difference <=
         Duration(minutes: AppConstants.maximumAttestationTimeGapMinutes);
   }

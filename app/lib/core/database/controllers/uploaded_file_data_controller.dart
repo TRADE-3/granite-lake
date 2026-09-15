@@ -44,7 +44,26 @@ class UploadedFileDataController {
       'fileExtension': row['file_extension'],
       'previewKind': row['preview_kind'],
       'storageMode': row['storage_mode'],
+      'isOnline': _readBool(row['is_online'], defaultValue: true),
+      'isForcedOffline': _readBool(row['is_forced_offline']),
+      'internetNullReason': row['internet_null_reason'],
+      'internetNullReasonHash': row['internet_null_reason_hash'],
+      'submissionAttemptCount': _readInt(row['submission_attempt_count']),
+      'lastAttemptAt': row['last_attempt_at'],
     };
+  }
+
+  bool _readBool(Object? value, {bool defaultValue = false}) {
+    if (value == null) return defaultValue;
+    if (value is bool) return value;
+    if (value is int) return value != 0;
+    return defaultValue;
+  }
+
+  int _readInt(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return 0;
   }
 
   Map<String, dynamic> _decodeProofPayload(Object? value) {

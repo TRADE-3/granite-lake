@@ -435,10 +435,75 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                       '${record.capturedAt.millisecondsSinceEpoch / 1000} // ${record.capturedAt.toIso8601String()}',
                                 ),
                                 _DetailCell(
-                                  label: 'SUBMITTED_AT',
+                                  label: 'LOCAL_QUEUED_AT',
                                   value:
                                       '${record.effectiveSubmittedAt.millisecondsSinceEpoch / 1000} // ${record.effectiveSubmittedAt.toIso8601String()}',
+                                  accent: 'DEVICE_CLOCK_NOT_ON_CHAIN',
                                 ),
+                                _DetailCell(
+                                  label: 'CHAIN_ATTESTED_AT',
+                                  value: verification?.chainTimestamp != null
+                                      ? '${verification!.chainTimestamp!.millisecondsSinceEpoch / 1000} // ${verification.chainTimestamp!.toIso8601String()}'
+                                      : 'Not yet confirmed on-chain.',
+                                ),
+                                _DetailCell(
+                                  label: 'IS_ONLINE',
+                                  value: record.isOnline ? 'TRUE' : 'FALSE',
+                                ),
+                                _DetailCell(
+                                  label: 'IS_FORCED_OFFLINE',
+                                  value: record.isForcedOffline
+                                      ? 'TRUE'
+                                      : 'FALSE',
+                                ),
+                                if (record.internetNullReason
+                                        ?.trim()
+                                        .isNotEmpty ==
+                                    true)
+                                  _DetailCell(
+                                    label: 'INTERNET_NULL_REASON',
+                                    value: record.internetNullReason!.trim(),
+                                  ),
+                                if (record.internetNullReasonHash
+                                        ?.trim()
+                                        .isNotEmpty ==
+                                    true)
+                                  _DetailCell(
+                                    label: 'INTERNET_NULL_REASON_HASH',
+                                    value: record.internetNullReasonHash!,
+                                    canCopy: true,
+                                    copyValue: record.internetNullReasonHash!,
+                                  ),
+                                if (record.isPhoto)
+                                  _DetailCell(
+                                    label: 'HAS_GPS',
+                                    value: record.hasGps ? 'TRUE' : 'FALSE',
+                                  ),
+                                if (record.isPhoto)
+                                  _DetailCell(
+                                    label: 'IS_GPS_FORCED_NULL',
+                                    value: record.isGpsForcedNull
+                                        ? 'TRUE'
+                                        : 'FALSE',
+                                  ),
+                                if (record.isPhoto &&
+                                    record.gpsNullReason?.trim().isNotEmpty ==
+                                        true)
+                                  _DetailCell(
+                                    label: 'GPS_NULL_REASON',
+                                    value: record.gpsNullReason!.trim(),
+                                  ),
+                                if (record.isPhoto &&
+                                    record.gpsNullReasonHash
+                                            ?.trim()
+                                            .isNotEmpty ==
+                                        true)
+                                  _DetailCell(
+                                    label: 'GPS_NULL_REASON_HASH',
+                                    value: record.gpsNullReasonHash!,
+                                    canCopy: true,
+                                    copyValue: record.gpsNullReasonHash!,
+                                  ),
                                 _DetailCell(
                                   label: 'SHA256_CONTENT_HASH',
                                   value: record.contentSha256,
@@ -502,6 +567,16 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                   value: record.suiSubmissionStatus,
                                   canCopy: true,
                                   copyValue: record.suiSubmissionStatus,
+                                ),
+                                _DetailCell(
+                                  label: 'RETRY_COUNT',
+                                  value: '${record.submissionAttemptCount}',
+                                ),
+                                _DetailCell(
+                                  label: 'LAST_ATTEMPTED_AT',
+                                  value: record.lastAttemptAt != null
+                                      ? '${record.lastAttemptAt!.millisecondsSinceEpoch / 1000} // ${record.lastAttemptAt!.toIso8601String()}'
+                                      : 'No submission attempt yet.',
                                 ),
                                 if (record.attestationErrorLabel != null)
                                   _DetailCell(
@@ -660,24 +735,30 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
     AttestationRecord record,
     AttestationChainVerificationRecord? verification,
   ) {
-    if (verification?.isVerified == true) {
-      return ('ANCHORED', AppColors.statusActive);
-    }
-    if (verification != null &&
-        !verification.isVerified &&
-        !verification.isPending) {
-      return ('FAILED', AppColors.statusError);
-    }
-    if (verification?.isPending == true) {
-      return ('PENDING', AppColors.primary);
-    }
+    // The transaction's own on-chain success is ground truth - it must take
+    // priority over the local verification placeholder, which starts every
+    // anchored record at a "pending" state until a live check confirms it
+    // (see GraniteLakeController._localVerification). Without connectivity,
+    // that check can never complete, which previously left an already-
+    // anchored capture displaying PENDING indefinitely. Only a verification
+    // that actually resolved to a genuine mismatch/failure should downgrade
+    // an anchored capture - never the mere absence of a completed check.
     if (record.isAttestationAnchored) {
+      if (verification != null &&
+          !verification.isVerified &&
+          !verification.isPending) {
+        // Landed on-chain fine - this is a mismatch found by a later,
+        // separate check, not a submission problem.
+        return ('VERIFY MISMATCH', AppColors.statusError);
+      }
       return ('ANCHORED', AppColors.statusActive);
     }
     if (record.isAttestationPending) {
       return ('PENDING', AppColors.primary);
     }
-    return ('FAILED', AppColors.statusError);
+    // Not anchored and not pending: the transaction itself never made it
+    // on-chain (FAILED_SUBMISSION/FAILED_NOT_CONFIGURED).
+    return ('SUBMIT FAILED', AppColors.statusError);
   }
 
   String _verificationValue(bool? value) {

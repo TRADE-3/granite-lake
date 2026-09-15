@@ -10,6 +10,7 @@ import '../constants/app_constants.dart';
 import '../services/granite_lake_capture_workflow_service.dart';
 import '../services/photo_attestation_service.dart';
 import '../services/granite_lake_secure_state_service.dart';
+import '../utils/network_error_classifier.dart';
 import 'granite_lake_models.dart';
 
 export 'granite_lake_models.dart';
@@ -60,6 +61,9 @@ class GraniteLakeController extends ChangeNotifier {
   List<UploadedFileRecord> _uploadedFileHistory = const [];
   Map<String, AttestationChainVerificationRecord> _attestationVerifications =
       const {};
+  bool _isRetryingPendingAttestations = false;
+  bool _offlineCaptureForced = false;
+  bool _gpsCaptureForcedNull = false;
   Map<String, int> _verificationRetryCounts = const {};
   String? _resetNotice;
   List<ProjectRecord> _projects = const [];
@@ -126,6 +130,37 @@ class GraniteLakeController extends ChangeNotifier {
   bool get hasClaimedPhotoAttestationUser => _photoAttestationClaim != null;
   bool get isBiometricBound => _biometricBinding != null;
   bool get hasActiveSession => _session?.isActive ?? false;
+
+  int get pendingAttestationCount => _attestationHistory
+      .where(
+        (record) =>
+            record.isAttestationPending || _isRecoverableFailure(record),
+      )
+      .length;
+
+  bool get pendingAttestationsNeedUnlock =>
+      pendingAttestationCount > 0 && !hasActiveSession;
+
+  bool get isOfflineCaptureForced => _offlineCaptureForced;
+  bool get isGpsCaptureForcedNull => _gpsCaptureForcedNull;
+
+  Future<void> setOfflineCaptureForced(bool value) async {
+    if (_offlineCaptureForced == value) {
+      return;
+    }
+    _offlineCaptureForced = value;
+    await _dataControllers.config.saveOfflineCaptureForced(value);
+    notifyListeners();
+  }
+
+  Future<void> setGpsCaptureForcedNull(bool value) async {
+    if (_gpsCaptureForcedNull == value) {
+      return;
+    }
+    _gpsCaptureForcedNull = value;
+    await _dataControllers.config.saveGpsCaptureForcedNull(value);
+    notifyListeners();
+  }
 
   Duration get remainingSessionDuration {
     final session = _session;
@@ -411,6 +446,9 @@ class GraniteLakeController extends ChangeNotifier {
     _session = result.data!.session;
     _syncSessionTicker();
     notifyListeners();
+    if (pendingAttestationCount > 0) {
+      unawaited(retryPendingAttestations());
+    }
     return const ActionResult.success();
   }
 
@@ -418,6 +456,94 @@ class GraniteLakeController extends ChangeNotifier {
     await _secureStateService.endSession();
     _clearLocalSessionState();
     notifyListeners();
+  }
+
+  /// Sweeps `PENDING_SUBMISSION` rows oldest-first and resubmits each with
+  /// its originally-persisted `captured_at`/connectivity/GPS/reason-hash
+  /// fields, per the offline-capture design's submission queue (§7). A
+  /// fresh `attested_at` is supplied by the chain wherever the submission
+  /// actually lands. No-ops entirely (touches no row) unless a signing
+  /// session is already active - a caller that needs one first should raise
+  /// the biometric unlock via [startSession] itself, whose success already
+  /// triggers this sweep.
+  Future<void> retryPendingAttestations() async {
+    if (_isRetryingPendingAttestations) {
+      return;
+    }
+    if (!hasActiveSession || _sessionSigningKey == null) {
+      return;
+    }
+
+    _isRetryingPendingAttestations = true;
+    try {
+      final pending =
+          _attestationHistory
+              .where(
+                (record) =>
+                    record.isAttestationPending ||
+                    _isRecoverableFailure(record),
+              )
+              .toList()
+            ..sort((a, b) => a.capturedAt.compareTo(b.capturedAt));
+      if (pending.isEmpty) {
+        return;
+      }
+
+      // Capture time skips this check entirely (balance can't be verified
+      // offline - see persistCaptureWithMetadata/persistFileWithMetadata).
+      // A retry is only ever attempted once we're back online, so check the
+      // real, current balance here first rather than spending a doomed
+      // transaction attempt and letting the chain reject it - and record
+      // *why* on every affected row, not just leave it silently pending.
+      await refreshWalletSuiBalance(force: true);
+      if ((_walletSuiBalanceMist ?? BigInt.zero) <
+          BigInt.from(AppConstants.minimumAttestationMistBalance)) {
+        final insufficientBalanceMessage =
+            'Your wallet needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} SUI before submitting an attestation. Add test SUI and try again.';
+        for (final record in pending) {
+          await _updateAttestationRecord(
+            record,
+            suiSubmissionStatus: 'PENDING_SUBMISSION',
+            suiErrorMessage: insufficientBalanceMessage,
+          );
+        }
+        notifyListeners();
+        return;
+      }
+
+      for (final record in pending) {
+        final signingKey = _sessionSigningKey;
+        if (!hasActiveSession || signingKey == null) {
+          break;
+        }
+
+        final updated = record.isFile
+            ? await _submitFileAttestation(
+                record,
+                sessionSigningKey: signingKey,
+                projectId: record.attestedProjectId,
+              )
+            : await _submitPhotoAttestation(
+                record,
+                sessionSigningKey: signingKey,
+                gpsLabel: record.capturedGpsLabel,
+                altitudeLabel: record.capturedAltitudeLabel,
+                projectId: record.attestedProjectId,
+              );
+
+        final seededVerification = _seedVerificationFor(updated);
+        _attestationVerifications = {
+          ..._attestationVerifications,
+          updated.captureId: seededVerification,
+        };
+        notifyListeners();
+        if (updated.isAttestationAnchored && !seededVerification.isVerified) {
+          unawaited(verifyAttestationOnChain(updated));
+        }
+      }
+    } finally {
+      _isRetryingPendingAttestations = false;
+    }
   }
 
   Future<void> dismissResetNotice() async {
@@ -482,6 +608,8 @@ class GraniteLakeController extends ChangeNotifier {
     _resetNotice = notice;
     _walletSuiBalanceMist = null;
     _isRefreshingWalletSuiBalance = false;
+    _offlineCaptureForced = false;
+    _gpsCaptureForcedNull = false;
 
     await _dataControllers.photoCapture.clear();
     await _dataControllers.uploadedFile.clear();
@@ -613,6 +741,12 @@ class GraniteLakeController extends ChangeNotifier {
     String? cameraLabel,
     String? cameraDetailsLabel,
     void Function(AttestationSubmissionProgress progress)? onProgress,
+    bool isOnline = true,
+    bool isForcedOffline = false,
+    String? internetNullReason,
+    bool hasGps = true,
+    bool isGpsForcedNull = false,
+    String? gpsNullReason,
   }) async {
     final identity = _identity;
     final session = _session;
@@ -634,11 +768,15 @@ class GraniteLakeController extends ChangeNotifier {
         'Your secure signing key is locked. Start a new session.',
       );
     }
+    // gps/altitude are only mandatory when a fix was actually available
+    // (hasGps) - offline-capture design doc §4a makes GPS optional the same
+    // way connectivity is.
     final missingFields = <String>[
       if (capturedAtUtc == null) 'captured_at',
       if (submittedAtUtc == null) 'submitted_at',
-      if (gpsLabel == null || gpsLabel.trim().isEmpty) 'gps',
-      if (altitudeLabel == null || altitudeLabel.trim().isEmpty) 'altitude',
+      if (hasGps && (gpsLabel == null || gpsLabel.trim().isEmpty)) 'gps',
+      if (hasGps && (altitudeLabel == null || altitudeLabel.trim().isEmpty))
+        'altitude',
       if (projectId == null || projectId.trim().isEmpty) 'project_id',
     ];
     if (missingFields.isNotEmpty) {
@@ -646,9 +784,19 @@ class GraniteLakeController extends ChangeNotifier {
         'Capture submission failed. Missing required fields: ${missingFields.join(', ')}.',
       );
     }
-    await refreshWalletSuiBalance(force: true);
-    if ((_walletSuiBalanceMist ?? BigInt.zero) <
-        BigInt.from(AppConstants.minimumAttestationMistBalance)) {
+    // Reads whatever balance is already cached rather than forcing a fresh
+    // RPC read, so local persistence doesn't depend on live connectivity
+    // (offline-capture design doc §6) - the real check still runs at actual
+    // submission time via _submitPhotoAttestation. Skipped entirely when
+    // this capture won't attempt a live submission anyway (offline, or
+    // forced offline): the cached balance can't be verified without a
+    // network call, and a device that's never been online yet (so nothing
+    // has ever populated the cache) must not be permanently blocked from
+    // queuing an offline capture just because the cache defaults to zero.
+    final willAttemptLiveSubmission = isOnline && !isForcedOffline;
+    if (willAttemptLiveSubmission &&
+        (_walletSuiBalanceMist ?? BigInt.zero) <
+            BigInt.from(AppConstants.minimumAttestationMistBalance)) {
       return AttestationActionResult.failure(
         'Your wallet needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} SUI before submitting an attestation. Add test SUI and try again.',
       );
@@ -671,28 +819,54 @@ class GraniteLakeController extends ChangeNotifier {
       cameraLabel: cameraLabel,
       cameraDetailsLabel: cameraDetailsLabel,
       onProgress: onProgress,
+      isOnline: isOnline,
+      isForcedOffline: isForcedOffline,
+      internetNullReason: internetNullReason,
+      hasGps: hasGps,
+      isGpsForcedNull: isGpsForcedNull,
+      gpsNullReason: gpsNullReason,
     );
     if (!result.isSuccess || result.record == null) {
       return result;
     }
 
     onProgress?.call(
-      const AttestationSubmissionProgress(
+      AttestationSubmissionProgress(
         stage: AttestationSubmissionStage.submittingToChain,
         state: AttestationSubmissionStageState.active,
-        message: 'Submitting the attestation transaction to Sui testnet.',
+        message: (isOnline && !isForcedOffline)
+            ? 'Submitting the attestation transaction to Sui testnet.'
+            : 'Queuing the capture for submission once connectivity returns.',
       ),
     );
-    final record = await _submitPhotoAttestation(
-      result.record!,
-      sessionSigningKey: sessionSigningKey,
-      gpsLabel: gpsLabel,
-      altitudeLabel: altitudeLabel,
-      projectId: projectId,
-    );
+    // Not effectively online (either no connectivity, or the crew forced
+    // offline mode despite having it) - skip the doomed network round trip
+    // here, at the *initial* attempt only. This must never be decided from
+    // the record's own persisted isOnline/isForcedOffline on a later retry
+    // attempt (retryPendingAttestations() calls _submitPhotoAttestation
+    // directly for exactly that reason) - those fields describe conditions
+    // at capture time, which by definition no longer hold once a retry is
+    // actually happening, and gating on them there made a queued row
+    // permanently unretryable.
+    final record = (isOnline && !isForcedOffline)
+        ? await _submitPhotoAttestation(
+            result.record!,
+            sessionSigningKey: sessionSigningKey,
+            gpsLabel: gpsLabel,
+            altitudeLabel: altitudeLabel,
+            projectId: projectId,
+          )
+        : await _updateAttestationRecord(
+            result.record!,
+            suiObjectId: _photoAttestationClaim?.userCapObjectId,
+            suiSubmissionStatus: 'PENDING_SUBMISSION',
+            suiErrorMessage: '',
+          );
     final submissionFailed = record.normalizedSuiSubmissionStatus.startsWith(
       'FAILED',
     );
+    final submissionQueued =
+        record.normalizedSuiSubmissionStatus == 'PENDING_SUBMISSION';
     onProgress?.call(
       AttestationSubmissionProgress(
         stage: AttestationSubmissionStage.submittingToChain,
@@ -701,6 +875,8 @@ class GraniteLakeController extends ChangeNotifier {
             : AttestationSubmissionStageState.completed,
         message: submissionFailed
             ? _attestationSubmissionFailureMessage(record)
+            : submissionQueued
+            ? 'Queued locally - will submit automatically once connectivity returns.'
             : 'Attestation transaction accepted by Sui.',
       ),
     );
@@ -721,9 +897,7 @@ class GraniteLakeController extends ChangeNotifier {
       ),
     ]..sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
     _syncAttestationHistory();
-    final seededVerification =
-        _attestationVerifications[record.captureId] ??
-        _localVerification(record);
+    final seededVerification = _seedVerificationFor(record);
     _attestationVerifications = {
       ..._attestationVerifications,
       record.captureId: seededVerification,
@@ -754,6 +928,9 @@ class GraniteLakeController extends ChangeNotifier {
     DateTime? submittedAtUtc,
     String? buildLabel,
     void Function(AttestationSubmissionProgress progress)? onProgress,
+    bool isOnline = true,
+    bool isForcedOffline = false,
+    String? internetNullReason,
   }) async {
     final identity = _identity;
     final session = _session;
@@ -797,9 +974,13 @@ class GraniteLakeController extends ChangeNotifier {
       );
     }
 
-    await refreshWalletSuiBalance(force: true);
-    if ((_walletSuiBalanceMist ?? BigInt.zero) <
-        BigInt.from(AppConstants.minimumAttestationMistBalance)) {
+    // Reads whatever balance is already cached rather than forcing a fresh
+    // RPC read, and skipped entirely when offline - see the matching
+    // comment in persistCaptureWithMetadata.
+    final willAttemptLiveSubmission = isOnline && !isForcedOffline;
+    if (willAttemptLiveSubmission &&
+        (_walletSuiBalanceMist ?? BigInt.zero) <
+            BigInt.from(AppConstants.minimumAttestationMistBalance)) {
       return AttestationActionResult.failure(
         'Your wallet needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} SUI before submitting an attestation. Add test SUI and try again.',
       );
@@ -822,26 +1003,43 @@ class GraniteLakeController extends ChangeNotifier {
       buildLabel: buildLabel,
       domain: claim.domain,
       onProgress: onProgress,
+      isOnline: isOnline,
+      isForcedOffline: isForcedOffline,
+      internetNullReason: internetNullReason,
     );
     if (!result.isSuccess || result.record == null) {
       return result;
     }
 
     onProgress?.call(
-      const AttestationSubmissionProgress(
+      AttestationSubmissionProgress(
         stage: AttestationSubmissionStage.submittingToChain,
         state: AttestationSubmissionStageState.active,
-        message: 'Submitting the file attestation transaction to Sui testnet.',
+        message: (isOnline && !isForcedOffline)
+            ? 'Submitting the file attestation transaction to Sui testnet.'
+            : 'Queuing the file for submission once connectivity returns.',
       ),
     );
-    final record = await _submitFileAttestation(
-      result.record!,
-      sessionSigningKey: sessionSigningKey,
-      projectId: projectId,
-    );
+    // See the matching comment in persistCaptureWithMetadata - this skip
+    // belongs only at the initial attempt, never inside
+    // _submitFileAttestation itself.
+    final record = (isOnline && !isForcedOffline)
+        ? await _submitFileAttestation(
+            result.record!,
+            sessionSigningKey: sessionSigningKey,
+            projectId: projectId,
+          )
+        : await _updateAttestationRecord(
+            result.record!,
+            suiObjectId: _photoAttestationClaim?.userCapObjectId,
+            suiSubmissionStatus: 'PENDING_SUBMISSION',
+            suiErrorMessage: '',
+          );
     final submissionFailed = record.normalizedSuiSubmissionStatus.startsWith(
       'FAILED',
     );
+    final submissionQueued =
+        record.normalizedSuiSubmissionStatus == 'PENDING_SUBMISSION';
     onProgress?.call(
       AttestationSubmissionProgress(
         stage: AttestationSubmissionStage.submittingToChain,
@@ -850,6 +1048,8 @@ class GraniteLakeController extends ChangeNotifier {
             : AttestationSubmissionStageState.completed,
         message: submissionFailed
             ? _attestationSubmissionFailureMessage(record)
+            : submissionQueued
+            ? 'Queued locally - will submit automatically once connectivity returns.'
             : 'File attestation transaction accepted by Sui.',
       ),
     );
@@ -870,9 +1070,7 @@ class GraniteLakeController extends ChangeNotifier {
       ),
     ]..sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
     _syncAttestationHistory();
-    final seededVerification =
-        _attestationVerifications[record.captureId] ??
-        _localVerification(record);
+    final seededVerification = _seedVerificationFor(record);
     _attestationVerifications = {
       ..._attestationVerifications,
       record.captureId: seededVerification,
@@ -918,6 +1116,10 @@ class GraniteLakeController extends ChangeNotifier {
         .syncPhotoAttestationContractConfig();
     _photoAttestationClaim = await _dataControllers.config
         .loadPhotoAttestationClaim();
+    _offlineCaptureForced = await _dataControllers.config
+        .loadOfflineCaptureForced();
+    _gpsCaptureForcedNull = await _dataControllers.config
+        .loadGpsCaptureForcedNull();
 
     _employee = employeeRow == null
         ? null
@@ -1015,6 +1217,13 @@ class GraniteLakeController extends ChangeNotifier {
         projectId: projectId?.trim().isNotEmpty == true
             ? projectId!.trim()
             : 'UNASSIGNED',
+        capturedAtMs: record.capturedAt.millisecondsSinceEpoch,
+        isOnline: record.isOnline,
+        isForcedOffline: record.isForcedOffline,
+        internetNullReasonHashHex: record.internetNullReasonHash,
+        hasGps: record.hasGps,
+        isGpsForcedNull: record.isGpsForcedNull,
+        gpsNullReasonHashHex: record.gpsNullReasonHash,
       );
       final updated = await _updateAttestationRecord(
         record,
@@ -1022,6 +1231,7 @@ class GraniteLakeController extends ChangeNotifier {
         suiObjectId: claim.userCapObjectId,
         suiSubmissionStatus: submission.status,
         suiErrorMessage: '',
+        incrementAttempt: true,
       );
       final verification = submission.verification;
       if (verification != null) {
@@ -1050,17 +1260,63 @@ class GraniteLakeController extends ChangeNotifier {
       return _updateAttestationRecord(
         record,
         suiObjectId: claim.userCapObjectId,
-        suiSubmissionStatus: 'FAILED_SUBMISSION',
+        suiSubmissionStatus: _isNetworkClassFailure(error)
+            ? 'PENDING_SUBMISSION'
+            : 'FAILED_SUBMISSION',
         suiErrorMessage: error.userMessage,
+        incrementAttempt: true,
       );
     } catch (error) {
       return _updateAttestationRecord(
         record,
         suiObjectId: claim.userCapObjectId,
-        suiSubmissionStatus: 'FAILED_SUBMISSION',
+        suiSubmissionStatus: _isNetworkClassFailure(error)
+            ? 'PENDING_SUBMISSION'
+            : 'FAILED_SUBMISSION',
         suiErrorMessage: 'The attestation transaction failed: $error',
+        incrementAttempt: true,
       );
     }
+  }
+
+  // Treats a Sui object-version race (a stale gas-coin reference from
+  // submitting several queued attestations back-to-back - see
+  // photo_attestation_service.dart's own 3-attempt retry for this) the same
+  // as a network failure here too: not a real rejection, so it must stay
+  // PENDING_SUBMISSION rather than terminate as FAILED_SUBMISSION. That
+  // keeps it in the same queue as every other pending row, picked up by the
+  // existing periodic sweep infrastructure (connectivity-restored trigger,
+  // app-foreground trigger, and app.dart's 20s fallback poll) - an
+  // unbounded, properly-paced retry until it succeeds, rather than a
+  // second bespoke queue duplicating that same machinery.
+  bool _isNetworkClassFailure(Object error) {
+    if (isTransientNetworkError(error)) {
+      return true;
+    }
+    if (error is PhotoAttestationException) {
+      return looksLikeTransientNetworkFailure(error.rawMessage) ||
+          looksLikeTransientNetworkFailure(error.userMessage) ||
+          looksLikeObjectVersionRaceFailure(error.rawMessage) ||
+          looksLikeObjectVersionRaceFailure(error.userMessage);
+    }
+    return looksLikeTransientNetworkFailure('$error') ||
+        looksLikeObjectVersionRaceFailure('$error');
+  }
+
+  /// A `FAILED_SUBMISSION` row whose recorded error was actually a
+  /// network/object-version-race failure - i.e. one that predates this
+  /// classification living in [_isNetworkClassFailure] (or that otherwise
+  /// slipped through), so it's stuck permanently excluded from the normal
+  /// PENDING_SUBMISSION sweep for no good reason. The retry sweep also
+  /// picks these up, so a row doesn't stay stranded just because it failed
+  /// once before this classification existed.
+  bool _isRecoverableFailure(AttestationRecord record) {
+    if (!record.isAttestationFailed) {
+      return false;
+    }
+    final message = record.suiErrorMessage;
+    return looksLikeTransientNetworkFailure(message) ||
+        looksLikeObjectVersionRaceFailure(message);
   }
 
   Future<AttestationRecord> _submitFileAttestation(
@@ -1093,7 +1349,10 @@ class GraniteLakeController extends ChangeNotifier {
         projectId: projectId?.trim().isNotEmpty == true
             ? projectId!.trim()
             : 'UNASSIGNED',
-        timestampMs: record.effectiveSubmittedAt.millisecondsSinceEpoch,
+        capturedAtMs: record.capturedAt.millisecondsSinceEpoch,
+        isOnline: record.isOnline,
+        isForcedOffline: record.isForcedOffline,
+        internetNullReasonHashHex: record.internetNullReasonHash,
       );
       final updated = await _updateAttestationRecord(
         record,
@@ -1101,6 +1360,7 @@ class GraniteLakeController extends ChangeNotifier {
         suiObjectId: claim.userCapObjectId,
         suiSubmissionStatus: submission.status,
         suiErrorMessage: '',
+        incrementAttempt: true,
       );
       final verification = submission.verification;
       if (verification != null) {
@@ -1128,15 +1388,21 @@ class GraniteLakeController extends ChangeNotifier {
       return _updateAttestationRecord(
         record,
         suiObjectId: claim.userCapObjectId,
-        suiSubmissionStatus: 'FAILED_SUBMISSION',
+        suiSubmissionStatus: _isNetworkClassFailure(error)
+            ? 'PENDING_SUBMISSION'
+            : 'FAILED_SUBMISSION',
         suiErrorMessage: error.userMessage,
+        incrementAttempt: true,
       );
     } catch (error) {
       return _updateAttestationRecord(
         record,
         suiObjectId: claim.userCapObjectId,
-        suiSubmissionStatus: 'FAILED_SUBMISSION',
+        suiSubmissionStatus: _isNetworkClassFailure(error)
+            ? 'PENDING_SUBMISSION'
+            : 'FAILED_SUBMISSION',
         suiErrorMessage: 'The attestation transaction failed: $error',
+        incrementAttempt: true,
       );
     }
   }
@@ -1281,6 +1547,11 @@ class GraniteLakeController extends ChangeNotifier {
         };
       }
     } catch (error) {
+      // String-based, not the type-based classifier: getTransaction (see
+      // sui_graphql_service.dart) throws a plain StateError with an
+      // "...may not be indexed yet" message on indexer lag, which isn't a
+      // SocketException/TimeoutException/http.ClientException by type, so
+      // only the message-keyword check catches it.
       if (_shouldRetryChainVerification('$error') &&
           _scheduleVerificationRetry(capture)) {
         _attestationVerifications = {
@@ -1323,18 +1594,7 @@ class GraniteLakeController extends ChangeNotifier {
   }
 
   bool _shouldRetryChainVerification(String? failureReason) {
-    final reason = (failureReason ?? '').trim().toLowerCase();
-    if (reason.isEmpty) {
-      return false;
-    }
-    return reason.contains('event not found') ||
-        reason.contains('transaction block not found') ||
-        reason.contains('not found for digest') ||
-        reason.contains('not indexed') ||
-        reason.contains('temporar') ||
-        reason.contains('timeout') ||
-        reason.contains('socket') ||
-        reason.contains('network');
+    return looksLikeTransientNetworkFailure(failureReason);
   }
 
   bool _scheduleVerificationRetry(AttestationRecord capture) {
@@ -1413,12 +1673,38 @@ class GraniteLakeController extends ChangeNotifier {
     );
   }
 
+  /// Seeds/refreshes the local (optimistic, not-yet-on-chain-checked)
+  /// verification entry for [capture]. Only reuses whatever's already
+  /// cached for this captureId when that entry reflects a *real* resolved
+  /// check (verified/mismatched/failed from an actual verifyAttestationOnChain
+  /// call) - never when it's itself just a local pending placeholder, since
+  /// that placeholder was seeded against whatever suiSubmissionStatus held
+  /// at the time and goes stale the moment that status changes (e.g. a
+  /// PENDING_SUBMISSION row that a queue retry just resolved to
+  /// SUCCESS/FAILED_SUBMISSION - reusing the old placeholder verbatim would
+  /// keep showing "PENDING" in History forever, since nothing else was
+  /// ever going to overwrite it).
+  AttestationChainVerificationRecord _seedVerificationFor(
+    AttestationRecord capture,
+  ) {
+    final existing = _attestationVerifications[capture.captureId];
+    if (existing != null && !existing.isPending) {
+      return existing;
+    }
+    return _localVerification(capture);
+  }
+
   Future<AttestationRecord> _updateAttestationRecord(
     AttestationRecord record, {
     String? suiTxDigest,
     String? suiObjectId,
     String? suiSubmissionStatus,
     String? suiErrorMessage,
+    // App-local only, never submitted on-chain (migrations.dart version-12).
+    // Set true from _submitPhotoAttestation/_submitFileAttestation whenever
+    // they actually make a network attempt (success or failure alike) -
+    // never from the offline-skip path, which never tried at all.
+    bool incrementAttempt = false,
   }) async {
     final updated = AttestationRecord(
       captureId: record.captureId,
@@ -1444,6 +1730,20 @@ class GraniteLakeController extends ChangeNotifier {
       fileExtension: record.fileExtension,
       previewKind: record.previewKind,
       storageMode: record.storageMode,
+      isOnline: record.isOnline,
+      isForcedOffline: record.isForcedOffline,
+      internetNullReason: record.internetNullReason,
+      internetNullReasonHash: record.internetNullReasonHash,
+      hasGps: record.hasGps,
+      isGpsForcedNull: record.isGpsForcedNull,
+      gpsNullReason: record.gpsNullReason,
+      gpsNullReasonHash: record.gpsNullReasonHash,
+      submissionAttemptCount: incrementAttempt
+          ? record.submissionAttemptCount + 1
+          : record.submissionAttemptCount,
+      lastAttemptAt: incrementAttempt
+          ? DateTime.now().toUtc()
+          : record.lastAttemptAt,
     );
     if (updated.isFile) {
       final uploadedFile = UploadedFileRecord.fromAttestationRecord(updated);

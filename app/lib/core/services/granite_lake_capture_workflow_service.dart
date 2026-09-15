@@ -34,6 +34,12 @@ class GraniteLakeCaptureWorkflowService {
     String? cameraLabel,
     String? cameraDetailsLabel,
     void Function(AttestationSubmissionProgress progress)? onProgress,
+    bool isOnline = true,
+    bool isForcedOffline = false,
+    String? internetNullReason,
+    bool hasGps = true,
+    bool isGpsForcedNull = false,
+    String? gpsNullReason,
   }) async {
     var currentStage = AttestationSubmissionStage.signing;
     try {
@@ -65,6 +71,12 @@ class GraniteLakeCaptureWorkflowService {
         altitudeLabel: altitudeLabel,
         cameraLabel: cameraLabel,
         cameraDetailsLabel: cameraDetailsLabel,
+        isOnline: isOnline,
+        isForcedOffline: isForcedOffline,
+        internetNullReason: internetNullReason,
+        hasGps: hasGps,
+        isGpsForcedNull: isGpsForcedNull,
+        gpsNullReason: gpsNullReason,
       );
 
       onProgress?.call(
@@ -124,6 +136,9 @@ class GraniteLakeCaptureWorkflowService {
     String? buildLabel,
     String? domain,
     void Function(AttestationSubmissionProgress progress)? onProgress,
+    bool isOnline = true,
+    bool isForcedOffline = false,
+    String? internetNullReason,
   }) async {
     var currentStage = AttestationSubmissionStage.signing;
     try {
@@ -154,6 +169,9 @@ class GraniteLakeCaptureWorkflowService {
         submittedAtUtc: submittedAtUtc,
         buildLabel: buildLabel,
         forcedRecordId: provisionalId,
+        isOnline: isOnline,
+        isForcedOffline: isForcedOffline,
+        internetNullReason: internetNullReason,
         extraProofPayload: <String, dynamic>{
           'domain': domain,
           'fileSizeBytes': fileSizeBytes,
@@ -223,6 +241,12 @@ class GraniteLakeCaptureWorkflowService {
     String? cameraDetailsLabel,
     String? forcedRecordId,
     Map<String, dynamic>? extraProofPayload,
+    bool isOnline = true,
+    bool isForcedOffline = false,
+    String? internetNullReason,
+    bool hasGps = true,
+    bool isGpsForcedNull = false,
+    String? gpsNullReason,
   }) async {
     final capturedAt = capturedAtUtc?.toUtc() ?? DateTime.now().toUtc();
     final captureId = forcedRecordId ?? '${capturedAt.microsecondsSinceEpoch}';
@@ -241,6 +265,19 @@ class GraniteLakeCaptureWorkflowService {
     final imageBytes = await destinationImageFile.readAsBytes();
     final imageHash = await _sha256.hash(imageBytes);
     final imageSha256 = _hex(imageHash.bytes);
+    // Computed once, here, at the same moment as imageSha256 - not deferred
+    // to whenever the transaction actually gets submitted (which, for a
+    // queued offline capture, could be much later). Folding this into
+    // signedMetadata below locks it into the same signature that already
+    // covers photo_hash/gpsLabel/etc., so a later edit to the plaintext
+    // reason column is detectable against what was actually signed at
+    // capture time.
+    final internetNullReasonHash = internetNullReason == null
+        ? null
+        : _hex((await _sha256.hash(utf8.encode(internetNullReason))).bytes);
+    final gpsNullReasonHash = gpsNullReason == null
+        ? null
+        : _hex((await _sha256.hash(utf8.encode(gpsNullReason))).bytes);
     final submittedAt = submittedAtUtc?.toUtc();
     final fileSizeBytes = imageBytes.length;
     final previewKind = _previewKindFor(
@@ -281,6 +318,28 @@ class GraniteLakeCaptureWorkflowService {
       'projectId': projectId,
       'tags': tags,
       'note': note,
+      // Offline-capture design doc §8's narrative provenance: folded into
+      // the signed bundle the same way gpsLabel/altitudeLabel already are,
+      // so the raw connectivity/GPS state at capture time is part of the
+      // cryptographic signature too, not just a plain DB column.
+      'isOnline': isOnline,
+      'isForcedOffline': isForcedOffline,
+      ...?internetNullReason == null
+          ? null
+          : {
+              'internetNullReason': internetNullReason,
+              'internetNullReasonHash': internetNullReasonHash,
+            },
+      if (assetType == AttestationAssetType.photo) ...{
+        'hasGps': hasGps,
+        'isGpsForcedNull': isGpsForcedNull,
+        ...?gpsNullReason == null
+            ? null
+            : {
+                'gpsNullReason': gpsNullReason,
+                'gpsNullReasonHash': gpsNullReasonHash,
+              },
+      },
       ...?extraProofPayload,
     };
 
@@ -314,6 +373,20 @@ class GraniteLakeCaptureWorkflowService {
       fileExtension: fileExtension,
       previewKind: previewKind,
       storageMode: 'LOCAL_ONLY',
+      isOnline: isOnline,
+      isForcedOffline: isForcedOffline,
+      internetNullReason: internetNullReason,
+      internetNullReasonHash: internetNullReasonHash,
+      hasGps: assetType == AttestationAssetType.photo ? hasGps : true,
+      isGpsForcedNull: assetType == AttestationAssetType.photo
+          ? isGpsForcedNull
+          : false,
+      gpsNullReason: assetType == AttestationAssetType.photo
+          ? gpsNullReason
+          : null,
+      gpsNullReasonHash: assetType == AttestationAssetType.photo
+          ? gpsNullReasonHash
+          : null,
     );
 
     final sourceFile = File(sourcePath);

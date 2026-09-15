@@ -129,10 +129,38 @@ abstract final class AppConstants {
 
   static const String defaultPhotoAttestationModule = 'photo_attestation';
   static const String defaultPhotoAttestationPackageId =
-      '0xf4b83a02ad29b78266f8b1a39f5b533bde6bd5ef00eb434db46c3f7be29639db';
+      '0x6f174dfdde327fff0ad51867053b5459360cd2905c3b1657fce979649d4294e6';
   static const String defaultPhotoAttestationRegistryId =
-      '0xde8b9f476c91dbdb05238c656a6ea3aa9f670e3b732e3e5d48628f5d2b66122d';
+      '0x6b73e5ab8ad7ed73c00fdf5123a660f70030384ebf4f602e259e151f301af543';
   static const double minimumAttestationSuiBalance = 0.004;
   static const int minimumAttestationMistBalance = 4000000;
   static const int maximumAttestationTimeGapMinutes = 15;
+
+  // ConnectivityHeuristicService (offline-capture design doc §5). Conservative
+  // defaults, meant to be tuned against real field data rather than guessed
+  // precisely up front.
+  //
+  // NOTE: a `minimumSufficientBandwidthKbps` threshold is intentionally not
+  // defined yet. Estimating throughput from the existing `/utc` probe
+  // (bytes ÷ elapsed time) is unreliable at this payload's size — a few
+  // dozen bytes divided by round-trip time is dominated by TCP/TLS
+  // handshake overhead, not real throughput. The design's other suggested
+  // signal, Android's NetworkCapabilities.getLinkDownstreamBandwidthKbps()
+  // via a platform channel, needs real native code and is deferred; add
+  // this constant back when that lands. For now, classification is
+  // reachability + latency only.
+  //
+  // A probe that succeeds but exceeds this p50 latency counts as `degraded`,
+  // since a connection that's technically up but slow to respond makes a
+  // crew wait through the exact delay offline mode exists to avoid.
+  static const Duration connectivityDegradedLatencyThreshold = Duration(
+    seconds: 2,
+  );
+  static const int connectivityConsecutiveFailuresForOffline = 2;
+  static const int connectivityConsecutiveConfirmationsForLabelFlip = 2;
+  static const Duration connectivityPollIntervalDegraded = Duration(
+    seconds: 10,
+  );
+  static const Duration connectivityPollIntervalOnline = Duration(seconds: 30);
+  static const Duration connectivityPollIntervalOffline = Duration(seconds: 75);
 }
