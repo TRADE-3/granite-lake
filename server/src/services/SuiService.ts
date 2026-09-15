@@ -2,6 +2,7 @@ import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Transaction } from "@mysten/sui/transactions";
+import { GrpcWebFetchTransport } from "@protobuf-ts/grpcweb-transport";
 import type { AppEnv } from "../config/env.js";
 import { resolveSecretValue } from "./VaultService.js";
 
@@ -19,6 +20,50 @@ const TRANSIENT_NETWORK_ERROR_CODES = new Set([
   "EPIPE",
   "ECONNABORTED",
 ]);
+
+// Walks the full error chain (the error itself, then `.cause`, `.cause.cause`,
+// ...), including stack traces. Used to log the real failure before it gets
+// discarded upstream - see suiRpcFetch below.
+function serializeErrorChain(error: unknown, maxDepth = 6): Array<Record<string, unknown>> {
+  const chain: Array<Record<string, unknown>> = [];
+  let current: unknown = error;
+
+  while (current instanceof Error && chain.length < maxDepth) {
+    chain.push({
+      name: current.name,
+      message: current.message,
+      code: (current as NodeJS.ErrnoException).code,
+      stack: current.stack,
+    });
+    current = (current as { cause?: unknown }).cause;
+  }
+
+  return chain.length > 0 ? chain : [{ value: String(error) }];
+}
+
+// @protobuf-ts/grpcweb-transport's unary()/serverStreaming() catch the real
+// fetch rejection and rethrow `new RpcError(reason.message, ...)`, dropping
+// `reason` (and its `.cause` chain, errno code, stack) entirely - see
+// node_modules/@protobuf-ts/grpcweb-transport/.../grpc-web-transport.js. That
+// leaves us diagnosing "fetch failed" with no way to tell ECONNRESET from
+// ETIMEDOUT from a DNS failure. Wrapping fetch here logs the real error at
+// the source, before that swallow happens.
+const suiRpcFetch: typeof fetch = (input, init) => {
+  const startedAt = Date.now();
+  return fetch(input, init).catch((error: unknown) => {
+    console.error(
+      JSON.stringify({
+        level: 50,
+        time: Date.now(),
+        msg: "Sui RPC fetch failed",
+        url: String(input),
+        durationMs: Date.now() - startedAt,
+        errorChain: serializeErrorChain(error),
+      })
+    );
+    throw error;
+  });
+};
 
 // Undici and the gRPC-web transport both collapse real network failures into
 // a generic "fetch failed" / RpcError a few `.cause` levels deep.
@@ -42,9 +87,19 @@ async function withNetworkRetry<T>(fn: () => Promise<T>, attempts = 3, baseDelay
     try {
       return await fn();
     } catch (error) {
-      if (attempt === attempts || !isTransientNetworkError(error)) {
-        throw error;
-      }
+      const willRetry = attempt < attempts && isTransientNetworkError(error);
+      console.error(
+        JSON.stringify({
+          level: willRetry ? 40 : 50,
+          time: Date.now(),
+          msg: willRetry ? "Sui RPC call failed, retrying" : "Sui RPC call failed, giving up",
+          attempt,
+          attempts,
+          errorChain: serializeErrorChain(error),
+        })
+      );
+
+      if (!willRetry) throw error;
       await new Promise((resolve) => setTimeout(resolve, baseDelayMs * 2 ** (attempt - 1)));
     }
   }
@@ -62,7 +117,14 @@ export class SuiService {
   constructor(private readonly appEnv: AppEnv) {
     this.client = new SuiGrpcClient({
       network: appEnv.SUI_NETWORK,
-      baseUrl: appEnv.SUI_RPC_URL,
+      // Built manually (rather than passing baseUrl/fetch straight to
+      // SuiGrpcClient) because the installed @mysten/sui only forwards
+      // `baseUrl`/`fetchInit` to its internal transport, silently dropping a
+      // top-level `fetch` option despite the type allowing it.
+      transport: new GrpcWebFetchTransport({
+        baseUrl: appEnv.SUI_RPC_URL,
+        fetch: suiRpcFetch,
+      }),
     });
   }
 
@@ -185,7 +247,6 @@ export class SuiService {
     });
 
     // Check for failed transaction
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (result.$kind === "FailedTransaction") {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const status = (result as any).FailedTransaction;

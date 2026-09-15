@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-process.env.DOMAIN = "acme.com";
+process.env.DOMAINS = "acme.com";
 process.env.CLIENT_ID = "acme";
 process.env.ADMIN_WALLET = "0xabc";
 process.env.ADMIN_API_KEY = "admin-key";
@@ -39,6 +39,8 @@ vi.mock("../src/db/repositories.js", () => ({
   enableUser: vi.fn(),
   findOtpSession: vi.fn(),
   listUsers: vi.fn(async () => []),
+  isAcceptedEmailDomain: vi.fn((email: string) => email.trim().toLowerCase().endsWith("@acme.com")),
+  listAcceptedEmailDomains: vi.fn(() => ["acme.com"]),
 }));
 
 const { buildApp } = await import("../src/app.js");

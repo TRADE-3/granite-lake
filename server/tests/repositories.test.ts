@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 
-process.env.DOMAIN = "acme.com";
+process.env.DOMAINS = "acme.com";
 process.env.CLIENT_ID = "acme";
 process.env.ADMIN_WALLET = "0xabc";
 process.env.ADMIN_API_KEY = "admin-key";

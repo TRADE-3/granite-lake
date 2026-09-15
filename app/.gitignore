@@ -35,6 +35,7 @@ migrate_working_dir/
 
 # Backend/app API key config passed via --dart-define-from-file (see README)
 secrets.json
+*.env.local
 
 # Symbolication related
 app.*.symbols

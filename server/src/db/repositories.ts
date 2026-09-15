@@ -79,7 +79,7 @@ export async function createOtpSession(input: {
 
   const session: OtpSessionRecord = {
     userId,
-    domain: configuredDomain(),
+    domain: configuredDomainForEmail(userEmail),
     userEmail,
     userWallet: null,
     adminWallet: configuredAdminWallet(),
@@ -281,7 +281,7 @@ export async function disableUser(userId: string): Promise<UserRecord | null> {
   }
 
   const disableUserTxDigest = await suiService.disableUser({
-    domain: configuredDomain(),
+    domain: configuredDomainForEmail(existing.userEmail),
     userWallet: existing.userWallet,
   });
 
@@ -322,7 +322,7 @@ export async function enableUser(userId: string): Promise<UserRecord | null> {
   }
 
   const enableUserTxDigest = await suiService.enableUser({
-    domain: configuredDomain(),
+    domain: configuredDomainForEmail(existing.userEmail),
     userWallet: existing.userWallet,
   });
 
@@ -410,7 +410,7 @@ export async function completeOtpSession(input: {
   }
 
   const addUserResult = await suiService.addUser({
-    domain: configuredDomain(),
+    domain: configuredDomainForEmail(session.userEmail),
     userWallet: normalizeWallet(input.userWallet),
   });
 
@@ -461,8 +461,50 @@ function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function configuredDomain(): string {
-  return normalizeDomain(env.DOMAIN);
+function configuredDomains(): string[] {
+  return env.DOMAINS.map(normalizeDomain);
+}
+
+function configuredEmailDomainAliases(): Record<string, string> {
+  return env.EMAIL_DOMAIN_ALIASES;
+}
+
+// Resolves an email domain to its registry domain via EMAIL_DOMAIN_ALIASES,
+// falling back to itself. Null if the result isn't a configured domain.
+function registeredDomainForEmailDomain(emailDomain: string): string | null {
+  const normalized = normalizeDomain(emailDomain);
+  const aliasTarget = configuredEmailDomainAliases()[normalized];
+  const registeredDomain = normalizeDomain(aliasTarget ?? normalized);
+
+  return configuredDomains().includes(registeredDomain) ? registeredDomain : null;
+}
+
+function acceptedEmailDomains(): string[] {
+  return Array.from(new Set([...configuredDomains(), ...Object.keys(configuredEmailDomainAliases())]));
+}
+
+export function isAcceptedEmailDomain(email: string): boolean {
+  const normalized = normalizeEmail(email);
+  const atIndex = normalized.lastIndexOf("@");
+  const emailDomain = atIndex === -1 ? "" : normalized.slice(atIndex + 1);
+
+  return registeredDomainForEmailDomain(emailDomain) !== null;
+}
+
+export function listAcceptedEmailDomains(): string[] {
+  return acceptedEmailDomains();
+}
+
+function configuredDomainForEmail(email: string): string {
+  const atIndex = email.lastIndexOf("@");
+  const emailDomain = atIndex === -1 ? "" : email.slice(atIndex + 1);
+  const registeredDomain = registeredDomainForEmailDomain(emailDomain);
+
+  if (!registeredDomain) {
+    throw new Error(`user_email must belong to ${acceptedEmailDomains().join(", ")}.`);
+  }
+
+  return registeredDomain;
 }
 
 function configuredAdminWallet(): string {
@@ -470,25 +512,23 @@ function configuredAdminWallet(): string {
 }
 
 function assertConfiguredDomain(domain: string): void {
-  if (normalizeDomain(domain) !== configuredDomain()) {
-    throw new Error(`This container is configured for ${configuredDomain()}, not ${domain}.`);
+  const configuredDomainsLst = configuredDomains();
+
+  if (!configuredDomainsLst.includes(normalizeDomain(domain))) {
+    throw new Error(`This container is configured for ${configuredDomainsLst.join(", ")}, not ${domain}.`);
   }
 }
 
 function assertConfiguredEmailDomain(email: string): void {
-  const normalized = normalizeEmail(email);
-  const atIndex = normalized.lastIndexOf("@");
-  const emailDomain = atIndex === -1 ? "" : normalized.slice(atIndex + 1);
-
-  if (emailDomain !== configuredDomain()) {
-    throw new Error(`user_email must belong to ${configuredDomain()}.`);
+  if (!isAcceptedEmailDomain(email)) {
+    throw new Error(`user_email must belong to ${acceptedEmailDomains().join(", ")}.`);
   }
 }
 
 function withConfiguredOtpFields(session: Omit<OtpSessionRecord, "domain" | "adminWallet">): OtpSessionRecord {
   return {
     ...session,
-    domain: configuredDomain(),
+    domain: configuredDomainForEmail(session.userEmail),
     adminWallet: configuredAdminWallet(),
   };
 }
@@ -496,7 +536,7 @@ function withConfiguredOtpFields(session: Omit<OtpSessionRecord, "domain" | "adm
 function withConfiguredUserFields(user: Omit<UserRecord, "domain" | "adminWallet">): UserRecord {
   return {
     ...user,
-    domain: configuredDomain(),
+    domain: configuredDomainForEmail(user.userEmail),
     adminWallet: configuredAdminWallet(),
   };
 }

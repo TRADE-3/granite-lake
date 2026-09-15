@@ -2,52 +2,53 @@ import 'package:flutter/material.dart';
 
 import '../state/granite_lake_controller.dart';
 
+/// Trade3 brand palette. See Work/T3/design.md for the source design system.
 abstract final class AppColorsDark {
-  static const Color actionFill = Color(0xFFC2C8FF);
-  static const Color actionText = Color(0xFF1F3E99);
-  static const Color background = Color(0xFF0A0A0A);
-  static const Color surface = Color(0xFF141414);
-  static const Color surfaceElevated = Color(0xFF1E1E1E);
-  static const Color surfaceOverlay = Color(0xFF252525);
-  static const Color border = Color(0xFF2A2A2A);
-  static const Color borderActive = Color(0xFF3A3A3A);
-  static const Color textPrimary = Color(0xFFFFFFFF);
-  static const Color textSecondary = Color(0xFF8A8A8A);
-  static const Color textMuted = Color(0xFF4A4A4A);
-  static const Color textSuccess = Color(0xFF00C853);
-  static const Color textWarning = Color(0xFFC34100);
-  static const Color statusActive = Color(0xFF00C853);
-  static const Color statusEncrypt = Color(0xFF2E5BFF);
-  static const Color statusError = Color(0xFFFF3B3B);
-  static const Color scrim = Color(0xCC0A0A0A);
+  static const Color actionFill = Color(0xFF3B128D); // violet-500
+  static const Color actionText = Color(0xFFFFFFFF);
+  static const Color background = Color(0xFF060430); // navy-500
+  static const Color surface = Color(0xFF10093A); // bg-tertiary (dark)
+  static const Color surfaceElevated = Color(0xFF0B0840); // bg-secondary (dark)
+  static const Color surfaceOverlay = Color(0xFF0F0430); // violet-900
+  static const Color border = Color(0xFF1A1660); // border-default (dark)
+  static const Color borderActive = Color(0xFF260A62); // violet-700
+  static const Color textPrimary = Color(0xFFEEEDF8);
+  static const Color textSecondary = Color(0xFF9997C5);
+  static const Color textMuted = Color(0xFF5D5A8A);
+  static const Color textSuccess = Color(0xFF34D399);
+  static const Color textWarning = Color(0xFFFB6E4C); // orange-400
+  static const Color statusActive = Color(0xFF34D399);
+  static const Color statusEncrypt = Color(0xFF8F61D9); // violet-300
+  static const Color statusError = Color(0xFFF87171);
+  static const Color scrim = Color(0xCC060430);
 }
 
 abstract final class AppColorsLight {
-  static const Color actionFill = Color(0xFF2E5BFF);
+  static const Color actionFill = Color(0xFF3B128D); // violet-500
   static const Color actionText = Color(0xFFFFFFFF);
-  static const Color background = Color(0xFFFAFAFA);
-  static const Color surface = Color(0xFFF5F5F5);
-  static const Color surfaceElevated = Color(0xFFFFFFFF);
-  static const Color surfaceOverlay = Color(0xFFF0F0F0);
-  static const Color border = Color(0xFFE0E0E0);
-  static const Color borderActive = Color(0xFFCCCCCC);
-  static const Color textPrimary = Color(0xFF1F1F1F);
-  static const Color textSecondary = Color(0xFF616161);
-  static const Color textMuted = Color(0xFF9E9E9E);
-  static const Color textSuccess = Color(0xFF00C853);
-  static const Color textWarning = Color(0xFFC34100);
-  static const Color statusActive = Color(0xFF00C853);
-  static const Color statusEncrypt = Color(0xFF2E5BFF);
-  static const Color statusError = Color(0xFFFF3B3B);
-  static const Color scrim = Color(0xCC1F1F1F);
+  static const Color background = Color(0xFFFDF5EF); // cream-100
+  static const Color surface = Color(0xFFFAE9DA); // cream-200 (bg-tertiary)
+  static const Color surfaceElevated = Color(0xFFFFFFFF); // bg-secondary
+  static const Color surfaceOverlay = Color(0xFFF0EAFA); // violet-50
+  static const Color border = Color(0xFFF5D7BF); // cream-300 (border-default)
+  static const Color borderActive = Color(0xFFB898E9); // violet-200
+  static const Color textPrimary = Color(0xFF060430); // navy-500
+  static const Color textSecondary = Color(0xFF4A4870);
+  static const Color textMuted = Color(0xFF8885AA);
+  static const Color textSuccess = Color(0xFF059669);
+  static const Color textWarning = Color(0xFFAE2D10); // orange-700
+  static const Color statusActive = Color(0xFF059669);
+  static const Color statusEncrypt = Color(0xFF3B128D); // violet-500
+  static const Color statusError = Color(0xFF991B1B);
+  static const Color scrim = Color(0xCC060430);
 }
 
 abstract final class AppColors {
   // Brand palette
-  static const Color primary = Color(0xFF2E5BFF);
-  static const Color primaryDim = Color(0xFF1A3BCC);
-  static const Color secondary = Color(0xFF00C853);
-  static const Color tertiary = Color(0xFFC34100);
+  static const Color primary = Color(0xFF3B128D); // violet-500
+  static const Color primaryDim = Color(0xFF310E7A); // violet-600
+  static const Color secondary = Color(0xFFF75835); // orange-500 (accent)
+  static const Color tertiary = Color(0xFFD43E1D); // orange-600
 
   static bool get _isDarkMode =>
       GraniteLakeController.current?.isDarkMode ?? false;
