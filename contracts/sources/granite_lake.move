@@ -1,4 +1,5 @@
 module granite_lake::photo_attestation {
+    use sui::clock::{Self, Clock};
     use sui::event;
     use sui::object::{Self, UID};
     use sui::table::{Self, Table};
@@ -64,6 +65,17 @@ module granite_lake::photo_attestation {
     // Carries domain so the verifier can read attribution straight from the
     // event instead of reconstructing it from whichever capability the
     // attesting wallet currently happens to hold (see F-05).
+    //
+    // captured_at is client-supplied (a synced-offset fallback when no live
+    // clock was reachable at capture time); attested_at is chain-derived via
+    // sui::clock so it can't be spoofed by the client. is_online/
+    // is_forced_offline record the device's connectivity state and whether
+    // the offline path was a deliberate override, so a verifier can read a
+    // capture's offline provenance directly off the event. Internet and GPS
+    // are each independently optional; whenever one is null, the client is
+    // required to supply a reason, hashed into internet_null_reason_hash /
+    // gps_null_reason_hash (empty when the corresponding field is present) -
+    // the plaintext reason itself is never stored on-chain, only its hash.
     public struct PhotoAttested has copy, drop {
         photo_hash: vector<u8>,
         gps: vector<u8>,
@@ -71,6 +83,14 @@ module granite_lake::photo_attestation {
         project_id: vector<u8>,
         user_wallet: address,
         domain: vector<u8>,
+        captured_at: u64,
+        attested_at: u64,
+        is_online: bool,
+        is_forced_offline: bool,
+        internet_null_reason_hash: vector<u8>,
+        has_gps: bool,
+        is_gps_forced_null: bool,
+        gps_null_reason_hash: vector<u8>,
     }
 
     public struct FileAttested has copy, drop {
@@ -79,6 +99,11 @@ module granite_lake::photo_attestation {
         file_id: vector<u8>,
         project_id: vector<u8>,
         domain: vector<u8>,
+        captured_at: u64,
+        attested_at: u64,
+        is_online: bool,
+        is_forced_offline: bool,
+        internet_null_reason_hash: vector<u8>,
     }
 
     // Emitted by set_domain_admin so a key rotation is auditable the same
@@ -231,6 +256,14 @@ module granite_lake::photo_attestation {
         gps: vector<u8>,
         altitude: vector<u8>,
         project_id: vector<u8>,
+        captured_at: u64,
+        is_online: bool,
+        is_forced_offline: bool,
+        internet_null_reason_hash: vector<u8>,
+        has_gps: bool,
+        is_gps_forced_null: bool,
+        gps_null_reason_hash: vector<u8>,
+        clock: &Clock,
         ctx: &mut TxContext,
     ) {
         let sender = tx_context::sender(ctx);
@@ -245,6 +278,14 @@ module granite_lake::photo_attestation {
             project_id,
             user_wallet: sender,
             domain: user_cap.domain,
+            captured_at,
+            attested_at: clock::timestamp_ms(clock),
+            is_online,
+            is_forced_offline,
+            internet_null_reason_hash,
+            has_gps,
+            is_gps_forced_null,
+            gps_null_reason_hash,
         });
     }
 
@@ -254,6 +295,11 @@ module granite_lake::photo_attestation {
         hash: vector<u8>,
         file_id: vector<u8>,
         project_id: vector<u8>,
+        captured_at: u64,
+        is_online: bool,
+        is_forced_offline: bool,
+        internet_null_reason_hash: vector<u8>,
+        clock: &Clock,
         ctx: &mut TxContext,
     ) {
         let sender = tx_context::sender(ctx);
@@ -267,6 +313,11 @@ module granite_lake::photo_attestation {
             file_id,
             project_id,
             domain: user_cap.domain,
+            captured_at,
+            attested_at: clock::timestamp_ms(clock),
+            is_online,
+            is_forced_offline,
+            internet_null_reason_hash,
         });
     }
 

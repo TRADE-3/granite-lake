@@ -3,6 +3,7 @@ module granite_lake::granite_lake_tests;
 
 use granite_lake::photo_attestation as pa;
 use std::unit_test::assert_eq;
+use sui::clock;
 use sui::event;
 use sui::test_scenario as ts;
 
@@ -195,6 +196,7 @@ fun test_disabled_users_cannot_attest_photos() {
     {
         let user_cap: pa::UserCap = scenario.take_from_sender();
         let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
 
         pa::attest_photo(
             &user_cap,
@@ -203,9 +205,18 @@ fun test_disabled_users_cannot_attest_photos() {
             b"6.9271,79.8612",
             b"12.4",
             b"project-disabled",
+            1_700_000_000_000,
+            true,
+            false,
+            b"",
+            true,
+            false,
+            b"",
+            &clock,
             scenario.ctx(),
         );
 
+        clock::destroy_for_testing(clock);
         ts::return_shared(registry);
         scenario.return_to_sender(user_cap);
     };
@@ -232,6 +243,7 @@ fun test_disabled_users_cannot_attest_files() {
     {
         let user_cap: pa::UserCap = scenario.take_from_sender();
         let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
 
         pa::attest_file(
             &user_cap,
@@ -239,9 +251,15 @@ fun test_disabled_users_cannot_attest_files() {
             b"file-hash-1",
             b"file-1",
             b"project-disabled-file",
+            1_700_000_000_000,
+            true,
+            false,
+            b"",
+            &clock,
             scenario.ctx(),
         );
 
+        clock::destroy_for_testing(clock);
         ts::return_shared(registry);
         scenario.return_to_sender(user_cap);
     };
@@ -267,6 +285,7 @@ fun test_only_user_cap_owner_can_call_attest_photo() {
     {
         let user_cap: pa::UserCap = scenario.take_from_sender();
         let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
 
         pa::attest_photo(
             &user_cap,
@@ -275,9 +294,18 @@ fun test_only_user_cap_owner_can_call_attest_photo() {
             b"6.9271,79.8612",
             b"23.9",
             b"project-owner-check",
+            1_700_000_000_000,
+            true,
+            false,
+            b"",
+            true,
+            false,
+            b"",
+            &clock,
             scenario.ctx(),
         );
 
+        clock::destroy_for_testing(clock);
         ts::return_shared(registry);
         scenario.return_to_sender(user_cap);
     };
@@ -297,6 +325,7 @@ fun test_attest_photo_emits_photo_attested_event() {
     {
         let user_cap: pa::UserCap = scenario.take_from_sender();
         let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
 
         pa::attest_photo(
             &user_cap,
@@ -305,12 +334,117 @@ fun test_attest_photo_emits_photo_attested_event() {
             b"6.9271,79.8612",
             b"11.1",
             b"project-success",
+            1_700_000_000_000,
+            true,
+            false,
+            b"",
+            true,
+            false,
+            b"",
+            &clock,
             scenario.ctx(),
         );
 
         assert_eq!(event::num_events(), 1);
         assert_eq!(event::events_by_type<pa::PhotoAttested>().length(), 1);
 
+        clock::destroy_for_testing(clock);
+        ts::return_shared(registry);
+        scenario.return_to_sender(user_cap);
+    };
+
+    scenario.end();
+}
+
+// Exercises all four is_online/is_forced_offline combinations from the
+// offline-capture design's truth table, confirming each one executes and
+// emits independently of the others (online capture, online-but-deferred,
+// automatic offline, and moot-override offline).
+#[test]
+fun test_attest_photo_records_online_and_forced_offline_combinations() {
+    let mut scenario = ts::begin(OWNER);
+    let domain = b"offline-combinations.com";
+    pa::init_for_testing(scenario.ctx());
+
+    setup_domain_and_user(&mut scenario, domain, USER);
+
+    scenario.next_tx(USER);
+    {
+        let user_cap: pa::UserCap = scenario.take_from_sender();
+        let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
+
+        pa::attest_photo(
+            &user_cap, &registry, b"hash-online", b"gps", b"alt", b"project",
+            1_700_000_000_000, true, false, b"", true, false, b"", &clock, scenario.ctx(),
+        );
+        pa::attest_photo(
+            &user_cap, &registry, b"hash-online-deferred", b"gps", b"alt", b"project",
+            1_700_000_000_001, true, true, b"", true, false, b"", &clock, scenario.ctx(),
+        );
+        pa::attest_photo(
+            &user_cap, &registry, b"hash-auto-offline", b"gps", b"alt", b"project",
+            1_700_000_000_002, false, false, b"no-signal-reason-hash", true, false, b"",
+            &clock, scenario.ctx(),
+        );
+        pa::attest_photo(
+            &user_cap, &registry, b"hash-offline-moot-override", b"gps", b"alt", b"project",
+            1_700_000_000_003, false, true, b"forced-offline-reason-hash", true, false, b"",
+            &clock, scenario.ctx(),
+        );
+
+        assert_eq!(event::num_events(), 4);
+        assert_eq!(event::events_by_type<pa::PhotoAttested>().length(), 4);
+
+        clock::destroy_for_testing(clock);
+        ts::return_shared(registry);
+        scenario.return_to_sender(user_cap);
+    };
+
+    scenario.end();
+}
+
+// Exercises all four has_gps/is_gps_forced_null combinations from the
+// offline-capture design's §4a truth table, independently of the internet
+// axis (kept online/not-forced throughout), confirming each one executes and
+// emits independently.
+#[test]
+fun test_attest_photo_records_gps_availability_combinations() {
+    let mut scenario = ts::begin(OWNER);
+    let domain = b"gps-combinations.com";
+    pa::init_for_testing(scenario.ctx());
+
+    setup_domain_and_user(&mut scenario, domain, USER);
+
+    scenario.next_tx(USER);
+    {
+        let user_cap: pa::UserCap = scenario.take_from_sender();
+        let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
+
+        pa::attest_photo(
+            &user_cap, &registry, b"hash-gps-normal", b"gps", b"alt", b"project",
+            1_700_000_000_000, true, false, b"", true, false, b"", &clock, scenario.ctx(),
+        );
+        pa::attest_photo(
+            &user_cap, &registry, b"hash-gps-deferred", b"gps", b"alt", b"project",
+            1_700_000_000_001, true, false, b"", true, true, b"", &clock, scenario.ctx(),
+        );
+        pa::attest_photo(
+            &user_cap, &registry, b"hash-gps-auto-null", b"", b"", b"project",
+            1_700_000_000_002, true, false, b"", false, false, b"no-fix-reason-hash",
+            &clock, scenario.ctx(),
+        );
+        pa::attest_photo(
+            &user_cap, &registry, b"hash-gps-forced-null-moot", b"", b"", b"project",
+            1_700_000_000_003, true, false, b"", false, true, b"forced-no-gps-reason-hash",
+            &clock, scenario.ctx(),
+        );
+
+        assert_eq!(event::num_events(), 4);
+        assert_eq!(event::events_by_type<pa::PhotoAttested>().length(), 4);
+
+        clock::destroy_for_testing(clock);
         ts::return_shared(registry);
         scenario.return_to_sender(user_cap);
     };
@@ -330,6 +464,7 @@ fun test_attest_file_emits_file_attested_event() {
     {
         let user_cap: pa::UserCap = scenario.take_from_sender();
         let registry: pa::Registry = scenario.take_shared();
+        let clock = clock::create_for_testing(scenario.ctx());
 
         pa::attest_file(
             &user_cap,
@@ -337,12 +472,18 @@ fun test_attest_file_emits_file_attested_event() {
             b"file-hash-2",
             b"file-2",
             b"project-file-success",
+            1_700_000_000_000,
+            true,
+            false,
+            b"",
+            &clock,
             scenario.ctx(),
         );
 
         assert_eq!(event::num_events(), 1);
         assert_eq!(event::events_by_type<pa::FileAttested>().length(), 1);
 
+        clock::destroy_for_testing(clock);
         ts::return_shared(registry);
         scenario.return_to_sender(user_cap);
     };
