@@ -35,6 +35,12 @@ function displayDecodedOrHex(decoded: string, hex: string): string {
   return decoded || (hex ? `0x${hex}` : "Unavailable");
 }
 
+// Mirrors the mobile app's AppConstants.attestationUnknownLabel fallback
+// substituted on-chain when GPS/altitude weren't submitted.
+function isUnknownValue(decoded: string, hex: string): boolean {
+  return displayDecodedOrHex(decoded, hex).trim().toUpperCase() === "UNKNOWN";
+}
+
 function dnsConsensusLabel(discovery: GraniteDnsDiscovery | null): string {
   if (!discovery) return "Unavailable";
   return `${discovery.providers.length} / 3 matched`;
@@ -61,15 +67,26 @@ function connectivityLabel(isOnline: boolean, isForcedOffline: boolean): string 
   if (isOnline && !isForcedOffline) return "Online";
   if (isOnline && isForcedOffline) return "Online (deferred by crew)";
   if (!isOnline && !isForcedOffline) return "Offline (no connectivity)";
-  return "Offline (forced, no connectivity either way)";
+  return "Forced Offline — User might have disrupted internet connectivity intentionally";
 }
 
 // Offline-capture design doc §4a's truth table, rendered as a label.
 function gpsLabel(hasGps: boolean, isGpsForcedNull: boolean): string {
-  if (hasGps && !isGpsForcedNull) return "GPS fix used";
-  if (hasGps && isGpsForcedNull) return "GPS fix withheld by crew";
-  if (!hasGps && !isGpsForcedNull) return "No GPS fix available";
-  return "No GPS fix (forced, unavailable either way)";
+  if (hasGps && !isGpsForcedNull) return "Location captured";
+  if (hasGps && isGpsForcedNull) return "Location captured, but withheld by crew";
+  if (!hasGps && !isGpsForcedNull) return "Location unavailable (no signal)";
+  return "Location withheld — User might have turned off device location intentionally";
+}
+
+// Shared tone for both axes' truth tables: withheld-despite-available is the
+// most concerning state (red), genuinely unavailable is the least concerning
+// (yellow), and forced-but-moot sits in between (orange). The "available,
+// not forced" row is the normal/good case and gets no tone class.
+function truthTableTone(wasAvailable: boolean, wasForcedOff: boolean): string {
+  if (wasAvailable && wasForcedOff) return "detail-card-danger";
+  if (!wasAvailable && !wasForcedOff) return "detail-card-caution";
+  if (!wasAvailable && wasForcedOff) return "detail-card-warn";
+  return "";
 }
 
 function msToLocaleString(ms: string | null | undefined): string {
@@ -585,11 +602,15 @@ export default function App() {
                             <span>Project ID</span>
                             <code>{displayDecodedOrHex(record.projectIdDecoded, record.projectIdRawHex)}</code>
                           </div>
-                          <div className="detail-card">
+                          <div
+                            className={`detail-card ${isUnknownValue(record.gpsDecoded, record.gpsRawHex) ? "detail-card-caution" : ""}`}
+                          >
                             <span>GPS</span>
                             <code>{displayDecodedOrHex(record.gpsDecoded, record.gpsRawHex)}</code>
                           </div>
-                          <div className="detail-card">
+                          <div
+                            className={`detail-card ${isUnknownValue(record.altitudeDecoded, record.altitudeRawHex) ? "detail-card-caution" : ""}`}
+                          >
                             <span>Altitude</span>
                             <code>{displayDecodedOrHex(record.altitudeDecoded, record.altitudeRawHex)}</code>
                           </div>
@@ -605,12 +626,16 @@ export default function App() {
                             <span>Attested At (on-chain)</span>
                             <code>{msToLocaleString(record.attestedAtMs)}</code>
                           </div>
-                          <div className="detail-card detail-card-wide">
+                          <div
+                            className={`detail-card detail-card-wide ${truthTableTone(record.isOnline, record.isForcedOffline)}`}
+                          >
                             <span>Connectivity</span>
                             <code>{connectivityLabel(record.isOnline, record.isForcedOffline)}</code>
                             <NullReasonCheck label="internet" onChainHashHex={record.internetNullReasonHashHex} />
                           </div>
-                          <div className="detail-card detail-card-wide">
+                          <div
+                            className={`detail-card detail-card-wide ${truthTableTone(record.hasGps, record.isGpsForcedNull)}`}
+                          >
                             <span>GPS Provenance</span>
                             <code>{gpsLabel(record.hasGps, record.isGpsForcedNull)}</code>
                             <NullReasonCheck label="GPS" onChainHashHex={record.gpsNullReasonHashHex} />
