@@ -736,11 +736,24 @@ class PhotoAttestationService {
         (response.sender == null ||
             _addressesMatch(response.sender, capture.walletAddress)) &&
         _addressesMatch(event.sender, capture.walletAddress);
-    final gpsMatches = gps == (capture.capturedGpsLabel?.trim() ?? '');
+    final gpsMatches =
+        gps ==
+        resolveAttestationLabel(
+          capture.capturedGpsLabel,
+          fallback: AppConstants.attestationUnknownLabel,
+        );
     final altitudeMatches =
-        altitude == (capture.capturedAltitudeLabel?.trim() ?? '');
+        altitude ==
+        resolveAttestationLabel(
+          capture.capturedAltitudeLabel,
+          fallback: AppConstants.attestationUnknownLabel,
+        );
     final projectIdMatches =
-        projectId == (capture.attestedProjectId?.trim() ?? '');
+        projectId ==
+        resolveAttestationLabel(
+          capture.attestedProjectId,
+          fallback: AppConstants.attestationUnassignedLabel,
+        );
     final chainTimestamp = _resolveChainTimestamp(response, event);
     final timestampWithinTolerance = _isTimestampWithinTolerance(
       capture: capture,
@@ -935,7 +948,11 @@ class PhotoAttestationService {
         _addressesMatch(userWallet, capture.walletAddress);
     final fileIdMatches = fileId == capture.fileId;
     final projectIdMatches =
-        projectId == (capture.attestedProjectId?.trim() ?? '');
+        projectId ==
+        resolveAttestationLabel(
+          capture.attestedProjectId,
+          fallback: AppConstants.attestationUnassignedLabel,
+        );
     final timestampWithinTolerance = _isTimestampWithinTolerance(
       capture: capture,
       chainTimestamp: chainTimestamp,

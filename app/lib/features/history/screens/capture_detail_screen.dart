@@ -463,6 +463,9 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                   _DetailCell(
                                     label: 'INTERNET_NULL_REASON',
                                     value: record.internetNullReason!.trim(),
+                                    canCopy: true,
+                                    copyValue: record.internetNullReason!
+                                        .trim(),
                                   ),
                                 if (record.internetNullReasonHash
                                         ?.trim()
@@ -492,6 +495,8 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                   _DetailCell(
                                     label: 'GPS_NULL_REASON',
                                     value: record.gpsNullReason!.trim(),
+                                    canCopy: true,
+                                    copyValue: record.gpsNullReason!.trim(),
                                   ),
                                 if (record.isPhoto &&
                                     record.gpsNullReasonHash

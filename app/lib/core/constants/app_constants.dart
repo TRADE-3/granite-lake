@@ -9,7 +9,20 @@ class DomainBackendConfig {
   final String apiKey;
 }
 
+/// Applies the same on-chain-submission fallback substitution used by
+/// attestation submission, so verification recomputes against the same
+/// value instead of comparing the substituted chain value against a raw
+/// null/empty local field.
+String resolveAttestationLabel(String? value, {required String fallback}) {
+  final trimmed = value?.trim();
+  return trimmed != null && trimmed.isNotEmpty ? trimmed : fallback;
+}
+
 abstract final class AppConstants {
+  // ── Attestation label fallbacks ───────────────────────────────────────────
+  static const String attestationUnknownLabel = 'UNKNOWN';
+  static const String attestationUnassignedLabel = 'UNASSIGNED';
+
   // ── App meta ───────────────────────────────────────────────────────────────
   static const String appName = 'TRADE3';
   static const String appTitle = 'Trade3';

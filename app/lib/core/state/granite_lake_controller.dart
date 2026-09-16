@@ -1210,13 +1210,18 @@ class GraniteLakeController extends ChangeNotifier {
         config: config,
         claim: claim,
         imageSha256: record.imageSha256,
-        gps: gpsLabel?.trim().isNotEmpty == true ? gpsLabel!.trim() : 'UNKNOWN',
-        altitude: altitudeLabel?.trim().isNotEmpty == true
-            ? altitudeLabel!.trim()
-            : 'UNKNOWN',
-        projectId: projectId?.trim().isNotEmpty == true
-            ? projectId!.trim()
-            : 'UNASSIGNED',
+        gps: resolveAttestationLabel(
+          gpsLabel,
+          fallback: AppConstants.attestationUnknownLabel,
+        ),
+        altitude: resolveAttestationLabel(
+          altitudeLabel,
+          fallback: AppConstants.attestationUnknownLabel,
+        ),
+        projectId: resolveAttestationLabel(
+          projectId,
+          fallback: AppConstants.attestationUnassignedLabel,
+        ),
         capturedAtMs: record.capturedAt.millisecondsSinceEpoch,
         isOnline: record.isOnline,
         isForcedOffline: record.isForcedOffline,
@@ -1346,9 +1351,10 @@ class GraniteLakeController extends ChangeNotifier {
         config: config,
         claim: claim,
         record: record,
-        projectId: projectId?.trim().isNotEmpty == true
-            ? projectId!.trim()
-            : 'UNASSIGNED',
+        projectId: resolveAttestationLabel(
+          projectId,
+          fallback: AppConstants.attestationUnassignedLabel,
+        ),
         capturedAtMs: record.capturedAt.millisecondsSinceEpoch,
         isOnline: record.isOnline,
         isForcedOffline: record.isForcedOffline,
