@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import 'core/constants/app_constants.dart';
 import 'core/services/connectivity_heuristic_service.dart';
+import 'core/services/reconnect_notification_service.dart';
 import 'core/state/granite_lake_controller.dart';
 import 'core/router/app_router.dart';
 import 'core/theme/app_theme.dart';
@@ -35,6 +36,12 @@ class _GraniteLakeAppState extends State<GraniteLakeApp>
   // _checkConnectivityAndRetryQueue's early return whenever nothing is
   // actually queued, so this isn't a meaningful battery/data cost.
   Timer? _queuePollTimer;
+  // Offline-capture design doc §7.2 - nudges the crew while the app is
+  // closed/backgrounded. Lives here, not on the controller, since it owns
+  // OS-level (WorkManager) and plugin (local notifications) state that
+  // shouldn't leak into app-state/business-logic code.
+  final ReconnectNotificationService _reconnectNotificationService =
+      ReconnectNotificationService.instance;
 
   @override
   void initState() {
@@ -49,6 +56,22 @@ class _GraniteLakeAppState extends State<GraniteLakeApp>
     _queuePollTimer = Timer.periodic(const Duration(seconds: 20), (_) {
       unawaited(_checkConnectivityAndRetryQueue());
     });
+    unawaited(
+      _reconnectNotificationService
+          .initialize(
+            onNotificationTapped: () =>
+                _router.go('${AppRoutes.dashboard}?tab=0'),
+          )
+          // initialize() is async; the controller can finish loading
+          // pending rows and fire its own notifyListeners() before this
+          // resolves, which would otherwise make the first
+          // _syncReconnectNotificationSchedule() call no-op (it's guarded
+          // on being initialized) and silently drop an already-queued
+          // capture from being watched. Re-sync once initialize() actually
+          // lands to catch that case.
+          .then((_) => _syncReconnectNotificationSchedule()),
+    );
+    _controller.addListener(_syncReconnectNotificationSchedule);
   }
 
   @override
@@ -56,8 +79,17 @@ class _GraniteLakeAppState extends State<GraniteLakeApp>
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_connectivityChangeSubscription?.cancel());
     _queuePollTimer?.cancel();
+    _controller.removeListener(_syncReconnectNotificationSchedule);
     _controller.dispose();
     super.dispose();
+  }
+
+  void _syncReconnectNotificationSchedule() {
+    unawaited(
+      _reconnectNotificationService.syncSchedule(
+        hasPendingSubmissions: _controller.pendingAttestationCount > 0,
+      ),
+    );
   }
 
   Future<void> _checkConnectivityAndRetryQueue() async {

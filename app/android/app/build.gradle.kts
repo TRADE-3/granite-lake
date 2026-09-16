@@ -10,6 +10,7 @@ plugins {
 
 dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 
 val keystorePropertiesFile = rootProject.file("key.properties")
@@ -26,6 +27,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Required by flutter_local_notifications (reconnect_notification_service.dart).
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {

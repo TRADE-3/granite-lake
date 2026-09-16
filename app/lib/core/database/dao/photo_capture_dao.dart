@@ -67,4 +67,16 @@ class PhotoCaptureDao {
     final database = await _databaseService.database;
     await database.delete(GraniteLakeDatabaseService.photoCapturesTable);
   }
+
+  /// Read-only count of rows still awaiting on-chain submission. Safe to
+  /// call from a background isolate (reconnect_notification_service.dart) -
+  /// touches no signing state, just a status column.
+  Future<int> countPendingSubmissions() async {
+    final database = await _databaseService.database;
+    final result = await database.rawQuery(
+      'SELECT COUNT(*) AS count FROM ${GraniteLakeDatabaseService.photoCapturesTable} '
+      "WHERE sui_submission_status IN ('PENDING_SUBMISSION', 'PENDING', 'SUBMITTING')",
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
 }

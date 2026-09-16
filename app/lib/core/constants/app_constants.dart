@@ -23,6 +23,41 @@ abstract final class AppConstants {
   static const String attestationUnknownLabel = 'UNKNOWN';
   static const String attestationUnassignedLabel = 'UNASSIGNED';
 
+  // ── Reconnect notification (offline-capture design doc §7.2) ──────────────
+  // Background watchdog that nudges the crew to unlock and submit once
+  // connectivity returns while the app is closed/backgrounded - the queue
+  // sweep itself (retryPendingAttestations) only ever runs in the
+  // foreground, so this is strictly check-and-notify, never signs anything.
+  // Android's periodic-task floor is 15 minutes, and the *first* run of a
+  // freshly-registered periodic task is not immediate - it can lag a full
+  // period behind registration. A one-off task has no such floor and fires
+  // as soon as its constraint is met, so both are registered together:
+  // the one-off catches the immediate/first reconnect, the periodic one
+  // is the durable backstop for a later reconnect after the app was
+  // relaunched and the one-off was consumed.
+  static const String reconnectNotificationImmediateTaskUniqueName =
+      'granite_lake_reconnect_watch_immediate';
+  static const String reconnectNotificationPeriodicTaskUniqueName =
+      'granite_lake_reconnect_watch_periodic';
+  static const String reconnectNotificationTaskName =
+      'granite_lake_reconnect_check';
+  static const String reconnectNotificationChannelId = 'granite_lake_reconnect';
+  static const String reconnectNotificationChannelName = 'Submission reminders';
+  static const String reconnectNotificationChannelDescription =
+      'Reminds you to unlock and submit captures queued while offline.';
+  static const int reconnectNotificationId = 7301;
+  // Bare Android drawable resource name (android/app/src/main/res/
+  // drawable-*/ic_stat_reconnect.png) - a white-on-transparent silhouette
+  // of the T3 mark, generated from assets/logos/trade3/
+  // trade3_icon_foreground.png. Deliberately NOT the launcher mipmap: a
+  // full-color, fully-opaque launcher icon has no meaningful alpha shape,
+  // so Android's notification-icon renderer (which draws only the alpha
+  // channel, in white) would show a solid blob instead of the T3 mark.
+  static const String reconnectNotificationIcon = 'ic_stat_reconnect';
+  static const String reconnectNotificationLastSentConfigKey =
+      'reconnect_notification_last_sent_at_ms';
+  static const int reconnectNotificationDebounceMinutes = 30;
+
   // ── App meta ───────────────────────────────────────────────────────────────
   static const String appName = 'TRADE3';
   static const String appTitle = 'Trade3';
