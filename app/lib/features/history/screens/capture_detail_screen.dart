@@ -761,6 +761,12 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
     if (record.isAttestationPending) {
       return ('PENDING', AppColors.primary);
     }
+    // Offline-queue at-rest encryption (§7.3): distinct from a submission
+    // failure - the chain was never involved, this row's own locally
+    // stored data failed its integrity check on decrypt.
+    if (record.isTamperDetected) {
+      return ('TAMPER DETECTED', AppColors.statusError);
+    }
     // Not anchored and not pending: the transaction itself never made it
     // on-chain (FAILED_SUBMISSION/FAILED_NOT_CONFIGURED).
     return ('SUBMIT FAILED', AppColors.statusError);

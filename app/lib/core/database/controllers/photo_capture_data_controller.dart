@@ -50,6 +50,9 @@ class PhotoCaptureDataController {
       'gpsNullReasonHash': row['gps_null_reason_hash'],
       'submissionAttemptCount': _readInt(row['submission_attempt_count']),
       'lastAttemptAt': row['last_attempt_at'],
+      'encryptedPayload': row['encrypted_payload'],
+      'payloadIv': row['payload_iv'],
+      'wrappedDataKey': row['wrapped_data_key'],
     };
   }
 

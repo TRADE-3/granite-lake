@@ -64,6 +64,13 @@ abstract final class AppConstants {
   static const String appVersion = 'V1.0';
   static const String walletCreateAsset = 'assets/images/wallet_create.png';
   static const int captureSessionDurationMinutes = 30;
+  // Offline-queue at-rest encryption (offline-capture design doc §7.3,
+  // intentionally modified from the doc's original no-caching design):
+  // independent of, and shorter than, captureSessionDurationMinutes above -
+  // governs how long a batch-decrypted queue payload cache stays in memory
+  // after one "unlock to submit" prompt before it's destroyed and a fresh
+  // unlock is required.
+  static const int queueUnlockDurationMinutes = 5;
   static const String captureDirectoryName = 'captures';
 
   // ── Onboarding ─────────────────────────────────────────────────────────────

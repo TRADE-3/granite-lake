@@ -15,6 +15,7 @@ enum _VerificationFilter {
   pending,
   submissionFailed,
   verificationFailed,
+  tamperDetected,
 }
 
 // submissionFailed: the transaction itself never made it on-chain
@@ -23,11 +24,16 @@ enum _VerificationFilter {
 // separate check (verifyAttestationOnChain) found the on-chain event
 // doesn't match what was expected locally - a materially different kind of
 // problem (possible tampering/mismatch) from the submission ever failing.
+// tamperDetected: offline-queue at-rest encryption (§7.3) - this row's own
+// locally-stored data failed its integrity check on decrypt. The chain was
+// never involved at all, which is what makes this different from either
+// failure above.
 enum _VerificationStatus {
   anchored,
   pending,
   submissionFailed,
   verificationFailed,
+  tamperDetected,
 }
 
 enum _AssetTypeFilter { all, photos, files }
@@ -59,9 +65,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
       return;
     }
     setState(() => _isUnlockingQueue = true);
-    // startSession() itself triggers retryPendingAttestations() on success -
-    // the queue's own biometric gate (offline-capture design doc §7).
-    await GraniteLakeScope.of(context).startSession();
+    // unlockQueueForSubmission() ensures a signing session, batch-decrypts
+    // every queued row behind one biometric prompt, and triggers
+    // retryPendingAttestations() itself (offline-capture design doc §7.3).
+    await GraniteLakeScope.of(context).unlockQueueForSubmission();
     if (!mounted) {
       return;
     }
@@ -201,7 +208,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          controller.pendingAttestationsNeedUnlock
+                          controller.queueUnlockNeeded
                               ? '${controller.pendingAttestationCount} capture(s) queued - unlock to submit.'
                               : '${controller.pendingAttestationCount} capture(s) queued for submission.',
                           style: AppTextStyles.bodySmall.copyWith(
@@ -209,7 +216,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           ),
                         ),
                       ),
-                      if (controller.pendingAttestationsNeedUnlock)
+                      if (controller.queueUnlockNeeded)
                         TextButton(
                           onPressed: _isUnlockingQueue
                               ? null
@@ -450,6 +457,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
         return status == _VerificationStatus.submissionFailed;
       case _VerificationFilter.verificationFailed:
         return status == _VerificationStatus.verificationFailed;
+      case _VerificationFilter.tamperDetected:
+        return status == _VerificationStatus.tamperDetected;
     }
   }
 
@@ -497,6 +506,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       _VerificationFilter.pending => 'Pending',
       _VerificationFilter.submissionFailed => 'Submission Failed',
       _VerificationFilter.verificationFailed => 'Verification Failed',
+      _VerificationFilter.tamperDetected => 'Tamper Detected',
     };
   }
 
@@ -543,6 +553,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
     if (capture.isAttestationPending) {
       return _VerificationStatus.pending;
+    }
+    if (capture.isTamperDetected) {
+      return _VerificationStatus.tamperDetected;
     }
     // Not anchored and not pending: the transaction itself never made it
     // on-chain (FAILED_SUBMISSION/FAILED_NOT_CONFIGURED).
@@ -869,6 +882,12 @@ class _VerificationBadge extends StatelessWidget {
       ),
       _VerificationStatus.verificationFailed => (
         'VERIFY MISMATCH',
+        AppColors.statusError.withAlpha(18),
+        AppColors.statusError.withAlpha(70),
+        AppColors.statusError,
+      ),
+      _VerificationStatus.tamperDetected => (
+        'TAMPER DETECTED',
         AppColors.statusError.withAlpha(18),
         AppColors.statusError.withAlpha(70),
         AppColors.statusError,

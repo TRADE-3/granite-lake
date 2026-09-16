@@ -6,7 +6,7 @@ import 'migrations.dart';
 
 class GraniteLakeDatabaseService {
   static const String databaseName = 'granite_lake.db';
-  static const int databaseVersion = 12;
+  static const int databaseVersion = 13;
 
   static const String employeesTable = 'employees';
   static const String projectsTable = 'projects';

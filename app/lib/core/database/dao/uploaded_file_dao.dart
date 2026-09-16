@@ -57,6 +57,9 @@ class UploadedFileDao {
         'submission_attempt_count':
             uploadedFile['submissionAttemptCount'] as int? ?? 0,
         'last_attempt_at': uploadedFile['lastAttemptAt'],
+        'encrypted_payload': uploadedFile['encryptedPayload'],
+        'payload_iv': uploadedFile['payloadIv'],
+        'wrapped_data_key': uploadedFile['wrappedDataKey'],
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );

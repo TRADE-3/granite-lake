@@ -58,6 +58,9 @@ class PhotoCaptureDao {
         'submission_attempt_count':
             photoCapture['submissionAttemptCount'] as int? ?? 0,
         'last_attempt_at': photoCapture['lastAttemptAt'],
+        'encrypted_payload': photoCapture['encryptedPayload'],
+        'payload_iv': photoCapture['payloadIv'],
+        'wrapped_data_key': photoCapture['wrappedDataKey'],
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );

@@ -2331,6 +2331,12 @@ class _CaptureScreenState extends State<CaptureScreen> {
       'FAILED_SUBMISSION' =>
         record.attestationErrorLabel ??
             'This capture was saved, but the Sui attestation transaction did not complete. Check wallet gas and network connectivity, then try again later.',
+      // Offline-queue at-rest encryption (offline-capture design doc
+      // §7.3): distinct from FAILED_SUBMISSION - the chain never rejected
+      // anything, this row's own locally-stored data failed its integrity
+      // check on decrypt, meaning it was altered since capture.
+      'TAMPER_DETECTED' =>
+        "This capture's locally stored data failed its integrity check and cannot be resubmitted. It may have been altered since it was captured.",
       _ =>
         record.attestationErrorLabel ??
             'This capture was saved, but the on-chain attestation status requires attention.',

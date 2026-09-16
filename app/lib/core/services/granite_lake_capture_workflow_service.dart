@@ -10,12 +10,18 @@ import '../constants/app_constants.dart';
 import '../database/controllers/photo_capture_data_controller.dart';
 import '../database/controllers/uploaded_file_data_controller.dart';
 import '../state/granite_lake_models.dart';
+import 'capture_encryption_service.dart';
 
 class GraniteLakeCaptureWorkflowService {
-  GraniteLakeCaptureWorkflowService({Sha256? sha256})
-    : _sha256 = sha256 ?? Sha256();
+  GraniteLakeCaptureWorkflowService({
+    Sha256? sha256,
+    CaptureEncryptionService? captureEncryptionService,
+  }) : _sha256 = sha256 ?? Sha256(),
+       _captureEncryptionService =
+           captureEncryptionService ?? CaptureEncryptionService();
 
   final Sha256 _sha256;
+  final CaptureEncryptionService _captureEncryptionService;
 
   Future<AttestationActionResult> persistCapture({
     required PhotoCaptureDataController photoCaptureDataController,
@@ -347,18 +353,60 @@ class GraniteLakeCaptureWorkflowService {
     final signature = account.signPersonalMessage(
       utf8.encode(jsonEncode(signedMetadata)),
     );
+    final signatureBase64Value = base64Encode(signature.signature.signature);
+    final isPhotoAsset = assetType == AttestationAssetType.photo;
+    final effectiveHasGps = isPhotoAsset ? hasGps : true;
+    final effectiveIsGpsForcedNull = isPhotoAsset ? isGpsForcedNull : false;
+    final effectiveGpsNullReason = isPhotoAsset ? gpsNullReason : null;
+    final effectiveGpsNullReasonHash = isPhotoAsset ? gpsNullReasonHash : null;
+
+    // Offline-queue at-rest encryption (offline-capture design doc §7.3): a
+    // row taking the offline/forced-offline path can sit in
+    // PENDING_SUBMISSION for the length of a whole field trip, so its
+    // submission-relevant fields are encrypted the instant they're written
+    // instead of left in plaintext columns for that entire window. A row
+    // that submits immediately while online doesn't sit at rest long
+    // enough to matter, so it keeps writing the plaintext columns directly.
+    final isQueuedOffline = !isOnline || isForcedOffline;
+    String? encryptedPayloadBase64;
+    String? payloadIvBase64;
+    String? wrappedDataKeyBase64;
+    if (isQueuedOffline) {
+      final encrypted = await _captureEncryptionService.encryptPayload(
+        captureId: captureId,
+        payload: <String, dynamic>{
+          'imageSha256': imageSha256,
+          'signatureBase64': signatureBase64Value,
+          'proofPayload': signedMetadata,
+          'isOnline': isOnline,
+          'isForcedOffline': isForcedOffline,
+          'internetNullReason': internetNullReason,
+          'internetNullReasonHash': internetNullReasonHash,
+          'hasGps': effectiveHasGps,
+          'isGpsForcedNull': effectiveIsGpsForcedNull,
+          'gpsNullReason': effectiveGpsNullReason,
+          'gpsNullReasonHash': effectiveGpsNullReasonHash,
+        },
+      );
+      encryptedPayloadBase64 = encrypted.ciphertextBase64;
+      payloadIvBase64 = encrypted.ivBase64;
+      wrappedDataKeyBase64 = encrypted.wrappedDataKeyBase64;
+    }
+
     final record = AttestationRecord(
       captureId: captureId,
       capturedAt: capturedAt,
       submittedAt: submittedAt,
       imagePath: destinationImagePath,
-      imageSha256: imageSha256,
-      signatureBase64: base64Encode(signature.signature.signature),
+      imageSha256: isQueuedOffline ? '' : imageSha256,
+      signatureBase64: isQueuedOffline ? '' : signatureBase64Value,
       walletAddress: identity.walletAddress,
       publicKeyHex: identity.publicKeyHex,
-      proofPayload: AttestationProofPayload.fromJson(
-        Map<String, dynamic>.from(signedMetadata),
-      ),
+      proofPayload: isQueuedOffline
+          ? AttestationProofPayload.fromJson(const <String, dynamic>{})
+          : AttestationProofPayload.fromJson(
+              Map<String, dynamic>.from(signedMetadata),
+            ),
       suiTxDigest: '',
       suiObjectId: '',
       suiSubmissionStatus: 'PENDING_SUBMISSION',
@@ -373,20 +421,17 @@ class GraniteLakeCaptureWorkflowService {
       fileExtension: fileExtension,
       previewKind: previewKind,
       storageMode: 'LOCAL_ONLY',
-      isOnline: isOnline,
-      isForcedOffline: isForcedOffline,
-      internetNullReason: internetNullReason,
-      internetNullReasonHash: internetNullReasonHash,
-      hasGps: assetType == AttestationAssetType.photo ? hasGps : true,
-      isGpsForcedNull: assetType == AttestationAssetType.photo
-          ? isGpsForcedNull
-          : false,
-      gpsNullReason: assetType == AttestationAssetType.photo
-          ? gpsNullReason
-          : null,
-      gpsNullReasonHash: assetType == AttestationAssetType.photo
-          ? gpsNullReasonHash
-          : null,
+      isOnline: isQueuedOffline ? true : isOnline,
+      isForcedOffline: isQueuedOffline ? false : isForcedOffline,
+      internetNullReason: isQueuedOffline ? null : internetNullReason,
+      internetNullReasonHash: isQueuedOffline ? null : internetNullReasonHash,
+      hasGps: isQueuedOffline ? true : effectiveHasGps,
+      isGpsForcedNull: isQueuedOffline ? false : effectiveIsGpsForcedNull,
+      gpsNullReason: isQueuedOffline ? null : effectiveGpsNullReason,
+      gpsNullReasonHash: isQueuedOffline ? null : effectiveGpsNullReasonHash,
+      encryptedPayload: encryptedPayloadBase64,
+      payloadIv: payloadIvBase64,
+      wrappedDataKey: wrappedDataKeyBase64,
     );
 
     final sourceFile = File(sourcePath);

@@ -50,6 +50,9 @@ class Migrations {
         case 12:
           await _upgradeToVersionTwelve(db);
           break;
+        case 13:
+          await _upgradeToVersionThirteen(db);
+          break;
         default:
           throw UnsupportedError(
             'No migration registered for database version $version.',
@@ -371,6 +374,41 @@ class Migrations {
     );
   }
 
+  // Offline-queue at-rest encryption (offline-capture design doc §7.3). For
+  // a row taking the offline/forced-offline path, the submission-relevant
+  // fields that would otherwise sit in plaintext (image_sha256,
+  // signature_base64, proof_payload_json, is_online/is_forced_offline/
+  // has_gps/is_gps_forced_null, the null-reason text/hashes) are folded
+  // into encrypted_payload instead, encrypted per-row with AES-256-GCM at
+  // persist time; those plaintext columns are written as empty strings for
+  // that row rather than left populated. payload_iv is the row's random
+  // 12-byte GCM nonce; wrapped_data_key is that row's random AES key,
+  // wrapped by the device's RSA capture-wrap keypair
+  // (capture_encryption_service.dart). All three TEXT/base64, matching
+  // this schema's existing no-BLOB convention. NULL for a row that
+  // submitted immediately while online, or any pre-migration row - reads
+  // branch on encrypted_payload IS NOT NULL.
+  static Future<void> _upgradeToVersionThirteen(Database db) async {
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN encrypted_payload TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN payload_iv TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN wrapped_data_key TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.uploadedFilesTable} ADD COLUMN encrypted_payload TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.uploadedFilesTable} ADD COLUMN payload_iv TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.uploadedFilesTable} ADD COLUMN wrapped_data_key TEXT',
+    );
+  }
+
   static Future<void> _createPhotoCapturesTable(Database db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS ${GraniteLakeDatabaseService.photoCapturesTable} (
@@ -402,6 +440,9 @@ class Migrations {
         gps_null_reason_hash TEXT,
         submission_attempt_count INTEGER NOT NULL DEFAULT 0,
         last_attempt_at TEXT,
+        encrypted_payload TEXT,
+        payload_iv TEXT,
+        wrapped_data_key TEXT,
         FOREIGN KEY (project_id) REFERENCES ${GraniteLakeDatabaseService.projectsTable}(project_id)
           ON DELETE SET NULL
       )
@@ -439,6 +480,9 @@ class Migrations {
         internet_null_reason_hash TEXT,
         submission_attempt_count INTEGER NOT NULL DEFAULT 0,
         last_attempt_at TEXT,
+        encrypted_payload TEXT,
+        payload_iv TEXT,
+        wrapped_data_key TEXT,
         FOREIGN KEY (project_id) REFERENCES ${GraniteLakeDatabaseService.projectsTable}(project_id)
           ON DELETE SET NULL
       )

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
@@ -83,6 +84,14 @@ class GraniteLakeSecureStateService {
   static const _biometricGatePayloadKey = 'biometric_gate_payload';
   static const _sessionKey = 'session_record';
   static const _resetNoticeKey = 'reset_notice';
+  // Offline-queue at-rest encryption (§7.3, per the user's explicit ask):
+  // the raw Sui private key, wrapped with the same RSA capture-wrap public
+  // key that wraps each queued row's AES data key
+  // (capture_encryption_service.dart), so unlockQueueForSubmission() can
+  // recover it in the same native batch-unwrap call - and therefore the
+  // same single biometric prompt - as the queued captures, instead of a
+  // separate prompt against the AES gate above.
+  static const _queueWrappedSigningKeyKey = 'queue_wrapped_signing_key';
 
   final FlutterSecureStorage _storage;
   final LocalAuthentication _localAuth;
@@ -308,6 +317,19 @@ class GraniteLakeSecureStateService {
         key: _identityKey,
         value: jsonEncode(protectedIdentity.toJson()),
       );
+      // Best-effort: the AES gate above is the primary, required
+      // protection for the raw key - this RSA-wrapped copy only exists to
+      // collapse unlockQueueForSubmission() to a single prompt, so a
+      // failure here (e.g. RSA keypair generation unsupported) must not
+      // fail binding itself; it just falls back to the two-prompt path
+      // (granite_lake_controller.dart's migration handling).
+      try {
+        await wrapAndPersistSigningKeyForQueue(identity.suiPrivateKey!);
+      } catch (error) {
+        debugPrint(
+          '[QueueEncryption] bindBiometrics: signing-key wrap for queue-unlock failed (non-fatal): $error',
+        );
+      }
 
       if (priorAlias != null &&
           priorAlias.isNotEmpty &&
@@ -431,6 +453,10 @@ class GraniteLakeSecureStateService {
     await _storage.delete(key: _biometricKey);
     await _storage.delete(key: _biometricGatePayloadKey);
     await _storage.delete(key: _sessionKey);
+    // Stale once the AES gate above is gone - the raw key it wraps may no
+    // longer even match a subsequent re-bind, and unlockQueueForSubmission
+    // has its own migration path to re-derive and re-persist this.
+    await _storage.delete(key: _queueWrappedSigningKeyKey);
     if (clearProtectedIdentity) {
       await _storage.delete(key: _identityKey);
     }
@@ -456,6 +482,7 @@ class GraniteLakeSecureStateService {
     await _storage.delete(key: _biometricKey);
     await _storage.delete(key: _biometricGatePayloadKey);
     await _storage.delete(key: _sessionKey);
+    await _storage.delete(key: _queueWrappedSigningKeyKey);
     await _storage.write(key: _resetNoticeKey, value: notice);
   }
 
@@ -539,6 +566,39 @@ class GraniteLakeSecureStateService {
     }
 
     return restoredKey;
+  }
+
+  /// Public alias of [_restoreSuiPrivateKey] - reused by
+  /// `GraniteLakeController.unlockQueueForSubmission()` to reconstruct the
+  /// signing key from the RSA-unwrapped bytes it gets back from the same
+  /// native batch call as the queued captures, so both paths validate the
+  /// key format identically.
+  SuiED25519PrivateKey restoreSuiPrivateKey(String suiPrivateKey) =>
+      _restoreSuiPrivateKey(suiPrivateKey);
+
+  Future<String?> readQueueWrappedSigningKey() {
+    return _storage.read(key: _queueWrappedSigningKeyKey);
+  }
+
+  /// Wraps the raw Sui private key with the same RSA capture-wrap public
+  /// key used for each queued row's AES data key (native
+  /// `granite_lake/biometric_gate` channel, `wrapCaptureDataKey`) and
+  /// persists it, so a later `unwrapCaptureDataKeys` batch call can recover
+  /// it alongside the queue in one prompt. No biometric prompt itself -
+  /// wrapping is a public-key operation, same as for a capture's data key.
+  Future<void> wrapAndPersistSigningKeyForQueue(String suiPrivateKey) async {
+    await _biometricGateChannel.invokeMethod<void>('ensureCaptureWrapKey');
+    final wrapped = await _biometricGateChannel
+        .invokeMethod<String>('wrapCaptureDataKey', {
+          'dataKeyBase64': base64Encode(utf8.encode(suiPrivateKey)),
+          'captureId': 'signing_key',
+        });
+    if (wrapped == null || wrapped.isEmpty) {
+      throw const FormatException(
+        'Signing key wrap for queue-unlock returned no result.',
+      );
+    }
+    await _storage.write(key: _queueWrappedSigningKeyKey, value: wrapped);
   }
 
   Future<_BiometricGateBinding> _createBiometricGate(String payload) async {

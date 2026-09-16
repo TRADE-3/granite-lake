@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -7,6 +8,7 @@ import 'package:on_chain/sui/sui.dart';
 
 import '../database/granite_lake_data_controllers.dart';
 import '../constants/app_constants.dart';
+import '../services/capture_encryption_service.dart';
 import '../services/granite_lake_capture_workflow_service.dart';
 import '../services/photo_attestation_service.dart';
 import '../services/granite_lake_secure_state_service.dart';
@@ -33,6 +35,7 @@ class GraniteLakeController extends ChangeNotifier {
     _secureStateService = GraniteLakeSecureStateService(storage: _storage);
     _captureWorkflowService = GraniteLakeCaptureWorkflowService();
     _photoAttestationService = PhotoAttestationService();
+    _captureEncryptionService = CaptureEncryptionService();
   }
 
   final FlutterSecureStorage _storage;
@@ -40,6 +43,28 @@ class GraniteLakeController extends ChangeNotifier {
   late final GraniteLakeSecureStateService _secureStateService;
   late final GraniteLakeCaptureWorkflowService _captureWorkflowService;
   late final PhotoAttestationService _photoAttestationService;
+  late final CaptureEncryptionService _captureEncryptionService;
+
+  static const String _queueEncryptionLogTag = '[QueueEncryption]';
+  // Offline-queue at-rest encryption (offline-capture design doc §7.3,
+  // intentionally modified): independent of the 30-minute signing session
+  // above. A single "unlock to submit" prompt batch-decrypts every
+  // currently-queued row's payload into this cache; it's destroyed either
+  // when this 5-minute window elapses or the moment the queue drains to
+  // empty, whichever comes first - never left to ride the general session's
+  // own, longer, lifecycle.
+  final Map<String, Map<String, dynamic>> _decryptedQueuePayloads = {};
+  DateTime? _queueUnlockExpiresAt;
+  Timer? _queueUnlockTicker;
+  // The signing key recovered as part of the same batch-unwrap as the
+  // queue payloads above (unlockQueueForSubmission's normal path) - kept
+  // entirely separate from _sessionSigningKey/_session below, on purpose:
+  // this one lives only as long as the 5-minute queue-unlock window itself
+  // (or until the queue drains, whichever is first, via _lockQueue), never
+  // extended into a standing 30-minute capture session. It exists solely
+  // so retryPendingAttestations() can sign a resubmission during that
+  // window without also being able to authorize a brand-new capture.
+  SuiED25519PrivateKey? _queueSigningKey;
 
   Timer? _sessionTicker;
   bool _isInitializing = true;
@@ -62,6 +87,7 @@ class GraniteLakeController extends ChangeNotifier {
   Map<String, AttestationChainVerificationRecord> _attestationVerifications =
       const {};
   bool _isRetryingPendingAttestations = false;
+  bool _isUnlockingQueueForSubmission = false;
   bool _offlineCaptureForced = false;
   bool _gpsCaptureForcedNull = false;
   Map<String, int> _verificationRetryCounts = const {};
@@ -140,6 +166,16 @@ class GraniteLakeController extends ChangeNotifier {
 
   bool get pendingAttestationsNeedUnlock =>
       pendingAttestationCount > 0 && !hasActiveSession;
+
+  // Offline-queue at-rest encryption (§7.3): the 5-minute decrypted-queue
+  // window, independent of the 30-minute signing session above - see the
+  // field comment on _decryptedQueuePayloads.
+  bool get isQueueUnlocked {
+    final expiresAt = _queueUnlockExpiresAt;
+    return expiresAt != null && expiresAt.isAfter(DateTime.now().toUtc());
+  }
+
+  bool get queueUnlockNeeded => pendingAttestationCount > 0 && !isQueueUnlocked;
 
   bool get isOfflineCaptureForced => _offlineCaptureForced;
   bool get isGpsCaptureForcedNull => _gpsCaptureForcedNull;
@@ -470,7 +506,14 @@ class GraniteLakeController extends ChangeNotifier {
     if (_isRetryingPendingAttestations) {
       return;
     }
-    if (!hasActiveSession || _sessionSigningKey == null) {
+    // Either signing key unlocks a resubmission - the 30-minute general
+    // session (_sessionSigningKey) or the queue-scoped one recovered by
+    // unlockQueueForSubmission's normal path (_queueSigningKey, its own
+    // separate 5-minute/until-drained lifecycle - see that field's doc).
+    final hasUsableSigningKey =
+        (hasActiveSession && _sessionSigningKey != null) ||
+        _queueSigningKey != null;
+    if (!hasUsableSigningKey) {
       return;
     }
 
@@ -512,24 +555,65 @@ class GraniteLakeController extends ChangeNotifier {
       }
 
       for (final record in pending) {
-        final signingKey = _sessionSigningKey;
-        if (!hasActiveSession || signingKey == null) {
+        final signingKey =
+            (hasActiveSession ? _sessionSigningKey : null) ?? _queueSigningKey;
+        if (signingKey == null) {
           break;
         }
 
+        // Offline-queue at-rest encryption (§7.3): a row that took the
+        // offline/forced-offline path has its submission-relevant fields
+        // blanked in `record` itself (migrations.dart's version-13
+        // migration) - the real values only exist in
+        // _decryptedQueuePayloads, populated by unlockQueueForSubmission().
+        // A row with no entry there yet (5-minute window lapsed, or it was
+        // queued after the last unlock) is left untouched rather than
+        // misfiled as failed - the same no-op treatment already given to a
+        // missing signing key above.
+        AttestationRecord? decryptedRecord;
+        if (record.isEncryptedAtRest) {
+          final decryptedPayload = _decryptedQueuePayloads[record.captureId];
+          if (decryptedPayload == null) {
+            debugPrint(
+              '$_queueEncryptionLogTag[${record.captureId}] submit_attempted=skipped reason=not_unlocked',
+            );
+            continue;
+          }
+          decryptedRecord = _rehydrateFromDecryptedPayload(
+            record,
+            decryptedPayload,
+          );
+        }
+
+        debugPrint(
+          '$_queueEncryptionLogTag[${record.captureId}] submit_attempted encrypted=${record.isEncryptedAtRest}',
+        );
         final updated = record.isFile
             ? await _submitFileAttestation(
                 record,
                 sessionSigningKey: signingKey,
-                projectId: record.attestedProjectId,
+                projectId:
+                    decryptedRecord?.attestedProjectId ??
+                    record.attestedProjectId,
+                decryptedRecord: decryptedRecord,
               )
             : await _submitPhotoAttestation(
                 record,
                 sessionSigningKey: signingKey,
-                gpsLabel: record.capturedGpsLabel,
-                altitudeLabel: record.capturedAltitudeLabel,
-                projectId: record.attestedProjectId,
+                gpsLabel:
+                    decryptedRecord?.capturedGpsLabel ??
+                    record.capturedGpsLabel,
+                altitudeLabel:
+                    decryptedRecord?.capturedAltitudeLabel ??
+                    record.capturedAltitudeLabel,
+                projectId:
+                    decryptedRecord?.attestedProjectId ??
+                    record.attestedProjectId,
+                decryptedRecord: decryptedRecord,
               );
+        debugPrint(
+          '$_queueEncryptionLogTag[${record.captureId}] submit_result=${updated.suiSubmissionStatus}',
+        );
 
         final seededVerification = _seedVerificationFor(updated);
         _attestationVerifications = {
@@ -541,9 +625,306 @@ class GraniteLakeController extends ChangeNotifier {
           unawaited(verifyAttestationOnChain(updated));
         }
       }
+
+      // §7.3's "after the last pending submission is gone, destroy any
+      // decrypted in-memory data" - don't wait out the rest of the 5-minute
+      // window once there's nothing left it would be protecting.
+      if ((_decryptedQueuePayloads.isNotEmpty || _queueSigningKey != null) &&
+          pendingAttestationCount == 0) {
+        _lockQueue(reason: 'queue_drained');
+      }
     } finally {
       _isRetryingPendingAttestations = false;
     }
+  }
+
+  // Sentinel id for the raw signing key's slot in the same batch-unwrap
+  // call as the queued rows (see unlockQueueForSubmission) - distinct from
+  // any real captureId, which is always a numeric microsecond timestamp.
+  static const String _signingKeyBatchId = '__signing_key__';
+
+  /// Offline-queue at-rest encryption (§7.3, intentionally modified): the
+  /// single entry point for the "unlock to submit" CTA and the reconnect
+  /// notification tap. The raw Sui signing key is wrapped with the same
+  /// RSA capture-wrap key as every queued row's data key
+  /// (`GraniteLakeSecureStateService.wrapAndPersistSigningKeyForQueue`), so
+  /// the normal case below is a *single* biometric prompt covering both -
+  /// not a separate `startSession()` call plus a separate queue unlock.
+  ///
+  /// Migration path: a device that bound biometrics before this existed
+  /// (or has simply never unlocked the queue before) has no wrapped
+  /// signing key on file yet. That one time only, this falls back to the
+  /// original two-prompt flow (start the general session the old way,
+  /// unwrap the queue separately) and wraps+persists the key for next
+  /// time, so every unlock after this one - on this device - is
+  /// single-prompt.
+  Future<ActionResult> unlockQueueForSubmission() async {
+    // Without this guard, a double-tap on the "unlock" CTA (or a
+    // notification tap landing while the CTA is already mid-flight) fires
+    // two concurrent native unwrapCaptureDataKeys batches for the same
+    // rows - observed on-device as two interleaved "unlock_requested"
+    // calls racing a single BiometricPrompt/CryptoObject, which is not a
+    // supported usage and produces spurious native failures.
+    if (_isUnlockingQueueForSubmission) {
+      return const ActionResult.success();
+    }
+    _isUnlockingQueueForSubmission = true;
+    try {
+      final encryptedPending =
+          _attestationHistory
+              .where(
+                (record) =>
+                    (record.isAttestationPending ||
+                        _isRecoverableFailure(record)) &&
+                    record.isEncryptedAtRest,
+              )
+              .toList()
+            ..sort((a, b) => a.capturedAt.compareTo(b.capturedAt));
+
+      final wrappedSigningKeyBase64 = await _secureStateService
+          .readQueueWrappedSigningKey();
+
+      if (wrappedSigningKeyBase64 == null) {
+        return _unlockQueueViaMigrationFallback(encryptedPending);
+      }
+
+      if (encryptedPending.isEmpty) {
+        // Nothing queued right now - no reason to prompt for nothing.
+        return const ActionResult.success();
+      }
+
+      final captureIds = [
+        ...encryptedPending.map((record) => record.captureId),
+        _signingKeyBatchId,
+      ];
+      final wrappedKeys = [
+        ...encryptedPending.map((record) => record.wrappedDataKey ?? ''),
+        wrappedSigningKeyBase64,
+      ];
+
+      debugPrint(
+        '$_queueEncryptionLogTag unlock_requested batch_size=${captureIds.length} '
+        '(includes signing key)',
+      );
+      final Map<String, Uint8List?> unwrapped;
+      try {
+        unwrapped = await _captureEncryptionService.unwrapDataKeys(
+          captureIds: captureIds,
+          wrappedKeysBase64: wrappedKeys,
+        );
+      } catch (error) {
+        debugPrint(
+          '$_queueEncryptionLogTag batch_unwrap_result=error error=$error',
+        );
+        return ActionResult.failure('Could not unlock queued captures: $error');
+      }
+
+      final signingKeyBytes = unwrapped[_signingKeyBatchId];
+      if (signingKeyBytes == null) {
+        debugPrint('$_queueEncryptionLogTag signing_key_unwrap_result=failed');
+        return const ActionResult.failure(
+          'Your secure signing key could not be unlocked. Try again.',
+        );
+      }
+      final SuiED25519PrivateKey signingKey;
+      try {
+        signingKey = _secureStateService.restoreSuiPrivateKey(
+          utf8.decode(signingKeyBytes),
+        );
+      } finally {
+        signingKeyBytes.fillRange(0, signingKeyBytes.length, 0);
+      }
+      debugPrint('$_queueEncryptionLogTag signing_key_unwrap_result=ok');
+
+      // Deliberately NOT the general 30-minute session
+      // (_sessionSigningKey/_session) - this key is scoped to the same
+      // 5-minute/until-drained window as the decrypted queue payloads
+      // (_queueSigningKey's field doc), so it never authorizes a brand-new
+      // capture, and _lockQueue destroys it the same moment it destroys
+      // everything else this unlock produced.
+      _queueSigningKey = signingKey;
+      notifyListeners();
+
+      return _decryptAndSubmitQueue(encryptedPending, preUnwrapped: unwrapped);
+    } finally {
+      _isUnlockingQueueForSubmission = false;
+    }
+  }
+
+  /// One-time-per-device fallback for [unlockQueueForSubmission] when no
+  /// RSA-wrapped signing key is on file yet - see that method's doc
+  /// comment. Two prompts this once; wraps the key for next time.
+  Future<ActionResult> _unlockQueueViaMigrationFallback(
+    List<AttestationRecord> encryptedPending,
+  ) async {
+    if (!hasActiveSession) {
+      final sessionResult = await startSession();
+      if (!sessionResult.isSuccess) {
+        return sessionResult;
+      }
+    }
+    final signingKey = _sessionSigningKey;
+    if (signingKey == null) {
+      return const ActionResult.failure(
+        'Your secure signing key is locked. Start a new session.',
+      );
+    }
+
+    // Fire-and-forget: failing to wrap-for-next-time shouldn't block this
+    // unlock from proceeding with the queue it already has a valid key
+    // for.
+    unawaited(
+      _secureStateService
+          .wrapAndPersistSigningKeyForQueue(signingKey.toSuiPrivateKey())
+          .then(
+            (_) => debugPrint(
+              '$_queueEncryptionLogTag signing_key_wrapped_for_next_unlock',
+            ),
+          )
+          .catchError(
+            (Object error) => debugPrint(
+              '$_queueEncryptionLogTag signing_key_wrap_failed error=$error',
+            ),
+          ),
+    );
+
+    if (encryptedPending.isEmpty) {
+      // startSession() above already triggered retryPendingAttestations()
+      // on success for any unencrypted pending rows.
+      return const ActionResult.success();
+    }
+    return _decryptAndSubmitQueue(encryptedPending);
+  }
+
+  /// Shared tail of both [unlockQueueForSubmission] paths: unwraps (unless
+  /// already unwrapped as part of a combined batch) and decrypts every
+  /// row's payload, starts the 5-minute queue-unlock window, and runs the
+  /// existing retry sweep. The decrypted cache this populates is destroyed
+  /// after that window elapses or once the queue drains, whichever comes
+  /// first - see [_lockQueue].
+  Future<ActionResult> _decryptAndSubmitQueue(
+    List<AttestationRecord> encryptedPending, {
+    Map<String, Uint8List?>? preUnwrapped,
+  }) async {
+    Map<String, Uint8List?> unwrapped;
+    if (preUnwrapped != null) {
+      unwrapped = preUnwrapped;
+    } else {
+      final captureIds = encryptedPending
+          .map((record) => record.captureId)
+          .toList();
+      final wrappedKeys = encryptedPending
+          .map((record) => record.wrappedDataKey ?? '')
+          .toList();
+      debugPrint(
+        '$_queueEncryptionLogTag unlock_requested batch_size=${captureIds.length}',
+      );
+      try {
+        unwrapped = await _captureEncryptionService.unwrapDataKeys(
+          captureIds: captureIds,
+          wrappedKeysBase64: wrappedKeys,
+        );
+      } catch (error) {
+        debugPrint(
+          '$_queueEncryptionLogTag batch_unwrap_result=error error=$error',
+        );
+        return ActionResult.failure('Could not unlock queued captures: $error');
+      }
+    }
+
+    for (final record in encryptedPending) {
+      final dataKey = unwrapped[record.captureId];
+      if (dataKey == null) {
+        await _markTamperDetected(record);
+        continue;
+      }
+      try {
+        final decryptedJson = await _captureEncryptionService.decryptPayload(
+          captureId: record.captureId,
+          ciphertextBase64: record.encryptedPayload!,
+          ivBase64: record.payloadIv!,
+          dataKeyBytes: dataKey,
+        );
+        _decryptedQueuePayloads[record.captureId] = decryptedJson;
+      } on PayloadTamperedException {
+        await _markTamperDetected(record);
+      }
+    }
+
+    _queueUnlockExpiresAt = DateTime.now().toUtc().add(
+      const Duration(minutes: AppConstants.queueUnlockDurationMinutes),
+    );
+    _syncQueueUnlockTicker();
+    notifyListeners();
+
+    await retryPendingAttestations();
+    return const ActionResult.success();
+  }
+
+  Future<void> _markTamperDetected(AttestationRecord record) async {
+    debugPrint(
+      '$_queueEncryptionLogTag[${record.captureId}] payload_decrypt_result=tamper_detected',
+    );
+    await _updateAttestationRecord(
+      record,
+      suiSubmissionStatus: 'TAMPER_DETECTED',
+      suiErrorMessage:
+          "This capture's stored data failed its integrity check and cannot be resubmitted.",
+    );
+    notifyListeners();
+  }
+
+  /// Rebuilds the submission-relevant fields a decrypted payload carries
+  /// (§7.3) onto a lightweight stand-in [AttestationRecord] used only for
+  /// reading at submission time - `record` itself (the persisted row)
+  /// keeps its blanked plaintext columns unless/until
+  /// `_updateAttestationRecord` declassifies it on a successful anchor.
+  AttestationRecord _rehydrateFromDecryptedPayload(
+    AttestationRecord record,
+    Map<String, dynamic> decryptedPayload,
+  ) {
+    final proofPayloadJson =
+        decryptedPayload['proofPayload'] as Map<String, dynamic>? ??
+        const <String, dynamic>{};
+    return AttestationRecord(
+      captureId: record.captureId,
+      capturedAt: record.capturedAt,
+      submittedAt: record.submittedAt,
+      imagePath: record.imagePath,
+      imageSha256: decryptedPayload['imageSha256'] as String? ?? '',
+      signatureBase64: decryptedPayload['signatureBase64'] as String? ?? '',
+      walletAddress: record.walletAddress,
+      publicKeyHex: record.publicKeyHex,
+      proofPayload: AttestationProofPayload.fromJson(proofPayloadJson),
+      suiTxDigest: record.suiTxDigest,
+      suiObjectId: record.suiObjectId,
+      suiSubmissionStatus: record.suiSubmissionStatus,
+      suiErrorMessage: record.suiErrorMessage,
+      projectId: record.projectId,
+      tags: record.tags,
+      note: record.note,
+      assetType: record.assetType,
+      fileName: record.fileName,
+      mimeType: record.mimeType,
+      fileSizeBytes: record.fileSizeBytes,
+      fileExtension: record.fileExtension,
+      previewKind: record.previewKind,
+      storageMode: record.storageMode,
+      isOnline: decryptedPayload['isOnline'] as bool? ?? true,
+      isForcedOffline: decryptedPayload['isForcedOffline'] as bool? ?? false,
+      internetNullReason: decryptedPayload['internetNullReason'] as String?,
+      internetNullReasonHash:
+          decryptedPayload['internetNullReasonHash'] as String?,
+      hasGps: decryptedPayload['hasGps'] as bool? ?? true,
+      isGpsForcedNull: decryptedPayload['isGpsForcedNull'] as bool? ?? false,
+      gpsNullReason: decryptedPayload['gpsNullReason'] as String?,
+      gpsNullReasonHash: decryptedPayload['gpsNullReasonHash'] as String?,
+      submissionAttemptCount: record.submissionAttemptCount,
+      lastAttemptAt: record.lastAttemptAt,
+      encryptedPayload: record.encryptedPayload,
+      payloadIv: record.payloadIv,
+      wrappedDataKey: record.wrappedDataKey,
+    );
   }
 
   Future<void> dismissResetNotice() async {
@@ -1095,6 +1476,7 @@ class GraniteLakeController extends ChangeNotifier {
       _current = null;
     }
     _sessionTicker?.cancel();
+    _queueUnlockTicker?.cancel();
     unawaited(_dataControllers.dispose());
     super.dispose();
   }
@@ -1187,7 +1569,15 @@ class GraniteLakeController extends ChangeNotifier {
     String? gpsLabel,
     String? altitudeLabel,
     String? projectId,
+    // Offline-queue at-rest encryption (§7.3): non-null exactly when
+    // `record` came off the queue with its plaintext columns blanked -
+    // reads below prefer this over `record` for the fields §7.3 encrypts.
+    // `_updateAttestationRecord` also receives it, so a row that actually
+    // anchors on this attempt gets declassified (plaintext restored,
+    // ciphertext dropped) rather than staying blank forever.
+    AttestationRecord? decryptedRecord,
   }) async {
+    final submissionSource = decryptedRecord ?? record;
     final identity = _identity;
     final config = _photoAttestationConfig;
     final claim = _photoAttestationClaim;
@@ -1200,6 +1590,7 @@ class GraniteLakeController extends ChangeNotifier {
         suiSubmissionStatus: 'FAILED_NOT_CONFIGURED',
         suiErrorMessage:
             'Sui contract configuration is missing, so on-chain attestation could not be submitted.',
+        decryptedRecord: decryptedRecord,
       );
     }
 
@@ -1209,7 +1600,7 @@ class GraniteLakeController extends ChangeNotifier {
         signingKey: sessionSigningKey,
         config: config,
         claim: claim,
-        imageSha256: record.imageSha256,
+        imageSha256: submissionSource.imageSha256,
         gps: resolveAttestationLabel(
           gpsLabel,
           fallback: AppConstants.attestationUnknownLabel,
@@ -1223,12 +1614,12 @@ class GraniteLakeController extends ChangeNotifier {
           fallback: AppConstants.attestationUnassignedLabel,
         ),
         capturedAtMs: record.capturedAt.millisecondsSinceEpoch,
-        isOnline: record.isOnline,
-        isForcedOffline: record.isForcedOffline,
-        internetNullReasonHashHex: record.internetNullReasonHash,
-        hasGps: record.hasGps,
-        isGpsForcedNull: record.isGpsForcedNull,
-        gpsNullReasonHashHex: record.gpsNullReasonHash,
+        isOnline: submissionSource.isOnline,
+        isForcedOffline: submissionSource.isForcedOffline,
+        internetNullReasonHashHex: submissionSource.internetNullReasonHash,
+        hasGps: submissionSource.hasGps,
+        isGpsForcedNull: submissionSource.isGpsForcedNull,
+        gpsNullReasonHashHex: submissionSource.gpsNullReasonHash,
       );
       final updated = await _updateAttestationRecord(
         record,
@@ -1237,6 +1628,7 @@ class GraniteLakeController extends ChangeNotifier {
         suiSubmissionStatus: submission.status,
         suiErrorMessage: '',
         incrementAttempt: true,
+        decryptedRecord: decryptedRecord,
       );
       final verification = submission.verification;
       if (verification != null) {
@@ -1270,6 +1662,7 @@ class GraniteLakeController extends ChangeNotifier {
             : 'FAILED_SUBMISSION',
         suiErrorMessage: error.userMessage,
         incrementAttempt: true,
+        decryptedRecord: decryptedRecord,
       );
     } catch (error) {
       return _updateAttestationRecord(
@@ -1280,6 +1673,7 @@ class GraniteLakeController extends ChangeNotifier {
             : 'FAILED_SUBMISSION',
         suiErrorMessage: 'The attestation transaction failed: $error',
         incrementAttempt: true,
+        decryptedRecord: decryptedRecord,
       );
     }
   }
@@ -1328,7 +1722,11 @@ class GraniteLakeController extends ChangeNotifier {
     AttestationRecord record, {
     required SuiED25519PrivateKey sessionSigningKey,
     required String? projectId,
+    // Offline-queue at-rest encryption (§7.3) - see
+    // _submitPhotoAttestation's parameter doc.
+    AttestationRecord? decryptedRecord,
   }) async {
+    final submissionSource = decryptedRecord ?? record;
     final identity = _identity;
     final config = _photoAttestationConfig;
     final claim = _photoAttestationClaim;
@@ -1341,6 +1739,7 @@ class GraniteLakeController extends ChangeNotifier {
         suiSubmissionStatus: 'FAILED_NOT_CONFIGURED',
         suiErrorMessage:
             'Sui contract configuration is missing, so on-chain attestation could not be submitted.',
+        decryptedRecord: decryptedRecord,
       );
     }
 
@@ -1350,15 +1749,15 @@ class GraniteLakeController extends ChangeNotifier {
         signingKey: sessionSigningKey,
         config: config,
         claim: claim,
-        record: record,
+        record: submissionSource,
         projectId: resolveAttestationLabel(
           projectId,
           fallback: AppConstants.attestationUnassignedLabel,
         ),
         capturedAtMs: record.capturedAt.millisecondsSinceEpoch,
-        isOnline: record.isOnline,
-        isForcedOffline: record.isForcedOffline,
-        internetNullReasonHashHex: record.internetNullReasonHash,
+        isOnline: submissionSource.isOnline,
+        isForcedOffline: submissionSource.isForcedOffline,
+        internetNullReasonHashHex: submissionSource.internetNullReasonHash,
       );
       final updated = await _updateAttestationRecord(
         record,
@@ -1367,6 +1766,7 @@ class GraniteLakeController extends ChangeNotifier {
         suiSubmissionStatus: submission.status,
         suiErrorMessage: '',
         incrementAttempt: true,
+        decryptedRecord: decryptedRecord,
       );
       final verification = submission.verification;
       if (verification != null) {
@@ -1399,6 +1799,7 @@ class GraniteLakeController extends ChangeNotifier {
             : 'FAILED_SUBMISSION',
         suiErrorMessage: error.userMessage,
         incrementAttempt: true,
+        decryptedRecord: decryptedRecord,
       );
     } catch (error) {
       return _updateAttestationRecord(
@@ -1409,6 +1810,7 @@ class GraniteLakeController extends ChangeNotifier {
             : 'FAILED_SUBMISSION',
         suiErrorMessage: 'The attestation transaction failed: $error',
         incrementAttempt: true,
+        decryptedRecord: decryptedRecord,
       );
     }
   }
@@ -1711,46 +2113,78 @@ class GraniteLakeController extends ChangeNotifier {
     // they actually make a network attempt (success or failure alike) -
     // never from the offline-skip path, which never tried at all.
     bool incrementAttempt = false,
+    // Offline-queue at-rest encryption (§7.3): the rehydrated stand-in
+    // used to read real values at submission time when `record` came off
+    // the queue with its plaintext columns blanked. Only used here to
+    // *declassify* - see the anchored check below.
+    AttestationRecord? decryptedRecord,
   }) async {
-    final updated = AttestationRecord(
-      captureId: record.captureId,
-      capturedAt: record.capturedAt,
-      submittedAt: record.submittedAt,
-      imagePath: record.imagePath,
-      imageSha256: record.imageSha256,
-      signatureBase64: record.signatureBase64,
-      walletAddress: record.walletAddress,
-      publicKeyHex: record.publicKeyHex,
-      proofPayload: record.proofPayload,
-      suiTxDigest: suiTxDigest ?? record.suiTxDigest,
-      suiObjectId: suiObjectId ?? record.suiObjectId,
-      suiSubmissionStatus: suiSubmissionStatus ?? record.suiSubmissionStatus,
-      suiErrorMessage: suiErrorMessage ?? record.suiErrorMessage,
-      projectId: record.projectId,
-      tags: record.tags,
-      note: record.note,
-      assetType: record.assetType,
-      fileName: record.fileName,
-      mimeType: record.mimeType,
-      fileSizeBytes: record.fileSizeBytes,
-      fileExtension: record.fileExtension,
-      previewKind: record.previewKind,
-      storageMode: record.storageMode,
-      isOnline: record.isOnline,
-      isForcedOffline: record.isForcedOffline,
-      internetNullReason: record.internetNullReason,
-      internetNullReasonHash: record.internetNullReasonHash,
-      hasGps: record.hasGps,
-      isGpsForcedNull: record.isGpsForcedNull,
-      gpsNullReason: record.gpsNullReason,
-      gpsNullReasonHash: record.gpsNullReasonHash,
-      submissionAttemptCount: incrementAttempt
-          ? record.submissionAttemptCount + 1
-          : record.submissionAttemptCount,
-      lastAttemptAt: incrementAttempt
-          ? DateTime.now().toUtc()
-          : record.lastAttemptAt,
-    );
+    AttestationRecord buildFrom(
+      AttestationRecord plaintextSource, {
+      required bool clearEncryption,
+    }) {
+      return AttestationRecord(
+        captureId: record.captureId,
+        capturedAt: record.capturedAt,
+        submittedAt: record.submittedAt,
+        imagePath: record.imagePath,
+        imageSha256: plaintextSource.imageSha256,
+        signatureBase64: plaintextSource.signatureBase64,
+        walletAddress: record.walletAddress,
+        publicKeyHex: record.publicKeyHex,
+        proofPayload: plaintextSource.proofPayload,
+        suiTxDigest: suiTxDigest ?? record.suiTxDigest,
+        suiObjectId: suiObjectId ?? record.suiObjectId,
+        suiSubmissionStatus: suiSubmissionStatus ?? record.suiSubmissionStatus,
+        suiErrorMessage: suiErrorMessage ?? record.suiErrorMessage,
+        projectId: record.projectId,
+        tags: record.tags,
+        note: record.note,
+        assetType: record.assetType,
+        fileName: record.fileName,
+        mimeType: record.mimeType,
+        fileSizeBytes: record.fileSizeBytes,
+        fileExtension: record.fileExtension,
+        previewKind: record.previewKind,
+        storageMode: record.storageMode,
+        isOnline: plaintextSource.isOnline,
+        isForcedOffline: plaintextSource.isForcedOffline,
+        internetNullReason: plaintextSource.internetNullReason,
+        internetNullReasonHash: plaintextSource.internetNullReasonHash,
+        hasGps: plaintextSource.hasGps,
+        isGpsForcedNull: plaintextSource.isGpsForcedNull,
+        gpsNullReason: plaintextSource.gpsNullReason,
+        gpsNullReasonHash: plaintextSource.gpsNullReasonHash,
+        submissionAttemptCount: incrementAttempt
+            ? record.submissionAttemptCount + 1
+            : record.submissionAttemptCount,
+        lastAttemptAt: incrementAttempt
+            ? DateTime.now().toUtc()
+            : record.lastAttemptAt,
+        encryptedPayload: clearEncryption ? null : record.encryptedPayload,
+        payloadIv: clearEncryption ? null : record.payloadIv,
+        wrappedDataKey: clearEncryption ? null : record.wrappedDataKey,
+      );
+    }
+
+    var updated = buildFrom(record, clearEncryption: false);
+    // Offline-queue at-rest encryption (§7.3): once a previously-encrypted
+    // row is actually anchored on-chain, tamper protection no longer
+    // serves a purpose - declassify it (restore the real plaintext columns
+    // from the decrypted payload, drop the now-redundant ciphertext) so
+    // history/detail UI shows real values instead of the placeholder
+    // blanks it was persisted with while still queued. A row that didn't
+    // anchor this attempt (still pending, or a definite rejection) stays
+    // exactly as blank as it was - only a confirmed on-chain anchor earns
+    // this.
+    if (record.isEncryptedAtRest &&
+        decryptedRecord != null &&
+        updated.isAttestationAnchored) {
+      debugPrint(
+        '$_queueEncryptionLogTag[${record.captureId}] declassified status=${updated.suiSubmissionStatus}',
+      );
+      updated = buildFrom(decryptedRecord, clearEncryption: true);
+    }
     if (updated.isFile) {
       final uploadedFile = UploadedFileRecord.fromAttestationRecord(updated);
       await _dataControllers.uploadedFile.saveUploadedFile(
@@ -1854,6 +2288,11 @@ class GraniteLakeController extends ChangeNotifier {
     _sessionTicker = null;
     _sessionSigningKey = null;
     _session = null;
+    // Tearing down the signing session (biometric invalidation, account
+    // reset/deletion) also tears down the independent §7.3 queue-unlock
+    // window - there's no scenario where the former goes away but the
+    // latter should keep decrypted data alive.
+    _lockQueue(reason: 'session_cleared');
   }
 
   void _syncSessionTicker() {
@@ -1872,5 +2311,46 @@ class GraniteLakeController extends ChangeNotifier {
       }
       notifyListeners();
     });
+  }
+
+  // Offline-queue at-rest encryption (§7.3): the 5-minute decrypted-queue
+  // window, independent of _syncSessionTicker above.
+  void _syncQueueUnlockTicker() {
+    _queueUnlockTicker?.cancel();
+    if (_queueUnlockExpiresAt == null) {
+      _queueUnlockTicker = null;
+      return;
+    }
+
+    _queueUnlockTicker = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!isQueueUnlocked) {
+        timer.cancel();
+        _lockQueue(reason: 'ticker_expired');
+        return;
+      }
+      notifyListeners();
+    });
+  }
+
+  /// Destroys every decrypted queue payload, the queue-scoped signing key,
+  /// and cancels the unlock window. Called when the 5-minute ticker fires,
+  /// immediately once the queue drains to zero mid-sweep
+  /// (`retryPendingAttestations`), and whenever the general signing
+  /// session is torn down (`_clearLocalSessionState`).
+  void _lockQueue({required String reason}) {
+    if (_decryptedQueuePayloads.isEmpty &&
+        _queueUnlockExpiresAt == null &&
+        _queueSigningKey == null) {
+      return;
+    }
+    debugPrint(
+      '$_queueEncryptionLogTag lock_triggered reason=$reason cleared=${_decryptedQueuePayloads.length}',
+    );
+    _decryptedQueuePayloads.clear();
+    _queueSigningKey = null;
+    _queueUnlockTicker?.cancel();
+    _queueUnlockTicker = null;
+    _queueUnlockExpiresAt = null;
+    notifyListeners();
   }
 }
