@@ -1,15 +1,21 @@
 package io.trade3.app
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.security.keystore.UserNotAuthenticatedException
+import android.telephony.TelephonyManager
 import android.util.Log
 import android.view.WindowManager
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.exifinterface.media.ExifInterface
 import io.flutter.embedding.android.FlutterFragmentActivity
@@ -89,6 +95,19 @@ class MainActivity : FlutterFragmentActivity() {
 	private var pendingResult: MethodChannel.Result? = null
 	private var pendingCreateAliasForCleanup: String? = null
 
+	// getMobilePhoneState (soft connectivity messaging + is_forced_offline
+	// attribution: telling "mobile radio truly off" apart from "on but no
+	// signal", and reading the actual Mobile Data toggle) needs
+	// READ_PHONE_STATE, which isn't granted at install time. Requested at
+	// most once per process - respecting a denial rather than re-prompting
+	// on every check, matching the contextual-not-upfront philosophy
+	// already used for POST_NOTIFICATIONS (ReconnectNotificationService.
+	// initialize). A denial permanently falls back to the SIM-presence
+	// heuristic on the Dart side (ConnectivityHeuristicService).
+	private var pendingPhoneStateResult: MethodChannel.Result? = null
+	private var hasRequestedPhoneStatePermission = false
+	private val phoneStatePermissionRequestCode = 4201
+
 	override fun onCreate(savedInstanceState: Bundle?) {
 		// Every screen in this app can show captured evidence photos or their
 		// metadata. Block screenshots, screen recording, and the recent-apps
@@ -114,6 +133,10 @@ class MainActivity : FlutterFragmentActivity() {
 					"wrapCaptureDataKey" -> wrapCaptureDataKey(call, result)
 					"unwrapCaptureDataKeys" -> unwrapCaptureDataKeys(call, result)
 					"stripGpsExif" -> stripGpsExif(call, result)
+					"hasActiveSim" -> hasActiveSim(call, result)
+					"isAirplaneModeOn" -> isAirplaneModeOn(call, result)
+					"isWifiRadioOn" -> isWifiRadioOn(call, result)
+					"getMobilePhoneState" -> getMobilePhoneState(call, result)
 					else -> result.notImplemented()
 				}
 			}
@@ -705,6 +728,137 @@ class MainActivity : FlutterFragmentActivity() {
 		} catch (error: Exception) {
 			Log.e(logTag, "stripGpsExif failed: ${error.message}")
 			result.error("strip_gps_exif_failed", error.message ?: "Could not strip GPS EXIF data.", null)
+		}
+	}
+
+	// Direct SIM-presence signal: "no SIM" means Mobile Data can never be a
+	// viable path regardless of its toggle, so callers know not to expect
+	// one. Only SIM_STATE_ABSENT counts as "no SIM" - every other state
+	// (READY, PIN/PUK-locked, network-locked, restricted, not-ready,
+	// unknown) means some SIM is physically/electronically present, even if
+	// not fully usable right now. No permission required.
+	private fun hasActiveSim(call: MethodCall, result: MethodChannel.Result) {
+		try {
+			val telephonyManager = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
+			result.success(telephonyManager.simState != TelephonyManager.SIM_STATE_ABSENT)
+		} catch (error: Exception) {
+			Log.e(logTag, "hasActiveSim failed: ${error.message}")
+			result.error("has_active_sim_failed", error.message ?: "Could not check SIM state.", null)
+		}
+	}
+
+	// Direct, unambiguous "did the crew turn on airplane mode" signal -
+	// unlike inferring it from a lack of any active interface, which can't
+	// tell that apart from "Wi-Fi on but out of range." No permission
+	// required.
+	private fun isAirplaneModeOn(call: MethodCall, result: MethodChannel.Result) {
+		try {
+			val isOn = Settings.Global.getInt(contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
+			result.success(isOn)
+		} catch (error: Exception) {
+			Log.e(logTag, "isAirplaneModeOn failed: ${error.message}")
+			result.error("is_airplane_mode_on_failed", error.message ?: "Could not read airplane mode state.", null)
+		}
+	}
+
+	// The actual Wi-Fi radio toggle state, independent of whether it's
+	// currently associated with any network - this is what lets the app
+	// tell "Wi-Fi is on but out of range" apart from "Wi-Fi is off"
+	// (connectivity_plus can't distinguish these; both report no active
+	// interface). isWifiEnabled() needs no special permission.
+	private fun isWifiRadioOn(call: MethodCall, result: MethodChannel.Result) {
+		try {
+			val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+			result.success(wifiManager.isWifiEnabled)
+		} catch (error: Exception) {
+			Log.e(logTag, "isWifiRadioOn failed: ${error.message}")
+			result.error("is_wifi_radio_on_failed", error.message ?: "Could not read Wi-Fi radio state.", null)
+		}
+	}
+
+	// The mobile-radio equivalent of isWifiRadioOn's distinction, plus the
+	// actual Mobile Data toggle - both need READ_PHONE_STATE (unlike the
+	// Wi-Fi/SIM/airplane-mode checks above, which are all permission-free),
+	// and are bundled into one call rather than two separate ones
+	// specifically so they can't race on the single
+	// pendingPhoneStateResult/hasRequestedPhoneStatePermission pair below
+	// if Dart ever called both concurrently before permission was
+	// resolved. ServiceState.STATE_POWER_OFF (radio truly off, e.g.
+	// airplane mode) is the only state distinguishable from
+	// STATE_OUT_OF_SERVICE (radio on, no signal - an ordinary dead zone,
+	// not the crew's doing) via this API. Requests the permission at most
+	// once per process (see hasRequestedPhoneStatePermission's doc); a
+	// denial (or any failure) returns both fields null, and the Dart side
+	// falls back to its SIM-presence heuristic rather than blocking on this.
+	private fun getMobilePhoneState(call: MethodCall, result: MethodChannel.Result) {
+		if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) ==
+			PackageManager.PERMISSION_GRANTED
+		) {
+			result.success(readMobilePhoneState())
+			return
+		}
+
+		if (hasRequestedPhoneStatePermission) {
+			// Already asked once this process and it's still not granted -
+			// respect that rather than re-prompting on every tick.
+			result.success(mapOf("serviceState" to null, "dataEnabled" to null))
+			return
+		}
+
+		hasRequestedPhoneStatePermission = true
+		pendingPhoneStateResult = result
+		ActivityCompat.requestPermissions(
+			this,
+			arrayOf(Manifest.permission.READ_PHONE_STATE),
+			phoneStatePermissionRequestCode,
+		)
+	}
+
+	override fun onRequestPermissionsResult(
+		requestCode: Int,
+		permissions: Array<out String>,
+		grantResults: IntArray,
+	) {
+		super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+		if (requestCode != phoneStatePermissionRequestCode) {
+			return
+		}
+		val result = pendingPhoneStateResult ?: return
+		pendingPhoneStateResult = null
+		val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+		result.success(
+			if (granted) readMobilePhoneState() else mapOf("serviceState" to null, "dataEnabled" to null),
+		)
+	}
+
+	// String, not the raw int, to keep the platform channel payload
+	// self-describing on the Dart side rather than mirroring Android's
+	// ServiceState int constants there. Null covers both "no ServiceState
+	// available" and any state this call doesn't need to distinguish.
+	// dataEnabled is a plain boolean (the actual "Mobile Data" toggle,
+	// independent of serviceState - full signal with data toggled off is a
+	// real, common combination this needs to catch separately).
+	private fun readMobilePhoneState(): Map<String, Any?> {
+		return try {
+			val telephonyManager = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
+			val serviceState = when (telephonyManager.serviceState?.state) {
+				android.telephony.ServiceState.STATE_IN_SERVICE -> "in_service"
+				android.telephony.ServiceState.STATE_OUT_OF_SERVICE -> "out_of_service"
+				android.telephony.ServiceState.STATE_EMERGENCY_ONLY -> "emergency_only"
+				android.telephony.ServiceState.STATE_POWER_OFF -> "power_off"
+				else -> null
+			}
+			@Suppress("DEPRECATION")
+			val dataEnabled = try {
+				telephonyManager.isDataEnabled
+			} catch (error: Exception) {
+				Log.e(logTag, "isDataEnabled failed: ${error.message}")
+				null
+			}
+			mapOf("serviceState" to serviceState, "dataEnabled" to dataEnabled)
+		} catch (error: Exception) {
+			Log.e(logTag, "readMobilePhoneState failed: ${error.message}")
+			mapOf("serviceState" to null, "dataEnabled" to null)
 		}
 	}
 

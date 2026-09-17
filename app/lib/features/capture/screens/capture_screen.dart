@@ -625,15 +625,27 @@ class _CaptureScreenState extends State<CaptureScreen> {
     // is offline, not just whether the app toggle happens to be on:
     // - online but the crew toggled offline anyway -> forced (a deliberate
     //   override of a working connection).
-    // - offline because no OS interface at all (wifi + data both off, or
-    //   airplane mode) -> forced, regardless of the toggle - disabling
-    //   connectivity at the device level is itself the deliberate action.
-    // - offline despite an interface being present (weak/no signal, a
-    //   router with no upstream) -> not forced, regardless of the toggle -
-    //   the crew didn't cause this, it would have happened either way.
+    // - offline because the soft connectivity rule is broken (Wi-Fi off,
+    //   airplane mode on, or a SIM's Mobile Data off - see
+    //   ConnectivityHeuristicService.isConnectivityRuleBroken) -> forced,
+    //   regardless of the toggle - those are the crew's own settings, a
+    //   deliberate state, not something that just happened to them.
+    // - offline despite the rule being satisfied (Wi-Fi/data on, airplane
+    //   mode off, but nothing actually reachable - a genuine dead zone) ->
+    //   not forced, regardless of the toggle - the crew didn't cause this,
+    //   it would have happened either way.
+    //
+    // Refreshed explicitly here, right before the decision, rather than
+    // relying on whatever the last periodic poll happened to leave
+    // cached - this is what gets hashed and signed, so it must reflect the
+    // device's actual settings at the moment of capture, not up to one
+    // poll interval ago.
+    if (!isOnline) {
+      await _connectivityService.refreshRadioState();
+    }
     final isForcedOffline = isOnline
         ? appToggleForcedOffline
-        : !_connectivityService.hasOsInterface;
+        : _connectivityService.isConnectivityRuleBroken;
 
     // The internet/GPS null reason(s), when required, are collected on the
     // review screen (offline-capture design doc §4b) rather than blocking
@@ -2267,18 +2279,19 @@ class _CaptureScreenState extends State<CaptureScreen> {
       return debugError == null ? base : '$base\n\n$debugError';
     }
     if (!_hasNetworkConnectivity && !appController.isOfflineCaptureForced) {
-      if (!_connectivityService.hasBothWifiAndMobileActive) {
-        // Deliberately stricter than the actual is_online/shutter-gate
-        // logic (which correctly treats a single active radio as online -
-        // see ConnectivityHeuristicService.hasOsInterface). This message
-        // specifically asks for both Wi-Fi and mobile data on, per explicit
-        // direction, so it also covers the "only one radio is on" case, not
-        // just "both off." Since airplane mode disables every radio, both
-        // being simultaneously active already proves airplane mode is off
-        // too - no separate check needed.
-        return 'Turn on both Wi-Fi and mobile data, and make sure Airplane '
-            'Mode is off, to restore connectivity - or enable Force Offline '
-            'Mode to capture without it.';
+      if (_connectivityService.isConnectivityRuleBroken) {
+        // Soft signal, not a block condition by itself (see
+        // ConnectivityHeuristicService.isConnectivityRuleBroken's doc) -
+        // capture is still only blocked here because the app toggle is
+        // off, same as the branch below. This just explains *why* the
+        // device is offline in terms the crew can act on, and warns that
+        // proceeding (enabling Force Offline Mode) will be recorded as a
+        // deliberate forced-offline capture, since it's their own
+        // settings causing this rather than an ordinary dead zone.
+        return '$_connectivityRuleBreakSummary. Fixing this would likely '
+            'restore connectivity. Capturing now will be recorded as forced '
+            'offline. Enable Force Offline Mode to capture anyway, or fix '
+            'the setting(s) above first.';
       }
       return 'No internet connectivity - capture is blocked until connectivity '
           'returns, or enable Force Offline Mode to capture without it. '
@@ -2328,19 +2341,41 @@ class _CaptureScreenState extends State<CaptureScreen> {
     if (GraniteLakeScope.of(context).isOfflineCaptureForced) {
       return 'Capturing without internet - this capture will be queued for submission.';
     }
-    if (!_connectivityService.hasBothWifiAndMobileActive) {
-      // Deliberately stricter than the actual is_online/shutter-gate logic
-      // (which correctly treats a single active radio as online - see
-      // ConnectivityHeuristicService.hasOsInterface). This message
-      // specifically asks for both Wi-Fi and mobile data on, per explicit
-      // direction, so it also covers the "only one radio is on" case, not
-      // just "both off." Since airplane mode disables every radio, both
-      // being simultaneously active already proves airplane mode is off too
-      // - no separate check needed.
-      return 'Turn on both Wi-Fi and mobile data, and make sure Airplane '
-          'Mode is off, to restore connectivity.';
+    if (_connectivityService.isConnectivityRuleBroken) {
+      // Soft signal, informational only here too - capturing is still
+      // allowed via Force Offline Mode (see the branch above and
+      // _captureBlockedMessage); this just explains why, and that doing so
+      // will be recorded as forced offline rather than an ordinary dead
+      // zone (ConnectivityHeuristicService.isConnectivityRuleBroken).
+      return '$_connectivityRuleBreakSummary. Fixing this would likely '
+          'restore connectivity. Capturing now (via Force Offline Mode) '
+          'will be recorded as forced offline.';
     }
     return 'No internet connectivity. Status: $_networkStatusLabel';
+  }
+
+  // Shared by _captureBlockedMessage and _internetReadinessDetail - names
+  // exactly which setting(s) are responsible, in order, so the crew knows
+  // what to actually go fix rather than guessing from a generic message.
+  String get _connectivityRuleBreakSummary {
+    final fixes = <String>[];
+    if (_connectivityService.isAirplaneModeOn) {
+      fixes.add('Airplane Mode is on');
+    }
+    if (!_connectivityService.isWifiRadioOn) {
+      fixes.add('Wi-Fi is off');
+    }
+    if (_connectivityService.hasSim &&
+        _connectivityService.isMobileDataEnabled == false) {
+      fixes.add('Mobile Data is off');
+    }
+    if (fixes.isEmpty) {
+      // Not normally reachable - callers only read this when
+      // isConnectivityRuleBroken is true - but keeps this getter correct
+      // on its own if the cached signals are momentarily stale.
+      return 'Your connectivity settings need attention';
+    }
+    return fixes.join(', ');
   }
 
   bool _hasAttestationFailure(AttestationRecord record) {

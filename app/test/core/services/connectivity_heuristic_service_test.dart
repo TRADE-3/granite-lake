@@ -44,6 +44,42 @@ void main() {
         expect(result, ConnectivityClass.degraded);
       },
     );
+
+    // Regression test: on a multi-radio device, turning Wi-Fi off while
+    // mobile is still active leaves connectivity_plus reporting an
+    // interface throughout (hasInterface never goes false) - so
+    // isWifiRadioOn/isConnectivityRuleBroken must be refreshed on every
+    // check() call, not only when hasInterface is false, or the Wi-Fi
+    // toggle change is silently missed.
+    test(
+      'refreshes radio state (and picks up Wi-Fi being turned off) even '
+      'when another interface (mobile) keeps hasInterface true throughout',
+      () async {
+        var isWifiRadioOnValue = true;
+        final service = ConnectivityHeuristicService(
+          checkConnectivity: () async => [ConnectivityResult.mobile],
+          hasActiveSimCheck: () async => true,
+          isAirplaneModeOnCheck: () async => false,
+          isWifiRadioOnCheck: () async => isWifiRadioOnValue,
+          mobilePhoneStateCheck: () async => const MobilePhoneState(
+            serviceState: 'in_service',
+            dataEnabled: true,
+          ),
+        );
+
+        await service.check(domain: null);
+        expect(service.isWifiRadioOn, isTrue);
+        expect(service.isConnectivityRuleBroken, isFalse);
+
+        // Crew turns Wi-Fi off - mobile is still active, so
+        // connectivity_plus keeps reporting an interface the whole time.
+        isWifiRadioOnValue = false;
+        await service.check(domain: null);
+
+        expect(service.isWifiRadioOn, isFalse);
+        expect(service.isConnectivityRuleBroken, isTrue);
+      },
+    );
   });
 
   group('ConnectivityHeuristicService classification (synthetic outcomes)', () {
@@ -336,5 +372,198 @@ void main() {
       expect(service.classification, ConnectivityClass.degraded);
       expect(service.label, ConnectivityClass.offline);
     });
+  });
+
+  // isConnectivityRuleBroken is a soft, advisory signal (messaging +
+  // is_forced_offline attribution), never a block condition - these tests
+  // only exercise the signal itself, not capture eligibility.
+  group('ConnectivityHeuristicService.isConnectivityRuleBroken', () {
+    test(
+      'mobilePhoneStateCheck (and its READ_PHONE_STATE prompt) is never '
+      'invoked when there is no SIM - nothing to check Mobile Data on',
+      () async {
+        var mobilePhoneStateCheckCalls = 0;
+        final service = ConnectivityHeuristicService(
+          checkConnectivity: () async => [ConnectivityResult.none],
+          hasActiveSimCheck: () async => false,
+          isAirplaneModeOnCheck: () async => false,
+          isWifiRadioOnCheck: () async => false,
+          mobilePhoneStateCheck: () async {
+            mobilePhoneStateCheckCalls += 1;
+            return const MobilePhoneState(
+              serviceState: 'in_service',
+              dataEnabled: true,
+            );
+          },
+        );
+
+        await service.refreshRadioState();
+
+        expect(mobilePhoneStateCheckCalls, 0);
+        expect(service.mobileServiceState, isNull);
+        expect(service.isMobileDataEnabled, isNull);
+      },
+    );
+
+    test(
+      'Wi-Fi on, airplane mode off, no SIM - rule satisfied even though '
+      'nothing is actually reachable (a genuine dead zone, not a rule '
+      'break)',
+      () async {
+        final service = ConnectivityHeuristicService(
+          checkConnectivity: () async => [ConnectivityResult.none],
+          hasActiveSimCheck: () async => false,
+          isAirplaneModeOnCheck: () async => false,
+          isWifiRadioOnCheck: () async => true,
+          mobilePhoneStateCheck: () async =>
+              const MobilePhoneState(serviceState: null, dataEnabled: null),
+        );
+
+        final result = await service.check(domain: 'acme.com');
+
+        expect(result, ConnectivityClass.offline);
+        expect(service.isWifiRadioOn, isTrue);
+        expect(service.isConnectivityRuleBroken, isFalse);
+      },
+    );
+
+    test('airplane mode on is always a rule break', () async {
+      final service = ConnectivityHeuristicService(
+        checkConnectivity: () async => [ConnectivityResult.none],
+        hasActiveSimCheck: () async => false,
+        isAirplaneModeOnCheck: () async => true,
+        isWifiRadioOnCheck: () async => false,
+        mobilePhoneStateCheck: () async =>
+            const MobilePhoneState(serviceState: null, dataEnabled: null),
+      );
+
+      await service.check(domain: 'acme.com');
+
+      expect(service.isConnectivityRuleBroken, isTrue);
+    });
+
+    test(
+      'Wi-Fi off, no SIM is a rule break - nothing else could possibly work',
+      () async {
+        final service = ConnectivityHeuristicService(
+          checkConnectivity: () async => [ConnectivityResult.none],
+          hasActiveSimCheck: () async => false,
+          isAirplaneModeOnCheck: () async => false,
+          isWifiRadioOnCheck: () async => false,
+          mobilePhoneStateCheck: () async =>
+              const MobilePhoneState(serviceState: null, dataEnabled: null),
+        );
+
+        await service.check(domain: 'acme.com');
+
+        expect(service.isConnectivityRuleBroken, isTrue);
+      },
+    );
+
+    test(
+      'Wi-Fi off, SIM present, Mobile Data confirmed off is a rule break',
+      () async {
+        final service = ConnectivityHeuristicService(
+          checkConnectivity: () async => [ConnectivityResult.none],
+          hasActiveSimCheck: () async => true,
+          isAirplaneModeOnCheck: () async => false,
+          isWifiRadioOnCheck: () async => false,
+          mobilePhoneStateCheck: () async =>
+              const MobilePhoneState(serviceState: null, dataEnabled: false),
+        );
+
+        await service.check(domain: 'acme.com');
+
+        expect(service.isMobileDataEnabled, isFalse);
+        expect(service.isConnectivityRuleBroken, isTrue);
+      },
+    );
+
+    test(
+      'Wi-Fi on, SIM present, Mobile Data confirmed off is still a rule '
+      'break - Wi-Fi alone does not excuse a SIM whose data is off',
+      () async {
+        final service = ConnectivityHeuristicService(
+          checkConnectivity: () async => [ConnectivityResult.none],
+          hasActiveSimCheck: () async => true,
+          isAirplaneModeOnCheck: () async => false,
+          isWifiRadioOnCheck: () async => true,
+          mobilePhoneStateCheck: () async =>
+              const MobilePhoneState(serviceState: null, dataEnabled: false),
+        );
+
+        await service.check(domain: 'acme.com');
+
+        expect(service.isMobileDataEnabled, isFalse);
+        expect(service.isConnectivityRuleBroken, isTrue);
+      },
+    );
+
+    test(
+      'Wi-Fi off is a rule break even with SIM present and Mobile Data '
+      'confirmed on - Wi-Fi is mandatory by rule, cellular is never a '
+      'substitute for it being off',
+      () async {
+        final service = ConnectivityHeuristicService(
+          checkConnectivity: () async => [ConnectivityResult.none],
+          hasActiveSimCheck: () async => true,
+          isAirplaneModeOnCheck: () async => false,
+          isWifiRadioOnCheck: () async => false,
+          mobilePhoneStateCheck: () async => const MobilePhoneState(
+            serviceState: 'out_of_service',
+            dataEnabled: true,
+          ),
+        );
+
+        await service.check(domain: 'acme.com');
+
+        expect(service.isMobileDataEnabled, isTrue);
+        expect(service.isConnectivityRuleBroken, isTrue);
+      },
+    );
+
+    test(
+      'Wi-Fi on, SIM present, Mobile Data unknown (READ_PHONE_STATE not '
+      'granted) is not treated as a rule break - never over-claims a '
+      'deliberate setting from an unreadable signal',
+      () async {
+        final service = ConnectivityHeuristicService(
+          checkConnectivity: () async => [ConnectivityResult.none],
+          hasActiveSimCheck: () async => true,
+          isAirplaneModeOnCheck: () async => false,
+          isWifiRadioOnCheck: () async => true,
+          mobilePhoneStateCheck: () async =>
+              const MobilePhoneState(serviceState: null, dataEnabled: null),
+        );
+
+        await service.check(domain: 'acme.com');
+
+        expect(service.isMobileDataEnabled, isNull);
+        expect(service.isConnectivityRuleBroken, isFalse);
+      },
+    );
+
+    test(
+      'a native check throwing a non-PlatformException error still lets '
+      'check() complete, failing open rather than crashing',
+      () async {
+        final service = ConnectivityHeuristicService(
+          checkConnectivity: () async => [ConnectivityResult.none],
+          hasActiveSimCheck: () async => false,
+          isAirplaneModeOnCheck: () async => false,
+          isWifiRadioOnCheck: () async =>
+              throw Exception('simulated MissingPluginException'),
+          mobilePhoneStateCheck: () async =>
+              const MobilePhoneState(serviceState: null, dataEnabled: null),
+        );
+
+        final result = await service.check(domain: 'acme.com');
+
+        expect(result, ConnectivityClass.offline);
+        // Falls back to the fail-open default (true) rather than crashing
+        // or leaving the field in some undefined state.
+        expect(service.isWifiRadioOn, isTrue);
+      },
+    );
   });
 }

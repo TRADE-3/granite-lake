@@ -1,11 +1,38 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import '../constants/app_constants.dart';
 import '../utils/utils.dart';
+
+const MethodChannel _nativeChannel = MethodChannel(
+  'granite_lake/biometric_gate',
+);
+
+/// Result of the native `getMobilePhoneState` call - bundled into one class
+/// (rather than two separate native calls) specifically so the two values,
+/// both gated behind the same `READ_PHONE_STATE` request, can't race on
+/// `MainActivity.kt`'s single pending-permission-result slot.
+class MobilePhoneState {
+  const MobilePhoneState({
+    required this.serviceState,
+    required this.dataEnabled,
+  });
+
+  /// `'in_service'` / `'out_of_service'` / `'emergency_only'` /
+  /// `'power_off'`, or `null` when unreadable (permission not granted, or
+  /// no `ServiceState` available).
+  final String? serviceState;
+
+  /// The actual "Mobile Data" toggle, independent of [serviceState] - full
+  /// signal with data switched off is a real, common combination this
+  /// exists to catch. `null` when unreadable.
+  final bool? dataEnabled;
+}
 
 /// Two-step, debounced connectivity classifier (offline-capture design doc
 /// §5), replacing a single HTTP-probe-per-tick with: (1) is a radio on at
@@ -48,12 +75,100 @@ class ConnectivityHeuristicService {
   /// private behind a singleton factory, so it can't be subclassed for a
   /// test fake — a function seam is the only practical way to fake step 1
   /// in tests without a real platform channel.
+  /// [hasActiveSimCheck], [isAirplaneModeOnCheck], [isWifiRadioOnCheck], and
+  /// [mobilePhoneStateCheck] all default to their respective native calls
+  /// (`MainActivity.kt`, Android only) - overridable the same way
+  /// [checkConnectivity] is, so tests can drive them without a real
+  /// platform channel.
   ConnectivityHeuristicService({
     Future<List<ConnectivityResult>> Function()? checkConnectivity,
+    Future<bool> Function()? hasActiveSimCheck,
+    Future<bool> Function()? isAirplaneModeOnCheck,
+    Future<bool> Function()? isWifiRadioOnCheck,
+    Future<MobilePhoneState> Function()? mobilePhoneStateCheck,
   }) : _checkConnectivity =
-           checkConnectivity ?? Connectivity().checkConnectivity;
+           checkConnectivity ?? Connectivity().checkConnectivity,
+       _hasActiveSimCheck = hasActiveSimCheck ?? _defaultHasActiveSimCheck,
+       _isAirplaneModeOnCheck =
+           isAirplaneModeOnCheck ?? _defaultIsAirplaneModeOnCheck,
+       _isWifiRadioOnCheck = isWifiRadioOnCheck ?? _defaultIsWifiRadioOnCheck,
+       _mobilePhoneStateCheck =
+           mobilePhoneStateCheck ?? _defaultMobilePhoneStateCheck;
 
   final Future<List<ConnectivityResult>> Function() _checkConnectivity;
+  final Future<bool> Function() _hasActiveSimCheck;
+  final Future<bool> Function() _isAirplaneModeOnCheck;
+  final Future<bool> Function() _isWifiRadioOnCheck;
+  final Future<MobilePhoneState> Function() _mobilePhoneStateCheck;
+
+  // Deliberately catches *any* exception, not just PlatformException -
+  // MissingPluginException (thrown when the native side doesn't implement
+  // a given channel method at all, e.g. an old build reached via hot
+  // reload, which only reloads Dart, never Kotlin) is a sibling class, not
+  // a subtype, and would otherwise slip past an `on PlatformException`
+  // catch. These four checks exist purely to make messaging/
+  // is_forced_offline attribution more precise - a soft, advisory
+  // signal, never a hard block - so failing open (never letting one of
+  // them throw at all) is the right trade-off regardless of why the
+  // native call failed.
+  static Future<bool> _defaultHasActiveSimCheck() async {
+    if (!Platform.isAndroid) {
+      return true;
+    }
+    try {
+      final result = await _nativeChannel.invokeMethod<bool>('hasActiveSim');
+      return result ?? true;
+    } catch (_) {
+      // Fail open: still suggest mobile data rather than silently hiding a
+      // suggestion that might actually be actionable.
+      return true;
+    }
+  }
+
+  static Future<bool> _defaultIsAirplaneModeOnCheck() async {
+    if (!Platform.isAndroid) {
+      return false;
+    }
+    try {
+      final result = await _nativeChannel.invokeMethod<bool>(
+        'isAirplaneModeOn',
+      );
+      return result ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> _defaultIsWifiRadioOnCheck() async {
+    if (!Platform.isAndroid) {
+      return true;
+    }
+    try {
+      final result = await _nativeChannel.invokeMethod<bool>('isWifiRadioOn');
+      // Fail open: assume the radio might be on rather than wrongly telling
+      // the crew to turn on a radio that already is.
+      return result ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static Future<MobilePhoneState> _defaultMobilePhoneStateCheck() async {
+    if (!Platform.isAndroid) {
+      return const MobilePhoneState(serviceState: null, dataEnabled: null);
+    }
+    try {
+      final result = await _nativeChannel.invokeMapMethod<String, Object?>(
+        'getMobilePhoneState',
+      );
+      return MobilePhoneState(
+        serviceState: result?['serviceState'] as String?,
+        dataEnabled: result?['dataEnabled'] as bool?,
+      );
+    } catch (_) {
+      return const MobilePhoneState(serviceState: null, dataEnabled: null);
+    }
+  }
 
   static const _ringBufferSize = 5;
   final Queue<_ProbeOutcome> _recentOutcomes = Queue<_ProbeOutcome>();
@@ -100,27 +215,116 @@ class ConnectivityHeuristicService {
   /// mirrors [classification], not [label].
   bool get hasOsInterface => _hasOsInterface;
 
-  // Raw interfaces from the most recent real check() call - only used by
-  // hasBothWifiAndMobileActive below, never by the classifier itself.
-  List<ConnectivityResult> _lastInterfaces = const [];
+  // Refreshed only when check() finds no interface (see check() below) -
+  // these are a soft, advisory signal (messaging + is_forced_offline
+  // attribution), never part of the hasInterface/classification/label
+  // pipeline above, so there's no reason to pay for a platform-channel
+  // round trip (or risk the READ_PHONE_STATE prompt firing) while normally
+  // online.
+  bool _hasSim = true;
+  bool _isAirplaneModeOn = false;
+  bool _isWifiRadioOn = true;
+  String? _mobileServiceState;
+  bool? _mobileDataEnabled;
 
-  /// `true` only when *both* wifi and mobile data are simultaneously
-  /// reporting active - deliberately stricter than [hasOsInterface] (which
-  /// a single interface already satisfies, and which is what the actual
-  /// online/offline classification above uses). This exists purely for the
-  /// capture screen's "why is this blocked" messaging, which wants to be
-  /// able to tell the crew to turn on a *specific* radio - never for
-  /// [isOnlineCapable]/[classification]/[label], where a Wi-Fi-only or
-  /// data-only device must keep being treated as online-capable like
-  /// normal device usage actually works.
+  /// Whether this device has an active SIM (physical or eSIM) at all.
+  /// `true` (fail-open default) until the first [check]/[refreshRadioState]
+  /// resolves it, or if the native call fails.
+  bool get hasSim => _hasSim;
+
+  /// Direct, unambiguous "did the crew turn on airplane mode" signal -
+  /// unlike inferring it from a lack of any active interface, which can't
+  /// tell that apart from "Wi-Fi on but out of range of any AP." `false`
+  /// until the first [check]/[refreshRadioState] resolves it, or if the
+  /// native call fails.
+  bool get isAirplaneModeOn => _isAirplaneModeOn;
+
+  /// The real Wi-Fi radio toggle state (native `WifiManager.isWifiEnabled`),
+  /// independent of whether it's currently associated with a network. `true`
+  /// (fail-open default) until the first [check]/[refreshRadioState]
+  /// resolves it, or if the native call fails.
+  bool get isWifiRadioOn => _isWifiRadioOn;
+
+  /// The actual "Mobile Data" toggle (native `TelephonyManager.
+  /// isDataEnabled`), independent of signal strength - `null` when
+  /// unreadable (`READ_PHONE_STATE` not granted, no SIM, or the call
+  /// failed), never assumed either way in that case.
+  bool? get isMobileDataEnabled => _mobileDataEnabled;
+
+  /// `'in_service'` / `'out_of_service'` / `'emergency_only'` /
+  /// `'power_off'`, or `null` when unreadable. Exposed mainly for
+  /// diagnostics/messaging detail; [isConnectivityRuleBroken] only reads
+  /// [isMobileDataEnabled] and [isWifiRadioOn]/[isAirplaneModeOn], not this.
+  String? get mobileServiceState => _mobileServiceState;
+
+  /// The soft connectivity rule this app expects to hold: Wi-Fi on, airplane
+  /// mode off, and - only if this device actually has a SIM - Mobile Data
+  /// on too. `true` when any of those is violated.
   ///
-  /// Also doubles as an airplane-mode check with no extra platform code:
-  /// airplane mode disables every radio, so if both wifi and mobile are
-  /// simultaneously active, airplane mode cannot be on. connectivity_plus
-  /// has no direct airplane-mode API to check that separately.
-  bool get hasBothWifiAndMobileActive =>
-      _lastInterfaces.contains(ConnectivityResult.wifi) &&
-      _lastInterfaces.contains(ConnectivityResult.mobile);
+  /// This is advisory only - it never blocks capture (offline capture stays
+  /// available exactly as the offline-capture design already allows) and
+  /// is independent of whether the device can actually *reach* anything
+  /// right now: a device that satisfies this rule but still can't get
+  /// online (Wi-Fi on, out of range, no real signal - a genuine dead zone)
+  /// reports `false` here, same as a fully online device. What this
+  /// *does* feed is (a) the capture screen's advisory messaging, telling
+  /// the crew specifically which setting to fix, and (b) `is_forced_offline`
+  /// at capture time when the device turns out to be offline - a rule
+  /// violation means the crew's own settings caused it, worth recording as
+  /// deliberate; a dead zone with the rule satisfied is not.
+  bool get isConnectivityRuleBroken {
+    if (_isAirplaneModeOn) {
+      return true;
+    }
+    if (!_isWifiRadioOn) {
+      return true;
+    }
+    if (_hasSim && _mobileDataEnabled == false) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Lightweight, standalone refresh of the four signals above (SIM
+  /// presence, airplane mode, Wi-Fi, mobile phone state) - unlike [check],
+  /// this never touches `connectivity_plus` or the `/utc` probe, so it's
+  /// safe and cheap to call directly wherever the capture screen needs a
+  /// fresh read (e.g. right before building its advisory message).
+  /// [check] also relies on this when it finds no interface, rather than
+  /// duplicating the fetch logic.
+  Future<void> refreshRadioState() async {
+    try {
+      final results = await Future.wait<bool>([
+        _hasActiveSimCheck(),
+        _isAirplaneModeOnCheck(),
+        _isWifiRadioOnCheck(),
+      ]);
+      _hasSim = results[0];
+      _isAirplaneModeOn = results[1];
+      _isWifiRadioOn = results[2];
+
+      if (_hasSim) {
+        // Only checked (and only ever prompts for READ_PHONE_STATE) when
+        // there's actually a SIM to have Mobile Data on in the first
+        // place - a no-SIM device has no mobile phone state worth asking
+        // the OS, or the crew, to grant a permission for.
+        final phoneState = await _mobilePhoneStateCheck();
+        _mobileServiceState = phoneState.serviceState;
+        _mobileDataEnabled = phoneState.dataEnabled;
+      } else {
+        _mobileServiceState = null;
+        _mobileDataEnabled = null;
+      }
+    } catch (error, stack) {
+      // Each individual check already fails open internally (see their
+      // shared doc comment) - this is a last-resort net in case a future
+      // change to one of them reintroduces an uncaught throw. This is a
+      // soft, advisory signal, so swallowing here and keeping whatever
+      // was already resolved is correct - it must never propagate and
+      // break a caller that isn't expecting it.
+      debugPrint('Connectivity radio-state refresh failed: $error\n$stack');
+    }
+  }
 
   /// The debounced, user-facing classification — flips only after
   /// [AppConstants.connectivityConsecutiveConfirmationsForLabelFlip]
@@ -155,8 +359,19 @@ class ConnectivityHeuristicService {
   /// calls) — a null/empty domain is treated as step 2 failing outright
   /// (nothing to probe), same as today's behavior.
   Future<ConnectivityClass> check({required String? domain}) async {
+    // Refreshed on every call, unconditionally - not just when
+    // hasInterface below is false. A multi-radio device (Wi-Fi off,
+    // mobile still on as a fallback interface) keeps hasInterface true
+    // even with Wi-Fi switched off, so gating this on "no interface at
+    // all" left isWifiRadioOn stuck at a stale value whenever some other
+    // interface was still up - exactly the case this signal most needs to
+    // be right for. These are cheap, mostly permission-free local calls
+    // (see refreshRadioState's own doc for the one exception), so paying
+    // for them every tick is the correct trade-off for a signal that
+    // feeds messaging and is_forced_offline attribution.
+    await refreshRadioState();
+
     final interfaces = await _checkConnectivity();
-    _lastInterfaces = interfaces;
     final hasInterface = interfaces.any(
       (result) => result != ConnectivityResult.none,
     );

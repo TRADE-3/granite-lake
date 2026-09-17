@@ -5,6 +5,14 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- WifiManager.isWifiEnabled() (MainActivity.kt's isWifiRadioOn,
+         backing ConnectivityHeuristicService.isWifiRadioOn) requires this -
+         confirmed on-device: without it, every call throws
+         SecurityException, which the fail-open catch then silently turned
+         into "assume Wi-Fi is on" regardless of the real toggle state. A
+         normal (not dangerous) permission, granted at install time, no
+         runtime prompt. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
@@ -14,6 +22,15 @@
          "unlock to submit" reminder on Android 13+. Requested at runtime
          (ReconnectNotificationService.initialize), not just declared here. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Lets the capture screen distinguish "Mobile Data toggle off" and
+         "mobile radio truly off" from "on but no signal" via ServiceState -
+         connectivity_plus alone can't tell those apart. Feeds the
+         soft connectivity-rule check (Wi-Fi on / airplane off / Mobile
+         Data on if a SIM exists) used for advisory messaging and
+         is_forced_offline attribution, never a hard block. Requested at
+         runtime, at most once per process (MainActivity.kt's
+         getMobilePhoneState), never upfront during onboarding. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
     <!-- The app never records audio or requests legacy shared-storage read
          access; camera_android_camerax (and a transitive dependency) merge
