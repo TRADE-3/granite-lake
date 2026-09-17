@@ -542,7 +542,7 @@ class _ProfileHeaderCard extends StatelessWidget {
                 const SizedBox(width: 14),
                 Expanded(
                   child: Text(
-                    'GRANITE RIDGE',
+                    'TRADE3',
                     style: AppTextStyles.labelLarge.copyWith(
                       color: AppColors.textPrimary,
                       letterSpacing: 1.5,

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -31,7 +32,6 @@ class CaptureDetailScreen extends StatefulWidget {
 }
 
 class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
-  bool _isSavingImage = false;
   bool _isSavingFile = false;
   bool _verificationRequested = false;
 
@@ -105,13 +105,37 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
       return;
     }
 
-    if (record.isFile) {
-      setState(() => _isSavingFile = true);
-      try {
+    setState(() => _isSavingFile = true);
+    try {
+      final bytes = await assetFile.readAsBytes();
+
+      // Sanity check before handing bytes off to either export path: catches
+      // a corrupted/tampered internal copy before it's exported, regardless
+      // of which path below actually writes it.
+      if (!record.isEncryptedAtRest && record.contentSha256.isNotEmpty) {
+        final digest = await Sha256().hash(bytes);
+        if (_hex(digest.bytes) != record.contentSha256) {
+          if (!mounted) {
+            return;
+          }
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'Stored asset failed integrity check — save aborted',
+                ),
+              ),
+            );
+          return;
+        }
+      }
+
+      if (record.isFile) {
         final savedPath = await FilePicker.platform.saveFile(
           dialogTitle: 'Save attested file',
           fileName: record.assetName,
-          bytes: await assetFile.readAsBytes(),
+          bytes: bytes,
           type: FileType.any,
         );
         if (!mounted) {
@@ -128,23 +152,14 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()
           ..showSnackBar(const SnackBar(content: Text('File saved')));
-      } catch (_) {
-        if (!mounted) {
-          return;
-        }
-        ScaffoldMessenger.of(context)
-          ..hideCurrentSnackBar()
-          ..showSnackBar(const SnackBar(content: Text('Failed to save file')));
-      } finally {
-        if (mounted) {
-          setState(() => _isSavingFile = false);
-        }
+        return;
       }
-      return;
-    }
 
-    setState(() => _isSavingImage = true);
-    try {
+      // Images go to the gallery via Gal.putImage rather than SAF. GPS EXIF
+      // is now stripped at capture time (granite_lake_capture_workflow_
+      // service.dart), which was the confirmed source of gallery-save hash
+      // drift (Android's MediaStore location redaction) - with that gone,
+      // there's nothing left in the file for the OS to rewrite on insert.
       await Gal.putImage(assetFile.path, album: AppConstants.appTitle);
       if (!mounted) {
         return;
@@ -158,12 +173,20 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
       }
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('Failed to save image')));
+        ..showSnackBar(const SnackBar(content: Text('Failed to save asset')));
     } finally {
       if (mounted) {
-        setState(() => _isSavingImage = false);
+        setState(() => _isSavingFile = false);
       }
     }
+  }
+
+  String _hex(List<int> bytes) {
+    final buffer = StringBuffer();
+    for (final byte in bytes) {
+      buffer.write(byte.toRadixString(16).padLeft(2, '0'));
+    }
+    return buffer.toString();
   }
 
   @override
@@ -357,7 +380,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                           SizedBox(
                             width: double.infinity,
                             child: OutlinedButton.icon(
-                              onPressed: (_isSavingImage || _isSavingFile)
+                              onPressed: _isSavingFile
                                   ? null
                                   : () => _handleAssetAction(record),
                               style: OutlinedButton.styleFrom(
@@ -370,7 +393,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                   borderRadius: BorderRadius.circular(6),
                                 ),
                               ),
-                              icon: (_isSavingImage || _isSavingFile)
+                              icon: _isSavingFile
                                   ? const SizedBox(
                                       width: 16,
                                       height: 16,
@@ -387,7 +410,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                     ? _isSavingFile
                                           ? 'SAVING FILE'
                                           : 'SAVE TO FILES'
-                                    : _isSavingImage
+                                    : _isSavingFile
                                     ? 'SAVING IMAGE'
                                     : 'DOWNLOAD CAPTURED IMAGE',
                                 style: AppTextStyles.buttonText.copyWith(
