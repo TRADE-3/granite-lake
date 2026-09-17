@@ -1,7 +1,7 @@
 # Granite Lake — Offline Capture & On-Chain Timestamp Design (Detail)
 
 **Author:** Nethmi Jayakody
-**Status:** Draft for review
+**Status:** Implemented (contract deployed, app/verification tooling shipped) — remaining open decisions tracked in §12
 **Related:** [granite-lake-offline-capture-design.md](./granite-lake-offline-capture-design.md)
 
 This is the in-depth companion to the high-level design doc. Each section below maps to
@@ -447,11 +447,14 @@ with two explicit checks, run by a new `ConnectivityHeuristicService`, whose com
 result is what §4 uses to decide whether offline capture is offered.
 
 **`ConnectivityHeuristicService`** (new file:
-`app/lib/core/services/connectivity_heuristic_service.dart`, implemented) — **not yet
-wired into `capture_screen.dart`'s `_refreshBackendStatus`/`_startClock`**; that wiring is
-deliberately deferred to §6 (capture-flow changes), since both touch the same connectivity-
-display code and it's cleaner to edit it once, alongside the shutter-gate rewrite, than
-twice in separate passes. The service itself is complete and unit-tested in isolation
+`app/lib/core/services/connectivity_heuristic_service.dart`) — **implemented and wired
+into `capture_screen.dart`**: `_hasNetworkConnectivity` now returns
+`_connectivityService.isOnlineCapable` directly, `_startClock()`'s `Timer` reschedules
+itself off `_connectivityService.pollInterval` (replacing the old flat 30s interval),
+and `_refreshBackendStatus()` reads `.isOnlineCapable`/`.label`/`.classification` off the
+service rather than a single-probe boolean. The wiring described as deferred below, when
+this section was originally written, has since landed. The service itself is also
+unit-tested in isolation
 (`app/test/core/services/connectivity_heuristic_service_test.dart`, 14 tests) via a
 synthetic-outcome seam (`recordSyntheticOutcomeForTesting`, `@visibleForTesting`) that
 drives the ring-buffer/threshold/hysteresis logic directly, without needing a real
@@ -521,13 +524,13 @@ both make offline capture available automatically.
   doesn't match the pending one, distinct from the current label. This is what stops a
   marginal-signal area from bouncing `Connected`/`Offline` every tick, which today would
   also bounce the recorded `is_online` value and the §4 eligibility decision itself.
-- **Adaptive poll cadence — `pollInterval` getter implemented** (10s degraded / 75s
-  offline / 30s online, `app_constants.dart`), reading off the debounced `label`, not the
-  raw `classification`, matching the same "don't act on a single tick" principle as the
-  label itself. **Not yet wired into `capture_screen.dart`'s `_startClock()`** — that
-  `Timer.periodic` still uses the old flat 30s interval until §6's wiring pass. The
+- **Adaptive poll cadence — `pollInterval` getter implemented and wired** (10s degraded /
+  75s offline / 30s online, `app_constants.dart`), reading off the debounced `label`, not
+  the raw `classification`, matching the same "don't act on a single tick" principle as
+  the label itself. `capture_screen.dart`'s `_startClock()` reschedules each tick off
+  `_connectivityService.pollInterval` rather than a flat 30s `Timer.periodic`. The
   existing reconnect trigger (§7: app foreground/resume) still fires an immediate
-  out-of-cycle check once wired, so backing off the steady poll won't delay recovery.
+  out-of-cycle check, so backing off the steady poll doesn't delay recovery.
 - **One unified network-error classifier — done (Phase 0 item 1 of the implementation
   plan), with an important nuance found while doing it.** Both classifiers now live in
   one file, `app/lib/core/utils/network_error_classifier.dart`: `isTransientNetworkError`
@@ -547,10 +550,9 @@ both make offline capture available automatically.
   never needed indexer-lag messages). `ConnectivityHeuristicService`'s own probe-failure
   classification doesn't consume this classifier directly — see §5 above.
 
-**`is_online` at capture time** will be read from `ConnectivityHeuristicService.isOnlineCapable`
+**`is_online` at capture time** is read from `ConnectivityHeuristicService.isOnlineCapable`
 (`label == online`) at the moment of capture, rather than the raw success/failure of one
-live timestamp fetch (§3) — this wiring lands in §6 alongside the shutter-gate rewrite,
-not yet done as of this writing. Same field semantics as originally designed — still "did
+live timestamp fetch (§3). Same field semantics as originally designed — still "did
 this device have live connectivity at capture time" — just sourced from the debounced
 two-step classifier instead of a single point-in-time call that could land on one unlucky
 retry. `is_forced_offline` (§4) is recorded alongside it from the toggle's raw state,
@@ -745,14 +747,38 @@ encrypt-now/decrypt-with-biometrics scheme, chosen specifically so capture (§6)
 blocks on a biometric prompt while resubmission (§7) always does:
 
 - **Keystore keypair.** On first use, an RSA-2048 keypair is generated in the Android
-  Keystore (alias `granite_lake_capture_wrap_key`, `PURPOSE_ENCRYPT | PURPOSE_DECRYPT`,
-  OAEP padding) via a small native `MethodChannel`, the same pattern already used for the
-  existing biometric gate (`granite_lake_secure_state_service.dart:579-593`). Only the
-  private (decrypt/unwrap) half is created with `setUserAuthenticationRequired(true)`
-  and, deliberately, no `setUserAuthenticationValidityDurationSeconds` — every use of the
-  private key demands its own fresh `BiometricPrompt`/`CryptoObject` authentication, with
-  no caching window. The public (encrypt/wrap) half needs no authentication, which is
-  what keeps capture instant.
+  Keystore (alias `granite_lake_capture_wrap_key_v2`, `PURPOSE_ENCRYPT | PURPOSE_DECRYPT`,
+  OAEP padding: SHA-256 main digest, SHA-1 MGF1 — the only combination Keystore actually
+  supports across both the software-path wrap and the Keystore-enforced unwrap, a
+  KeyMint restriction confirmed on-device, not assumed) via a small native
+  `MethodChannel`, the same pattern already used for the existing biometric gate
+  (`granite_lake_secure_state_service.dart:579-593`). Implemented, with one deviation
+  from the plan below.
+  - **Deviation: a short validity window, not true per-operation auth.**
+    `setUserAuthenticationRequired(true)` with **no** validity duration (Keystore's
+    default) turned out to require a fresh `Cipher.init()` _and_ a fresh
+    `doFinal()`-completing authentication for every single operation — confirmed
+    on-device as `KEY_USER_NOT_AUTHENTICATED` on a second row's `doFinal()` even when
+    reusing an already-authenticated `Cipher`/`CryptoObject`, because a Keystore2
+    operation closes the moment `doFinal()` returns. That's incompatible with "one
+    prompt unlocks a whole batch" (below) — a device reconnecting with several queued
+    rows would otherwise need one prompt _per row_. The shipped key instead sets a
+    **300-second validity window** (`captureWrapKeyValidityDurationSeconds`,
+    `setUserAuthenticationValidityDurationSeconds` pre-API-30 /
+    `setUserAuthenticationParameters` on API 30+) — every item still gets its own fresh
+    `Cipher.init()`/`doFinal()`, but any of them succeed without a new prompt as long as
+    they land within 5 minutes of the last successful check. This keeps the point of
+    this section intact (a queued row's decrypt key is never cached anywhere near as
+    long as the 30-minute signing session, and still can't be unwrapped on a stale
+    session alone), just with "fresh" meaning "within the last 5 minutes," not
+    "this exact operation." `setInvalidatedByBiometricEnrollment(true)` is also set (see
+    §12 item 10 — decided, not left to the platform default).
+  - The alias carries a `_v2` suffix because Keystore keys are immutable — the `v1` key
+    was generated with the original (broken-for-batches) no-validity-window
+    configuration; any row wrapped under `v1` before this fix cannot be recovered under
+    `v2` and needs to be recaptured. The public (encrypt/wrap) half needs no
+    authentication either way, which is what keeps capture instant regardless of this
+    change.
 - **Encrypt at persist time, not later.** `persistCaptureWithMetadata`/
   `persistFileWithMetadata` (§6), for a row taking the offline/queued path only (§4:
   auto-offline or forced-offline — a row that submits immediately while online doesn't
@@ -776,18 +802,24 @@ blocks on a biometric prompt while resubmission (§7) always does:
   app foreground/resume) now always land on one of two outcomes, never a silent
   resubmission:
 
-  | Time since last unlock                  | Signing key (§7.1)                    | Decrypt key (this section)          | What happens on reconnect                                                                                                                                        |
-  | --------------------------------------- | ------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | < 30 min, session still live            | Cached — no prompt needed for signing | Never cached — always needs a check | A biometric prompt is still raised, for the decrypt/unwrap step alone; the cached signing key is then reused to sign once decryption succeeds.                   |
-  | ≥ 30 min elapsed, or app was relaunched | Cleared — needs `startSession()`      | Also needs a fresh check            | `pendingAttestationsNeedUnlock` (§7.1) surfaces the CTA; tapping it raises one combined prompt that both re-derives the signing key and unwraps the decrypt key. |
+  | Time since last decrypt check                                        | Signing key (§7.1)                    | Decrypt key (this section, 300s window — see deviation above) | What happens on reconnect                                                                                                                                        |
+  | -------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | < 5 min, signing session also still live (< 30 min)                  | Cached — no prompt needed for signing | Within window — no prompt needed                              | Both keys usable with no prompt; decrypt-then-sign proceeds silently — bounded far tighter than the 30-min signing cache, never as loose as "fully cached."      |
+  | ≥ 5 min since a decrypt check, signing session still live (< 30 min) | Cached — no prompt needed for signing | Window lapsed — needs a fresh check                           | A biometric prompt is still raised, for the decrypt/unwrap step alone; the cached signing key is then reused to sign once decryption succeeds.                   |
+  | ≥ 30 min elapsed, or app was relaunched                              | Cleared — needs `startSession()`      | Window lapsed (or never established) — needs a fresh check    | `pendingAttestationsNeedUnlock` (§7.1) surfaces the CTA; tapping it raises one combined prompt that both re-derives the signing key and unwraps the decrypt key. |
 
-  Before this section, the left column alone decided whether a reconnect was silent; now
-  the right column means it never is, for a queued row, regardless of session state. This
-  is a real behavior change from the original design's framing of resubmission as
-  happening automatically "unchanged" once connectivity is available (top-level doc §2) —
-  that's still true for a capture that submits immediately while online (never queued,
-  never encrypted), but no longer true for anything that spent time in
-  `PENDING_SUBMISSION`.
+  Before this section, the signing-key column alone decided whether a reconnect was
+  silent, on a 30-minute cache. Now the decrypt-key column gates it too — but, per the
+  300s-validity deviation above, not by demanding a prompt on literally every reconnect;
+  a reconnect can still be silent, just only within a much narrower window (≤5 min since
+  the last successful decrypt check) than the 30-minute signing cache ever allowed alone.
+  Past that window it always prompts, regardless of whether the signing session is still
+  live. This is a real behavior change from the original design's framing of
+  resubmission as happening automatically "unchanged" once connectivity is available
+  (top-level doc §2) — that's still true for a capture that submits immediately while
+  online (never queued, never encrypted), but for anything that spent time in
+  `PENDING_SUBMISSION`, "automatic" now means "silent for up to 5 minutes after a real
+  check, a fresh prompt otherwise," not "always silent."
 
 - **This is also why §7.2's background task stays check-and-notify, for a second,
   independent reason.** §7.2 already keeps the `workmanager` isolate from signing because
@@ -816,11 +848,12 @@ blocks on a biometric prompt while resubmission (§7) always does:
 
 ## 8. Local persistence: `is_online`/`is_forced_offline`/`has_gps`/`is_gps_forced_null`, null reasons, and timestamp provenance
 
-**Implemented, on `databaseVersion = 11`** (`app/lib/core/database/migrations.dart`,
-`granite_lake_database_service.dart`; was `9` before this feature). Both the two-part
-treatment this section originally called for (the versioned `ALTER TABLE` migration, and
-matching columns added to `_createPhotoCapturesTable`/`_createUploadedFilesTable` so a
-fresh install gets them via `onCreate` too, not just an upgrade) were applied.
+**Implemented, on `databaseVersion = 13`** (`app/lib/core/database/migrations.dart`,
+`granite_lake_database_service.dart`; was `9` before this feature — versions 10-13 below
+are all part of it). Both the two-part treatment this section originally called for (the
+versioned `ALTER TABLE` migration, and matching columns added to
+`_createPhotoCapturesTable`/`_createUploadedFilesTable` so a fresh install gets them via
+`onCreate` too, not just an upgrade) were applied at every version.
 
 **New columns (connectivity + GPS booleans), version 10.** Unlike `captured_at`, none of
 `is_online`/`is_forced_offline`/`has_gps`/`is_gps_forced_null` had a persistence path in
@@ -875,30 +908,53 @@ attempt, the same treatment as `captured_at`; the plaintext column is what §4b'
 verification flow discloses to a third party checking a reason. The reason text itself is
 never transmitted on-chain, only the hash.
 
-**Version 12 (§7.3, not yet implemented): encrypted queued payload.**
+**Version 12: resubmission-attempt tracking (app-local only, not in the original plan
+above).** Added during implementation, not anticipated by this section as originally
+written: `submission_attempt_count` and `last_attempt_at`, so a crew can see _why_ a row
+is still queued (how many real submission attempts have actually been made, and when the
+last one happened) instead of it silently sitting there. Never submitted on-chain.
 
 ```sql
-ALTER TABLE photo_captures ADD COLUMN encrypted_payload BLOB;
-ALTER TABLE photo_captures ADD COLUMN payload_iv BLOB;
-ALTER TABLE photo_captures ADD COLUMN wrapped_data_key BLOB;
-ALTER TABLE uploaded_files ADD COLUMN encrypted_payload BLOB;
-ALTER TABLE uploaded_files ADD COLUMN payload_iv BLOB;
-ALTER TABLE uploaded_files ADD COLUMN wrapped_data_key BLOB;
+ALTER TABLE photo_captures ADD COLUMN submission_attempt_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE photo_captures ADD COLUMN last_attempt_at TEXT;
+ALTER TABLE uploaded_files ADD COLUMN submission_attempt_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE uploaded_files ADD COLUMN last_attempt_at TEXT;
+```
+
+Incremented only for a genuine attempt — an initial online submission or a §7 queue
+retry — never for a capture that was persisted while offline/forced-offline and skipped
+the network call entirely (§6's initial-attempt skip).
+
+**Version 13 (§7.3): encrypted queued payload — implemented, one encoding change from
+the plan above.** `BLOB` was the originally planned type; the shipped migration uses
+`TEXT` (base64-encoded) for all three columns instead, matching this schema's
+already-established no-BLOB convention (every other binary-shaped value here —
+`signature_base64`, the null-reason hashes — is TEXT-encoded too, not a schema
+oversight to fix later).
+
+```sql
+ALTER TABLE photo_captures ADD COLUMN encrypted_payload TEXT;
+ALTER TABLE photo_captures ADD COLUMN payload_iv TEXT;
+ALTER TABLE photo_captures ADD COLUMN wrapped_data_key TEXT;
+ALTER TABLE uploaded_files ADD COLUMN encrypted_payload TEXT;
+ALTER TABLE uploaded_files ADD COLUMN payload_iv TEXT;
+ALTER TABLE uploaded_files ADD COLUMN wrapped_data_key TEXT;
 ```
 
 For a row taking the offline/queued path (§4/§4a/§7.3), `photo_hash`/`gps`/`altitude`/
 `captured_at`/`is_online`/`is_forced_offline`/`has_gps`/`is_gps_forced_null`/
 `internet_null_reason`/`gps_null_reason` are no longer also written in plaintext —
-`encrypted_payload` (AES-GCM ciphertext plus tag), `payload_iv`, and `wrapped_data_key`
-are the only copies on disk, and the plaintext columns are read back only after a
-successful biometric-gated decrypt at resubmission time (§7.3). Since there's no longer a
-separate `*_null_reason_hash` column (see version 11 above), the earlier question of
-"should the hash stay unencrypted for readability" no longer applies — the reason text
-itself gets the same protection as `captured_at`/`photo_hash`, full stop, and the hash
-needed at resubmission is simply recomputed after decrypt. Rows that submit immediately
-while online, and existing pre-migration rows, keep using the plaintext columns directly,
-so this is additive rather than a hard schema cutover — reads branch on whether
-`encrypted_payload` is `NULL`.
+`encrypted_payload` (base64 AES-GCM ciphertext plus tag), `payload_iv`, and
+`wrapped_data_key` (all base64) are the only copies on disk, and the plaintext columns
+are read back only after a successful biometric-gated decrypt at resubmission time
+(§7.3). Since there's no longer a separate `*_null_reason_hash` column for an encrypted
+row (see version 11 above), the earlier question of "should the hash stay unencrypted
+for readability" no longer applies — the reason text itself gets the same protection as
+`captured_at`/`photo_hash`, full stop, and the hash needed at resubmission is simply
+recomputed after decrypt. Rows that submit immediately while online, and existing
+pre-migration rows, keep using the plaintext columns directly, so this is additive
+rather than a hard schema cutover — reads branch on whether `encrypted_payload` is
+`NULL`.
 
 **Narrative provenance.** Alongside the on-chain `captured_at`/`attested_at`, the app also
 records locally how the device's own claimed `captured_at` was derived (a fresh live
@@ -965,8 +1021,10 @@ path, §7.3), `granite_lake_secure_state_service.dart` (Keystore-backed
 `is_forced_offline`/`has_gps`/`is_gps_forced_null` columns, §8; version-11 migration,
 done: `internet_null_reason`/`internet_null_reason_hash`/`gps_null_reason`/
 `gps_null_reason_hash` columns, §4b/§8 — plaintext and hash both persisted, hash computed
-at capture time; version-12 migration, not yet done:
-`encrypted_payload`/`payload_iv`/`wrapped_data_key` columns, §7.3/§8), `app.dart`
+at capture time; version-12 migration, done: `submission_attempt_count`/`last_attempt_at`
+columns, §8 (app-local resubmission tracking, not in the original plan); version-13
+migration, done: `encrypted_payload`/`payload_iv`/`wrapped_data_key` columns (TEXT/base64,
+not the originally planned BLOB), §7.3/§8), `app.dart`
 (lifecycle observer), `capture_tab_screen.dart` (retry-on-unlock wiring, §7.1, combined
 with the §7.3 decrypt-key unlock), `history_screen.dart` (unlock-to-submit CTA, §9;
 `TAMPER_DETECTED` state, §7.3/§9), `capture_detail_screen.dart`, `app_constants.dart`
@@ -1077,17 +1135,18 @@ permission, §7.2), `pubspec.yaml` (new `trusted_time`, `connectivity_plus`, `wo
 9. Decide the exact timing/copy for the `POST_NOTIFICATIONS` permission request (§7.2) —
    at first offline capture, as designed, or bundled into the biometric-binding onboarding
    flow (`biometric_setup_screen.dart`) where the crew is already granting permissions.
-10. Decide `setInvalidatedByBiometricEnrollment` for the §7.3 Keystore keypair. Android's
-    default (`true`) invalidates the private key the moment any new fingerprint/face is
-    enrolled on the device, which is desirable against an attacker enrolling their own
-    biometric to gain access to queued data, but also means a legitimate crew member
-    re-enrolling their own print (lost finger access, new phone policy, etc.) permanently
-    loses any not-yet-submitted queue. This needs an explicit decision, not the platform
-    default by accident.
-11. Decide whether the §7.3 Keystore keypair should require `setIsStrongBoxBacked(true)`
+10. ~~Decide `setInvalidatedByBiometricEnrollment` for the §7.3 Keystore keypair.~~
+    Resolved: set to `true` (`generateCaptureWrapKeyPair`, `MainActivity.kt`) — the
+    platform default, kept deliberately rather than by accident, accepting that a
+    legitimate crew member re-enrolling their own print loses any not-yet-submitted
+    queue, in exchange for closing the attacker-enrolls-their-own-biometric path.
+11. **Still open, current default noted.** Decide whether the §7.3 Keystore keypair
+    should require `setIsStrongBoxBacked(true)`
     (dedicated secure-element storage) where the device supports it, versus falling back
     to TEE-only storage silently — depends on the hardware profile of the devices crews
-    are actually issued.
+    are actually issued. **Current implementation:** `setIsStrongBoxBacked` is not called
+    at all, i.e. TEE-only by the platform default — this was never a deliberate choice,
+    so it remains genuinely open, not a documentation gap.
 12. Decide the exact `TAMPER_DETECTED` (§7.3/§9) UX: block that row from resubmission
     permanently pending admin/support review, or let the crew discard it and re-capture in
     place. Also decide whether a `TAMPER_DETECTED` row should be reported anywhere beyond

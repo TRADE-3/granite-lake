@@ -1,7 +1,7 @@
 # Granite Lake — Offline Capture & On-Chain Timestamp Design
 
 **Author:** Nethmi Jayakody
-**Status:** Draft for review
+**Status:** Implemented (contract deployed, app/verification tooling shipped) — see §12 of the [detailed design](./granite-lake-offline-capture-design-detail.md) for remaining open decisions
 **Related:** Supporting photo/file attestation for field crews working without connectivity
 **Detailed design:** [granite-lake-offline-capture-design-detail.md](./granite-lake-offline-capture-design-detail.md)
 
