@@ -121,7 +121,7 @@ class GraniteLakeSecureStateService {
         jsonDecode(deviceRegistrationJson) as Map<String, dynamic>,
       );
     } else if (hasLegacyRegistration) {
-      deviceRegistration = await _storeDeviceRegistration();
+      deviceRegistration = await storeDeviceRegistration();
     }
 
     final identityJson = await _storage.read(key: _identityKey);
@@ -225,7 +225,7 @@ class GraniteLakeSecureStateService {
         value: base64Encode(verifier),
       );
       await _storage.delete(key: _resetNoticeKey);
-      final deviceRegistration = await _storeDeviceRegistration();
+      final deviceRegistration = await storeDeviceRegistration();
       return SecureOperationResult<DeviceRegistrationRecord?>.success(
         deviceRegistration,
       );
@@ -486,7 +486,12 @@ class GraniteLakeSecureStateService {
     await _storage.write(key: _resetNoticeKey, value: notice);
   }
 
-  Future<DeviceRegistrationRecord?> _storeDeviceRegistration() async {
+  // Public because the current OTP/photo-attestation registration flow
+  // (GraniteLakeController.claimPhotoAttestationUser) calls this directly
+  // once identity claim succeeds - completeRegistration() below, the only
+  // other caller, is leftover from an older registration-code flow that
+  // nothing in the app invokes anymore.
+  Future<DeviceRegistrationRecord?> storeDeviceRegistration() async {
     final deviceRegistration = await _captureDeviceRegistration();
     if (deviceRegistration == null) {
       return null;
@@ -521,7 +526,14 @@ class GraniteLakeSecureStateService {
         platform: Platform.operatingSystem,
         osVersion: Platform.operatingSystemVersion,
       );
-    } catch (_) {
+    } catch (error) {
+      // Previously swallowed with zero logging, which made a persistent
+      // failure here (as opposed to this device registration simply never
+      // having been attempted) indistinguishable from the outside - the
+      // Profile screen shows the same "unavailable" placeholders either way.
+      debugPrint(
+        '[DeviceRegistration] _captureDeviceRegistration failed: $error',
+      );
       return null;
     }
   }

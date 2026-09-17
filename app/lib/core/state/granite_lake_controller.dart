@@ -220,6 +220,16 @@ class GraniteLakeController extends ChangeNotifier {
     try {
       final secureState = await _secureStateService.loadPersistedState();
       _applySecureInitializationState(secureState);
+      // Backfill for installs that registered before
+      // claimPhotoAttestationUser() started capturing this (or hit a
+      // transient device_info_plus failure at that moment) - an already
+      // identified device with no stored record yet should still pick one
+      // up on its next launch, rather than showing the Profile screen's
+      // "unavailable"/"pending registration" placeholders forever.
+      if (_identity != null && _deviceRegistration == null) {
+        _deviceRegistration = await _secureStateService
+            .storeDeviceRegistration();
+      }
 
       await _dataControllers.initialize(secureStorage: _storage);
       _photoAttestationConfig = await _dataControllers.config
@@ -390,8 +400,12 @@ class GraniteLakeController extends ChangeNotifier {
       );
       _hasCompletedRegistration = true;
       _resetNotice = null;
-      _deviceRegistration ??=
-          (await _secureStateService.loadPersistedState()).deviceRegistration;
+      // Captures and persists the real device model/OS/timestamp now that
+      // registration has actually completed - re-reading loadPersistedState()
+      // here was a no-op, since nothing in this (current) registration flow
+      // ever wrote a device registration record for it to find.
+      _deviceRegistration ??= await _secureStateService
+          .storeDeviceRegistration();
       unawaited(refreshWalletSuiBalance(force: true));
       notifyListeners();
       return const ActionResult.success();

@@ -448,13 +448,23 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                 ),
                                 _DetailCell(
                                   label: 'IS_ONLINE',
-                                  value: record.isOnline ? 'TRUE' : 'FALSE',
+                                  value: record.isEncryptedAtRest
+                                      ? 'Hidden until submission (encrypted at rest)'
+                                      : (record.isOnline ? 'TRUE' : 'FALSE'),
+                                  accent: record.isEncryptedAtRest
+                                      ? 'PENDING_DECRYPTION'
+                                      : null,
                                 ),
                                 _DetailCell(
                                   label: 'IS_FORCED_OFFLINE',
-                                  value: record.isForcedOffline
-                                      ? 'TRUE'
-                                      : 'FALSE',
+                                  value: record.isEncryptedAtRest
+                                      ? 'Hidden until submission (encrypted at rest)'
+                                      : (record.isForcedOffline
+                                            ? 'TRUE'
+                                            : 'FALSE'),
+                                  accent: record.isEncryptedAtRest
+                                      ? 'PENDING_DECRYPTION'
+                                      : null,
                                 ),
                                 if (record.internetNullReason
                                         ?.trim()
@@ -480,14 +490,24 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                 if (record.isPhoto)
                                   _DetailCell(
                                     label: 'HAS_GPS',
-                                    value: record.hasGps ? 'TRUE' : 'FALSE',
+                                    value: record.isEncryptedAtRest
+                                        ? 'Hidden until submission (encrypted at rest)'
+                                        : (record.hasGps ? 'TRUE' : 'FALSE'),
+                                    accent: record.isEncryptedAtRest
+                                        ? 'PENDING_DECRYPTION'
+                                        : null,
                                   ),
                                 if (record.isPhoto)
                                   _DetailCell(
                                     label: 'IS_GPS_FORCED_NULL',
-                                    value: record.isGpsForcedNull
-                                        ? 'TRUE'
-                                        : 'FALSE',
+                                    value: record.isEncryptedAtRest
+                                        ? 'Hidden until submission (encrypted at rest)'
+                                        : (record.isGpsForcedNull
+                                              ? 'TRUE'
+                                              : 'FALSE'),
+                                    accent: record.isEncryptedAtRest
+                                        ? 'PENDING_DECRYPTION'
+                                        : null,
                                   ),
                                 if (record.isPhoto &&
                                     record.gpsNullReason?.trim().isNotEmpty ==

@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app.dart';
@@ -10,7 +9,6 @@ import '../../../core/router/app_router.dart';
 import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
-import '../../../core/utils/location_settings.dart';
 
 /// The Capture tab body shown inside [MainShell].
 ///
@@ -25,53 +23,30 @@ class CaptureTabScreen extends StatefulWidget {
 }
 
 class _CaptureTabScreenState extends State<CaptureTabScreen>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+    with TickerProviderStateMixin {
   bool _isStartingSession = false;
   bool _isEndingSession = false;
   String? _errorMessage;
   AnimationController? _pulseController;
-  String _locationLabel = 'Locating...';
-  // _refreshLocation() previously ran exactly once, in initState. If the
-  // system Location toggle (Settings > Location - separate from this app's
-  // own Location permission) got switched off after that, or a fix just
-  // never arrived (no timeLimit was set), the label went stale forever:
-  // nothing re-ran the check, so a changed state never had a chance to show.
-  // A periodic timer plus a resume listener make sure it's re-checked.
-  Timer? _locationTimer;
-  int _locationRequestId = 0;
-  // On GrapheneOS without Sandboxed Google Play, a GPS-only cold fix is
-  // confirmed by GrapheneOS's own team to normally take 2-5+ minutes
-  // outdoors (https://discuss.grapheneos.org/d/79-location-not-working).
-  // Firing a fresh _refreshLocation every 15s while one is still in flight
-  // would restart that request from scratch each time, so skip relaunching
-  // it until the current attempt actually finishes.
-  bool _isFetchingLocation = false;
+  // Plays once on mount - fades/slides the whole content column in, rather
+  // than having it snap into place, per the request for this screen to feel
+  // animated rather than static.
+  AnimationController? _introController;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     _ensurePulseController();
-    unawaited(_refreshLocation());
-    _locationTimer = Timer.periodic(const Duration(seconds: 15), (_) {
-      unawaited(_refreshLocation());
-    });
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      // Catches the common case immediately: user backgrounds the app,
-      // flips Location in system Settings, comes back.
-      unawaited(_refreshLocation());
-    }
+    _introController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 650),
+    )..forward();
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _locationTimer?.cancel();
     _pulseController?.dispose();
+    _introController?.dispose();
     super.dispose();
   }
 
@@ -228,118 +203,15 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
     setState(() => _isEndingSession = false);
   }
 
-  Future<void> _refreshLocation() async {
-    if (_isFetchingLocation) {
-      return;
-    }
-    // Guards against the periodic timer, the resume listener, and initState
-    // firing overlapping calls: a slow/late call from an earlier trigger
-    // must not clobber the state set by a newer one.
-    final requestId = ++_locationRequestId;
-    bool isCurrent() => mounted && requestId == _locationRequestId;
-    _isFetchingLocation = true;
-
-    try {
-      if (isCurrent()) {
-        setState(() => _locationLabel = 'Locating...');
-      }
-
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!isCurrent()) {
-        return;
-      }
-      if (!serviceEnabled) {
-        setState(() => _locationLabel = 'Location off');
-        return;
-      }
-
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-      if (!isCurrent()) {
-        return;
-      }
-
-      if (permission == LocationPermission.denied) {
-        setState(() => _locationLabel = 'Permission denied');
-        return;
-      }
-
-      if (permission == LocationPermission.deniedForever) {
-        setState(() => _locationLabel = 'Permission blocked');
-        return;
-      }
-
-      // A raw GPS cold fix (no network/Play Services assistance, e.g. on
-      // GrapheneOS without Sandboxed Google Play) is confirmed by GrapheneOS's
-      // own team to normally take 2-5+ minutes outdoors on first use. No
-      // timeLimit would hang forever with nothing to show; too short a one
-      // would misreport that normal wait as a failure.
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings: resolveLocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: const Duration(minutes: 2),
-        ),
-      );
-      if (!isCurrent()) {
-        return;
-      }
-      setState(() => _locationLabel = _formatPosition(position));
-    } catch (error) {
-      if (!isCurrent()) {
-        return;
-      }
-      // A GPS-only cold fix (no network/Play Services assistance) can
-      // legitimately take several minutes - a timeout here just means
-      // "still trying," not "broken."
-      setState(
-        () => _locationLabel = error is TimeoutException
-            ? 'Still acquiring GPS'
-            : 'GPS unavailable',
-      );
-      // This HUD readout is too tight to show a full exception without
-      // breaking the layout, so surface it via a snackbar the user can read
-      // and dismiss instead - see capture_screen.dart's blocked-capture
-      // panel for the equivalent on the actual capture flow.
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(
-            content: Text('GPS error: ${error.runtimeType}: $error'),
-            duration: const Duration(seconds: 12),
-          ),
-        );
-    } finally {
-      _isFetchingLocation = false;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final controller = GraniteLakeScope.of(context);
     final activeSession = controller.hasActiveSession;
     final session = controller.session;
     final identity = controller.identity;
-    final size = MediaQuery.sizeOf(context);
-    final topPadding = MediaQuery.paddingOf(context).top;
-    final availableHeight =
-        size.height - topPadding - kBottomNavigationBarHeight;
-    final showTopTelemetry = availableHeight > 680;
-    final timestamp = DateTime.now()
-        .toUtc()
-        .toIso8601String()
-        .replaceFirst('T', ' ')
-        .split('.')
-        .first;
-    final initials = _resolveInitials(
-      identity?.walletAddress ?? AppConstants.appName,
-    );
     final biometricIcon = _resolveBiometricIcon(controller.biometricBinding);
     final pulseController = _ensurePulseController();
+    final introController = _introController!;
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -359,70 +231,53 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
       child: Stack(
         children: [
           const Positioned.fill(child: _ScanlineOverlay()),
-          Positioned.fill(
+          SafeArea(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
               child: Column(
                 children: [
-                  _CaptureHeader(initials: initials),
                   Expanded(
                     child: Stack(
                       children: [
                         const Positioned(
-                          top: 16,
+                          top: 0,
                           left: 0,
                           child: _CornerReticle(top: true, left: true),
                         ),
                         const Positioned(
-                          top: 16,
+                          top: 0,
                           right: 0,
                           child: _CornerReticle(top: true, left: false),
                         ),
                         const Positioned(
-                          bottom: 16,
+                          bottom: 0,
                           left: 0,
                           child: _CornerReticle(top: false, left: true),
                         ),
                         const Positioned(
-                          bottom: 16,
+                          bottom: 0,
                           right: 0,
                           child: _CornerReticle(top: false, left: false),
                         ),
-                        if (showTopTelemetry) ...[
-                          Positioned(
-                            top: 8,
-                            left: 0,
-                            child: _TechReadout(
-                              alignment: CrossAxisAlignment.start,
-                              entries: [
-                                ('LOC', _locationLabel),
-                                ('SIGN', 'SHA-256 / ED25519'),
-                              ],
-                            ),
-                          ),
-                          Positioned(
-                            top: 8,
-                            right: 0,
-                            child: _TechReadout(
-                              alignment: CrossAxisAlignment.end,
-                              entries: [
-                                const ('SYS_STATE', 'READY'),
-                                ('STAMP', '$timestamp UTC'),
-                              ],
-                            ),
-                          ),
-                        ],
                         Center(
-                          child: Padding(
-                            padding: EdgeInsets.only(
-                              top: showTopTelemetry ? 84 : 12,
-                            ),
-                            child: SingleChildScrollView(
-                              padding: const EdgeInsets.symmetric(vertical: 24),
-                              child: ConstrainedBox(
-                                constraints: const BoxConstraints(
-                                  maxWidth: 360,
-                                ),
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.symmetric(vertical: 24),
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 400),
+                              child: AnimatedBuilder(
+                                animation: introController,
+                                builder: (context, child) {
+                                  final t = Curves.easeOutCubic.transform(
+                                    introController.value,
+                                  );
+                                  return Opacity(
+                                    opacity: t,
+                                    child: Transform.translate(
+                                      offset: Offset(0, (1 - t) * 20),
+                                      child: child,
+                                    ),
+                                  );
+                                },
                                 child: Column(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
@@ -462,33 +317,39 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
                                       ),
                                     ),
                                     const SizedBox(height: 28),
-                                    Text(
-                                      activeSession
-                                          ? 'Session active. Tap to continue your verified capture workflow.'
-                                          : 'Unlock to start a 30-minute verified capture session.',
-                                      textAlign: TextAlign.center,
-                                      style: AppTextStyles.bodyMedium.copyWith(
-                                        color: AppColors.textSecondary,
-                                        height: 1.6,
+                                    AnimatedSwitcher(
+                                      duration: const Duration(
+                                        milliseconds: 300,
+                                      ),
+                                      child: Text(
+                                        activeSession
+                                            ? 'Session active. Tap to continue your verified capture workflow.'
+                                            : 'Unlock to start a 30-minute verified capture session.',
+                                        key: ValueKey(activeSession),
+                                        textAlign: TextAlign.center,
+                                        style: AppTextStyles.bodyMedium
+                                            .copyWith(
+                                              color: AppColors.textSecondary,
+                                              height: 1.6,
+                                            ),
                                       ),
                                     ),
                                     const SizedBox(height: 18),
-                                    _SessionProtocolCard(
-                                      sessionStatus: activeSession
-                                          ? 'ACTIVE'
-                                          : 'LOCKED',
+                                    _SessionStatusCard(
+                                      isActive: activeSession,
                                       hashValue:
                                           identity?.fingerprint ??
-                                          'SHA256: UNBOUND',
+                                          'Not yet bound',
                                       ttlValue: activeSession
                                           ? _formatSeconds(
                                               controller
                                                   .remainingSessionDuration,
                                             )
-                                          : '--.--s',
+                                          : null,
+                                      pulse: pulseController,
                                     ),
-                                    const SizedBox(height: 18),
-                                    if (session != null)
+                                    if (session != null) ...[
+                                      const SizedBox(height: 14),
                                       Text(
                                         'Expires ${session.expiresAt.toLocal().toString().substring(11, 19)}',
                                         style: AppTextStyles.labelMedium
@@ -496,6 +357,7 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
                                               color: AppColors.textSecondary,
                                             ),
                                       ),
+                                    ],
                                     if (_errorMessage != null) ...[
                                       const SizedBox(height: 12),
                                       Text(
@@ -516,13 +378,22 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
                     ),
                   ),
                   if (activeSession) ...[
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     SizedBox(
                       width: double.infinity,
                       child: OutlinedButton(
                         onPressed: _isStartingSession || _isEndingSession
                             ? null
                             : _handleEndSession,
+                        // Solid fill rather than the default transparent
+                        // outline - otherwise the corner-reticle brackets
+                        // positioned just above this button show through and
+                        // visually clash with its top edge.
+                        style: OutlinedButton.styleFrom(
+                          backgroundColor: AppColors.surfaceElevated,
+                          side: BorderSide(color: AppColors.borderActive),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
                         child: Text(
                           _isEndingSession ? 'ENDING SESSION' : 'END SESSION',
                           style: AppTextStyles.buttonText.copyWith(
@@ -531,16 +402,9 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
                         ),
                       ),
                     ),
+                    const SizedBox(height: 12),
                   ],
-                  const SizedBox(height: 8),
-                  Text(
-                    'CAPTURES ARE HASHED AND SIGNED ON DEVICE',
-                    textAlign: TextAlign.center,
-                    style: AppTextStyles.labelSmall.copyWith(
-                      color: AppColors.textMuted,
-                      letterSpacing: 1.2,
-                    ),
-                  ),
+                  const _SecurityBadge(),
                 ],
               ),
             ),
@@ -548,14 +412,6 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
         ],
       ),
     );
-  }
-
-  String _resolveInitials(String value) {
-    final cleaned = value.replaceAll(RegExp(r'[^A-Za-z0-9]'), '');
-    if (cleaned.length >= 2) {
-      return cleaned.substring(0, 2).toUpperCase();
-    }
-    return 'GL';
   }
 
   String _formatSeconds(Duration duration) {
@@ -582,138 +438,60 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
       duration: const Duration(milliseconds: 2200),
     )..repeat(reverse: true);
   }
-
-  String _formatPosition(Position position) {
-    final lat = position.latitude.toStringAsFixed(5);
-    final lng = position.longitude.toStringAsFixed(5);
-    final accuracy = position.accuracy.isFinite
-        ? position.accuracy.toStringAsFixed(0)
-        : '?';
-    return '$lat, $lng (${accuracy}m)';
-  }
 }
 
-class _CaptureHeader extends StatelessWidget {
-  const _CaptureHeader({required this.initials});
-
-  final String initials;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 56,
-      decoration: BoxDecoration(
-        color: AppColors.background.withAlpha(220),
-        border: Border.all(color: AppColors.border),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 14),
-      child: Row(
-        children: [
-          Container(
-            width: 32,
-            height: 32,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: AppColors.primary,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Text(
-              initials,
-              style: AppTextStyles.labelMedium.copyWith(
-                color: AppColors.textPrimary,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              '${AppConstants.appName}_${AppConstants.appVersion}',
-              overflow: TextOverflow.ellipsis,
-              style: AppTextStyles.labelLarge.copyWith(
-                color: AppColors.textPrimary,
-                letterSpacing: 1.5,
-              ),
-            ),
-          ),
-          Icon(Icons.verified_rounded, color: AppColors.primary),
-        ],
-      ),
-    );
-  }
-}
-
-class _TechReadout extends StatelessWidget {
-  const _TechReadout({required this.alignment, required this.entries});
-
-  final CrossAxisAlignment alignment;
-  final List<(String, String)> entries;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: alignment,
-      children: entries
-          .map(
-            (entry) => Padding(
-              padding: const EdgeInsets.only(bottom: 2),
-              child: Text(
-                '${entry.$1}: ${entry.$2}',
-                style: AppTextStyles.hudValue.copyWith(
-                  color: AppColors.textMuted,
-                ),
-              ),
-            ),
-          )
-          .toList(),
-    );
-  }
-}
-
-class _SessionProtocolCard extends StatelessWidget {
-  const _SessionProtocolCard({
-    required this.sessionStatus,
+class _SessionStatusCard extends StatelessWidget {
+  const _SessionStatusCard({
+    required this.isActive,
     required this.hashValue,
     required this.ttlValue,
+    required this.pulse,
   });
 
-  final String sessionStatus;
+  final bool isActive;
   final String hashValue;
-  final String ttlValue;
+  // Null when locked - there's no meaningful countdown to show yet, so the
+  // field is omitted entirely rather than padded out with a "--.--s"
+  // placeholder that doesn't tell the crew anything.
+  final String? ttlValue;
+  final Animation<double> pulse;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppColors.surface.withAlpha(220),
-        border: Border.all(color: AppColors.borderActive),
-        borderRadius: BorderRadius.circular(12),
-      ),
+    final accent = isActive ? AppColors.statusActive : AppColors.textMuted;
+    return AnimatedBuilder(
+      animation: pulse,
+      builder: (context, child) {
+        final glowAlpha = isActive ? 0.10 + (pulse.value * 0.16) : 0.0;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 400),
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: AppColors.surface.withAlpha(230),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: isActive
+                  ? AppColors.statusActive.withAlpha(140)
+                  : AppColors.borderActive,
+            ),
+            boxShadow: isActive
+                ? [
+                    BoxShadow(
+                      color: AppColors.statusActive.withValues(
+                        alpha: glowAlpha,
+                      ),
+                      blurRadius: 22,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                : null,
+          ),
+          child: child,
+        );
+      },
       child: Column(
         children: [
-          Row(
-            children: [
-              Text(
-                'SESSION PROTOCOL',
-                style: AppTextStyles.labelSmall.copyWith(
-                  color: AppColors.textMuted,
-                  letterSpacing: 1.1,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                'V-CAP 4.2',
-                style: AppTextStyles.labelMedium.copyWith(
-                  color: AppColors.statusActive,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Container(height: 1, color: AppColors.border),
-          const SizedBox(height: 10),
           Row(
             children: [
               Expanded(
@@ -723,34 +501,32 @@ class _SessionProtocolCard extends StatelessWidget {
                   alignment: CrossAxisAlignment.start,
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _ProtocolValue(
-                  label: 'TTL Remaining',
-                  value: ttlValue,
-                  alignment: CrossAxisAlignment.end,
+              if (ttlValue != null) ...[
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _ProtocolValue(
+                    label: 'Time Remaining',
+                    value: ttlValue!,
+                    alignment: CrossAxisAlignment.end,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 14),
           Row(
             children: [
               Icon(
-                Icons.shield_outlined,
+                isActive ? Icons.lock_open_rounded : Icons.lock_outline_rounded,
                 size: 16,
-                color: AppColors.statusActive,
+                color: accent,
               ),
               const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  sessionStatus,
-                  style: AppTextStyles.labelMedium.copyWith(
-                    color: sessionStatus == 'ACTIVE'
-                        ? AppColors.statusActive
-                        : AppColors.textSecondary,
-                    letterSpacing: 1.1,
-                  ),
+              Text(
+                isActive ? 'SESSION ACTIVE' : 'LOCKED',
+                style: AppTextStyles.labelMedium.copyWith(
+                  color: accent,
+                  letterSpacing: 1.1,
                 ),
               ),
             ],
@@ -792,6 +568,36 @@ class _ProtocolValue extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _SecurityBadge extends StatelessWidget {
+  const _SecurityBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(
+        color: AppColors.surface.withAlpha(180),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.lock_rounded, size: 12, color: AppColors.textMuted),
+          const SizedBox(width: 6),
+          Text(
+            'CAPTURES ARE HASHED AND SIGNED ON DEVICE',
+            style: AppTextStyles.labelSmall.copyWith(
+              color: AppColors.textMuted,
+              letterSpacing: 0.6,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -945,28 +751,67 @@ class _CornerReticlePainter extends CustomPainter {
   }
 }
 
-class _ScanlineOverlay extends StatelessWidget {
+/// A slow, continuously drifting scanline sweep behind the content - purely
+/// decorative texture, but animated rather than a static striped overlay so
+/// the whole screen reads as "alive."
+class _ScanlineOverlay extends StatefulWidget {
   const _ScanlineOverlay();
+
+  @override
+  State<_ScanlineOverlay> createState() => _ScanlineOverlayState();
+}
+
+class _ScanlineOverlayState extends State<_ScanlineOverlay>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 8),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return IgnorePointer(
-      child: ShaderMask(
-        shaderCallback: (bounds) {
-          return LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: List.generate(
-              16,
-              (index) => index.isEven
-                  ? Colors.transparent
-                  : const Color(0xFF40E56C).withAlpha(14),
-            ),
-          ).createShader(bounds);
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, child) {
+          return ShaderMask(
+            shaderCallback: (bounds) {
+              return LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                tileMode: TileMode.repeated,
+                transform: _SlidingGradientTransform(_controller.value),
+                colors: List.generate(
+                  16,
+                  (index) => index.isEven
+                      ? Colors.transparent
+                      : const Color(0xFF40E56C).withAlpha(14),
+                ),
+              ).createShader(bounds);
+            },
+            blendMode: BlendMode.srcATop,
+            child: child,
+          );
         },
-        blendMode: BlendMode.srcATop,
         child: Container(color: Colors.white.withAlpha(12)),
       ),
     );
+  }
+}
+
+class _SlidingGradientTransform extends GradientTransform {
+  const _SlidingGradientTransform(this.slidePercent);
+
+  final double slidePercent;
+
+  @override
+  Matrix4? transform(Rect bounds, {TextDirection? textDirection}) {
+    return Matrix4.translationValues(0, bounds.height * slidePercent, 0);
   }
 }

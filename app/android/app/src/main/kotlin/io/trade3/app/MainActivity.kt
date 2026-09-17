@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
+import android.security.keystore.UserNotAuthenticatedException
 import android.util.Log
 import android.view.WindowManager
 import androidx.biometric.BiometricManager
@@ -277,10 +278,10 @@ class MainActivity : FlutterFragmentActivity() {
 	// single biometric prompt: Cipher.doFinal() resets an initialized cipher
 	// back to a ready state rather than invalidating it, so the same
 	// authenticated CryptoObject from one BiometricPrompt success can decrypt
-	// every wrapped key in the batch without a prompt per row. A per-item
-	// failure (a tampered wrapped_data_key column) is reported as a null at
-	// that index rather than failing the whole batch, so one bad row doesn't
-	// block the rest of the queue from submitting.
+	// every wrapped key in the batch without a prompt per row. If the crew's
+	// last auth already fell outside captureWrapKeyValidityDurationSeconds,
+	// a second, plain re-auth prompt runs first (see buildUnwrapPromptCipher
+	// and authenticatePlain) before the same batch decrypt in unwrapBatch.
 	private fun unwrapCaptureDataKeys(call: MethodCall, result: MethodChannel.Result) {
 		if (!ensureNoPendingOperation(result) || !ensureBiometricSupport(result)) {
 			return
@@ -298,16 +299,36 @@ class MainActivity : FlutterFragmentActivity() {
 			val keyStore = KeyStore.getInstance(keyStoreProvider).apply { load(null) }
 			val privateKey = keyStore.getKey(captureWrapKeyAlias, null) as? java.security.PrivateKey
 				?: throw UnrecoverableBiometricGateException("gate_missing", "Capture wrap key not found.")
-			// This Cipher only exists to give the BiometricPrompt below a
-			// CryptoObject to bind to and trigger the actual prompt UI - its
-			// doFinal() is never called. Every batch item below gets its own
-			// freshly-init'd Cipher instead, because a Keystore2 operation
-			// closes the moment doFinal() is called once; a validity-duration
-			// key (captureWrapKeyValidityDurationSeconds) is what lets each
-			// of those fresh Ciphers succeed without its own prompt, as long
-			// as they're all within the window this one authentication opens.
-			val promptCipher = Cipher.getInstance("RSA/ECB/OAEPPadding")
-			promptCipher.init(Cipher.DECRYPT_MODE, privateKey, captureWrapOaepParams)
+
+			val promptCipher = try {
+				buildUnwrapPromptCipher(privateKey)
+			} catch (error: UserNotAuthenticatedException) {
+				// captureWrapKeyValidityDurationSeconds's window since the crew's
+				// last biometric auth has already lapsed - Keystore refuses to
+				// even construct a Cipher (let alone doFinal()) until they
+				// re-authenticate, so there's no Cipher yet to bind a
+				// BiometricPrompt's CryptoObject to. This used to fall straight
+				// into the generic catch below and report "unlock_failed"
+				// without ever showing a prompt - a dead end once the window
+				// expired, since every retry hit the exact same wall. Falling
+				// back to a plain (no-CryptoObject) prompt here is enough:
+				// any successful Class 3 biometric auth refreshes Android's
+				// shared hardware-auth-token regardless of which Cipher (if
+				// any) triggered it, which is what the retry below then
+				// succeeds against.
+				Log.d(
+					logTag,
+					"unwrapCaptureDataKeys: validity window expired, requesting fresh auth before retrying",
+				)
+				authenticatePlain(
+					title = "Unlock queued captures",
+					subtitle = "Verify biometrics to decrypt and submit queued captures.",
+					onSuccess = {
+						unwrapBatch(privateKey, wrappedKeys, captureIds)
+					},
+				)
+				return
+			}
 
 			Log.d(logTag, "unwrapCaptureDataKeys: prompting for batch of ${wrappedKeys.size}")
 			authenticate(
@@ -315,40 +336,7 @@ class MainActivity : FlutterFragmentActivity() {
 				subtitle = "Verify biometrics to decrypt and submit queued captures.",
 				cipher = promptCipher,
 				onSuccess = {
-					val unwrapped = wrappedKeys.mapIndexed { index, wrappedKeyBase64 ->
-						val captureId = captureIds.getOrNull(index) ?: "unknown"
-						try {
-							val wrappedBytes = android.util.Base64.decode(
-								wrappedKeyBase64,
-								android.util.Base64.NO_WRAP,
-							)
-							Log.d(
-								logTag,
-								"unwrapCaptureDataKeys[$captureId]: attempting unwrap, wrappedBytes=${wrappedBytes.size}",
-							)
-							val itemCipher = Cipher.getInstance("RSA/ECB/OAEPPadding")
-							itemCipher.init(Cipher.DECRYPT_MODE, privateKey, captureWrapOaepParams)
-							val plainBytes = itemCipher.doFinal(wrappedBytes)
-							Log.d(
-								logTag,
-								"unwrapCaptureDataKeys[$captureId]: unwrap succeeded, plainBytes=${plainBytes.size}",
-							)
-							android.util.Base64.encodeToString(plainBytes, android.util.Base64.NO_WRAP)
-						} catch (error: Exception) {
-							// Logged at class-name granularity (BadPaddingException vs.
-							// IllegalBlockSizeException vs. anything else) since that's
-							// what distinguishes "genuinely tampered ciphertext" from "we
-							// built the Cipher with mismatched OAEP parameters" while
-							// debugging this path.
-							Log.e(
-								logTag,
-								"unwrapCaptureDataKeys[$captureId] failed: ${error::class.java.simpleName}: ${error.message}",
-								error,
-							)
-							null
-						}
-					}
-					finishSuccess(unwrapped)
+					unwrapBatch(privateKey, wrappedKeys, captureIds)
 				},
 			)
 		} catch (error: KeyPermanentlyInvalidatedException) {
@@ -363,6 +351,69 @@ class MainActivity : FlutterFragmentActivity() {
 			)
 			finishError("unlock_failed", error.message ?: "Could not unlock queued captures.")
 		}
+	}
+
+	// This Cipher only exists to give the BiometricPrompt below a
+	// CryptoObject to bind to and trigger the actual prompt UI - its
+	// doFinal() is never called. Every batch item unwrapped below gets its
+	// own freshly-init'd Cipher instead, because a Keystore2 operation
+	// closes the moment doFinal() is called once; a validity-duration key
+	// (captureWrapKeyValidityDurationSeconds) is what lets each of those
+	// fresh Ciphers succeed without its own prompt, as long as they're all
+	// within the window one authentication opens. Throws
+	// UserNotAuthenticatedException if that window has already lapsed - see
+	// the caller's handling of that.
+	private fun buildUnwrapPromptCipher(privateKey: java.security.PrivateKey): Cipher {
+		val cipher = Cipher.getInstance("RSA/ECB/OAEPPadding")
+		cipher.init(Cipher.DECRYPT_MODE, privateKey, captureWrapOaepParams)
+		return cipher
+	}
+
+	// The actual batch decrypt, shared by both the normal path (prompt
+	// succeeded on the first try) and the expired-window retry path (plain
+	// re-auth, then this). A per-item failure (a tampered wrapped_data_key
+	// column) is reported as a null at that index rather than failing the
+	// whole batch, so one bad row doesn't block the rest of the queue from
+	// submitting.
+	private fun unwrapBatch(
+		privateKey: java.security.PrivateKey,
+		wrappedKeys: List<String>,
+		captureIds: List<String>,
+	) {
+		val unwrapped = wrappedKeys.mapIndexed { index, wrappedKeyBase64 ->
+			val captureId = captureIds.getOrNull(index) ?: "unknown"
+			try {
+				val wrappedBytes = android.util.Base64.decode(
+					wrappedKeyBase64,
+					android.util.Base64.NO_WRAP,
+				)
+				Log.d(
+					logTag,
+					"unwrapCaptureDataKeys[$captureId]: attempting unwrap, wrappedBytes=${wrappedBytes.size}",
+				)
+				val itemCipher = Cipher.getInstance("RSA/ECB/OAEPPadding")
+				itemCipher.init(Cipher.DECRYPT_MODE, privateKey, captureWrapOaepParams)
+				val plainBytes = itemCipher.doFinal(wrappedBytes)
+				Log.d(
+					logTag,
+					"unwrapCaptureDataKeys[$captureId]: unwrap succeeded, plainBytes=${plainBytes.size}",
+				)
+				android.util.Base64.encodeToString(plainBytes, android.util.Base64.NO_WRAP)
+			} catch (error: Exception) {
+				// Logged at class-name granularity (BadPaddingException vs.
+				// IllegalBlockSizeException vs. anything else) since that's
+				// what distinguishes "genuinely tampered ciphertext" from "we
+				// built the Cipher with mismatched OAEP parameters" while
+				// debugging this path.
+				Log.e(
+					logTag,
+					"unwrapCaptureDataKeys[$captureId] failed: ${error::class.java.simpleName}: ${error.message}",
+					error,
+				)
+				null
+			}
+		}
+		finishSuccess(unwrapped)
 	}
 
 	private fun generateCaptureWrapKeyPair() {
@@ -461,6 +512,65 @@ class MainActivity : FlutterFragmentActivity() {
 			.build()
 
 		prompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(cipher))
+	}
+
+	// Same UI as authenticate() above, but with no CryptoObject to bind to -
+	// for the one case where Keystore refused to even construct a Cipher in
+	// the first place (a validity-duration key whose auth window already
+	// lapsed - see unwrapCaptureDataKeys). A successful Class 3 (STRONG)
+	// biometric auth refreshes Android's shared hardware-auth-token
+	// regardless of whether this specific prompt was bound to a Cipher, so
+	// this is enough to let the caller's own Cipher.init() retry succeed
+	// afterward.
+	private fun authenticatePlain(
+		title: String,
+		subtitle: String,
+		onSuccess: () -> Unit,
+	) {
+		val executor = ContextCompat.getMainExecutor(this)
+		val prompt = BiometricPrompt(
+			this,
+			executor,
+			object : BiometricPrompt.AuthenticationCallback() {
+				override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+					finishError(
+						when (errorCode) {
+							BiometricPrompt.ERROR_CANCELED,
+							BiometricPrompt.ERROR_NEGATIVE_BUTTON,
+							BiometricPrompt.ERROR_USER_CANCELED -> "auth_cancelled"
+							else -> "auth_failed"
+						},
+						errString.toString(),
+					)
+				}
+
+				override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+					try {
+						onSuccess()
+					} catch (error: Exception) {
+						Log.e(
+							logTag,
+							"authenticatePlain onSuccess failed: ${error::class.java.simpleName}: ${error.message}",
+							error,
+						)
+						finishError("unlock_failed", error.message ?: "Could not unlock queued captures.")
+					}
+				}
+			},
+		)
+
+		val promptInfo = BiometricPrompt.PromptInfo.Builder()
+			.setTitle(title)
+			.setSubtitle(subtitle)
+			.setNegativeButtonText("Cancel")
+			.apply {
+				if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+					setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+				}
+			}
+			.build()
+
+		prompt.authenticate(promptInfo)
 	}
 
 	private fun ensureNoPendingOperation(result: MethodChannel.Result): Boolean {

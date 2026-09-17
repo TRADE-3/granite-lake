@@ -22,13 +22,6 @@ import '../../../core/utils/location_settings.dart';
 
 enum _CaptureFlow { live, review, submitting, success }
 
-class _NullReasons {
-  const _NullReasons({this.internetReason, this.gpsReason});
-
-  final String? internetReason;
-  final String? gpsReason;
-}
-
 class _LocationSnapshot {
   const _LocationSnapshot({
     required this.gpsLabel,
@@ -131,6 +124,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
   _CaptureMetadataSnapshot? _stagedMetadata;
   _CaptureMetadataSnapshot? _latestMetadata;
   final TextEditingController _noteController = TextEditingController();
+  final TextEditingController _internetReasonController =
+      TextEditingController();
+  final TextEditingController _gpsReasonController = TextEditingController();
   String _selectedTag = 'STRUCTURAL';
   int _submissionStep = 0;
   AttestationSubmissionStage? _activeSubmissionStage;
@@ -182,6 +178,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
     _networkTimer?.cancel();
     unawaited(_connectivityChangeSubscription?.cancel());
     _noteController.dispose();
+    _internetReasonController.dispose();
+    _gpsReasonController.dispose();
     _cameraController?.dispose();
     _deleteStagedImageIfNeeded();
     super.dispose();
@@ -637,24 +635,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
         ? appToggleForcedOffline
         : !_connectivityService.hasOsInterface;
 
-    final needsInternetReason = !isOnline || isForcedOffline;
-    final needsGpsReason = !hasGps || isGpsForcedNull;
-
-    String? internetNullReason;
-    String? gpsNullReason;
-    if (needsInternetReason || needsGpsReason) {
-      final reasons = await _collectNullReasons(
-        needsInternetReason: needsInternetReason,
-        needsGpsReason: needsGpsReason,
-      );
-      if (reasons == null) {
-        // Crew cancelled the mandatory reason prompt - abort the capture.
-        return;
-      }
-      internetNullReason = reasons.internetReason;
-      gpsNullReason = reasons.gpsReason;
-    }
-
+    // The internet/GPS null reason(s), when required, are collected on the
+    // review screen (offline-capture design doc §4b) rather than blocking
+    // the shutter itself - _buildReviewScreen enforces the same
+    // needsInternetReason/needsGpsReason gate before SAVE CAPTURE is enabled.
     setState(() {
       _isCapturing = true;
       _errorMessage = null;
@@ -677,14 +661,14 @@ class _CaptureScreenState extends State<CaptureScreen> {
       setState(() {
         _isCapturing = false;
         _stagedImagePath = imageFile.path;
+        _internetReasonController.clear();
+        _gpsReasonController.clear();
         _stagedMetadata = _buildMetadataSnapshot(
           capturedAtUtc,
           isOnline: isOnline,
           isForcedOffline: isForcedOffline,
-          internetNullReason: internetNullReason,
           hasGps: hasGps,
           isGpsForcedNull: isGpsForcedNull,
-          gpsNullReason: gpsNullReason,
         );
         _flow = _CaptureFlow.review;
       });
@@ -699,117 +683,6 @@ class _CaptureScreenState extends State<CaptureScreen> {
     }
   }
 
-  /// Blocking modal collecting the mandatory free-text reason(s) for
-  /// whichever axis (internet, GPS) is null or force-overridden for this
-  /// capture (offline-capture design doc §4b) - "Minimal now, polish later."
-  /// Returns null if the crew cancels, in which case the caller aborts the
-  /// capture rather than proceeding with a missing required reason.
-  Future<_NullReasons?> _collectNullReasons({
-    required bool needsInternetReason,
-    required bool needsGpsReason,
-  }) {
-    final internetController = TextEditingController();
-    final gpsController = TextEditingController();
-    return showDialog<_NullReasons>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (dialogContext, setDialogState) {
-            final canContinue =
-                (!needsInternetReason ||
-                    internetController.text.trim().isNotEmpty) &&
-                (!needsGpsReason || gpsController.text.trim().isNotEmpty);
-            return AlertDialog(
-              backgroundColor: AppColors.surfaceElevated,
-              title: Text(
-                'Reason Required',
-                style: AppTextStyles.headlineMedium,
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'This capture will be recorded without internet and/or GPS. Explain why before continuing - this is stored with the capture and hashed on-chain.',
-                    style: AppTextStyles.bodySmall.copyWith(
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                  if (needsInternetReason) ...[
-                    const SizedBox(height: 14),
-                    Text('INTERNET', style: AppTextStyles.labelMedium),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: internetController,
-                      maxLines: 2,
-                      style: AppTextStyles.bodyMedium.copyWith(
-                        color: AppColors.textPrimary,
-                      ),
-                      decoration: _inputDecoration(
-                        hintText: 'Why is internet unavailable/overridden?',
-                      ),
-                      onChanged: (_) => setDialogState(() {}),
-                    ),
-                  ],
-                  if (needsGpsReason) ...[
-                    const SizedBox(height: 14),
-                    Text('GPS', style: AppTextStyles.labelMedium),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: gpsController,
-                      maxLines: 2,
-                      style: AppTextStyles.bodyMedium.copyWith(
-                        color: AppColors.textPrimary,
-                      ),
-                      decoration: _inputDecoration(
-                        hintText: 'Why is GPS unavailable/overridden?',
-                      ),
-                      onChanged: (_) => setDialogState(() {}),
-                    ),
-                  ],
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: Text(
-                    'CANCEL',
-                    style: AppTextStyles.buttonText.copyWith(
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                ),
-                TextButton(
-                  onPressed: canContinue
-                      ? () => Navigator.of(dialogContext).pop(
-                          _NullReasons(
-                            internetReason: needsInternetReason
-                                ? internetController.text.trim()
-                                : null,
-                            gpsReason: needsGpsReason
-                                ? gpsController.text.trim()
-                                : null,
-                          ),
-                        )
-                      : null,
-                  child: Text(
-                    'CONTINUE',
-                    style: AppTextStyles.buttonText.copyWith(
-                      color: canContinue
-                          ? AppColors.primary
-                          : AppColors.textMuted,
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
   Future<void> _discardStagedCapture() async {
     await _deleteStagedImageIfNeeded();
     if (!mounted) {
@@ -822,6 +695,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
       _submissionStep = 0;
       _stagedMetadata = null;
       _noteController.clear();
+      _internetReasonController.clear();
+      _gpsReasonController.clear();
       _selectedTag = 'STRUCTURAL';
     });
   }
@@ -831,6 +706,15 @@ class _CaptureScreenState extends State<CaptureScreen> {
     if (stagedImagePath == null || _isCapturing) {
       return;
     }
+
+    // The review screen's note/reason fields can still hold focus (keyboard
+    // open) at the moment SAVE CAPTURE is tapped. Dismissing it up front,
+    // before the flow switches to the submission screen, keeps the keyboard
+    // close animation from overlapping that transition - otherwise the
+    // submission screen's fixed-height content briefly has less viewport
+    // than it needs while the keyboard is still animating away, which shows
+    // up as a transient overflow (the yellow/black hazard-stripe indicator).
+    FocusScope.of(context).unfocus();
 
     final appController = GraniteLakeScope.of(context);
     if (!appController.hasProjects) {
@@ -857,6 +741,23 @@ class _CaptureScreenState extends State<CaptureScreen> {
       setState(() {
         _errorMessage =
             'Submission failed. Captured time and project id are required.';
+      });
+      return;
+    }
+
+    // Internet/GPS null reasons are mandatory whenever that axis was
+    // actually missing or force-overridden at capture time (offline-capture
+    // design doc §4b) - the review screen's fields for these mirror this
+    // same gate to disable SAVE CAPTURE, but this is the authoritative check.
+    final needsInternetReason = _needsInternetReason(metadata);
+    final needsGpsReason = _needsGpsReason(metadata);
+    final internetReasonText = _internetReasonController.text.trim();
+    final gpsReasonText = _gpsReasonController.text.trim();
+    if ((needsInternetReason && internetReasonText.isEmpty) ||
+        (needsGpsReason && gpsReasonText.isEmpty)) {
+      setState(() {
+        _errorMessage =
+            'This capture was recorded without internet and/or GPS. Enter a reason before submitting.';
       });
       return;
     }
@@ -917,10 +818,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
       cameraDetailsLabel: metadata.cameraDetailsLabel,
       isOnline: metadata.isOnline,
       isForcedOffline: metadata.isForcedOffline,
-      internetNullReason: metadata.internetNullReason,
+      internetNullReason: needsInternetReason ? internetReasonText : null,
       hasGps: metadata.hasGps,
       isGpsForcedNull: metadata.isGpsForcedNull,
-      gpsNullReason: metadata.gpsNullReason,
+      gpsNullReason: needsGpsReason ? gpsReasonText : null,
       onProgress: (progress) {
         unawaited(_applySubmissionProgress(progress, submissionRunId));
       },
@@ -961,10 +862,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
         networkLabel: metadata.networkLabel,
         isOnline: metadata.isOnline,
         isForcedOffline: metadata.isForcedOffline,
-        internetNullReason: metadata.internetNullReason,
+        internetNullReason: needsInternetReason ? internetReasonText : null,
         hasGps: metadata.hasGps,
         isGpsForcedNull: metadata.isGpsForcedNull,
-        gpsNullReason: metadata.gpsNullReason,
+        gpsNullReason: needsGpsReason ? gpsReasonText : null,
       );
       _stagedMetadata = null;
     });
@@ -1150,7 +1051,6 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final countdown = _formatShortDuration(
       appController.remainingSessionDuration,
     );
-    final liveCameraLabel = _cameraLabel;
     final liveCameraDetails = _cameraDetailsLabel;
     // Missing GPS/connectivity only bypass the shutter block when the crew
     // has explicitly opted into that via the corresponding force toggle -
@@ -1190,8 +1090,15 @@ class _CaptureScreenState extends State<CaptureScreen> {
                   ),
                 ],
               ),
-              const Spacer(),
-              Flexible(
+              Expanded(
+                // A plain Spacer on both sides of this text would each claim
+                // an equal share of the leftover space (Spacer and Flexible
+                // both default to flex: 1), leaving the label only a third
+                // of the room between the countdown and identity badge -
+                // which is what was clipping it to "LIVE VERIFI…" on
+                // narrower phones. Expanded instead gives the label the
+                // entire leftover width, so it only truncates if the
+                // countdown/badge groups themselves leave under ~180px.
                 child: Text(
                   'LIVE VERIFIED CAPTURE',
                   overflow: TextOverflow.ellipsis,
@@ -1202,44 +1109,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
                   ),
                 ),
               ),
-              const Spacer(),
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  IconButton(
-                    tooltip: appController.isOfflineCaptureForced
-                        ? 'Force Offline Mode: ON'
-                        : 'Force Offline Mode',
-                    icon: Icon(
-                      appController.isOfflineCaptureForced
-                          ? Icons.wifi_off_rounded
-                          : Icons.wifi_rounded,
-                      size: 20,
-                      color: appController.isOfflineCaptureForced
-                          ? AppColors.statusError
-                          : AppColors.textSecondary,
-                    ),
-                    onPressed: () => appController.setOfflineCaptureForced(
-                      !appController.isOfflineCaptureForced,
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: appController.isGpsCaptureForcedNull
-                        ? 'Force No GPS: ON'
-                        : 'Force No GPS',
-                    icon: Icon(
-                      appController.isGpsCaptureForcedNull
-                          ? Icons.location_off_rounded
-                          : Icons.location_on_outlined,
-                      size: 20,
-                      color: appController.isGpsCaptureForcedNull
-                          ? AppColors.statusError
-                          : AppColors.textSecondary,
-                    ),
-                    onPressed: () => appController.setGpsCaptureForcedNull(
-                      !appController.isGpsCaptureForcedNull,
-                    ),
-                  ),
                   _IdentityBadge(
                     initials: _resolveInitials(identity?.walletAddress),
                   ),
@@ -1298,39 +1170,6 @@ class _CaptureScreenState extends State<CaptureScreen> {
                     bottom: 24,
                     child: _ErrorBanner(message: _errorMessage!),
                   ),
-                if (!_isPreparing && _errorMessage == null) ...[
-                  Positioned(
-                    left: 28,
-                    top: isCompact ? 120 : 160,
-                    child: _LabeledMetric(label: 'GPS', value: _gpsStatusLabel),
-                  ),
-                  Positioned(
-                    left: 28,
-                    top: isCompact ? 184 : 236,
-                    child: _LabeledMetric(
-                      label: 'ALTITUDE',
-                      value: _altitudeStatusLabel,
-                    ),
-                  ),
-                  Positioned(
-                    right: 28,
-                    top: isCompact ? 120 : 160,
-                    child: _LabeledMetric(
-                      label: 'REAR CAMERA',
-                      value: liveCameraLabel,
-                      alignEnd: true,
-                    ),
-                  ),
-                  Positioned(
-                    right: 28,
-                    top: isCompact ? 184 : 236,
-                    child: _LabeledMetric(
-                      label: 'NETWORK',
-                      value: _networkStatusLabel,
-                      alignEnd: true,
-                    ),
-                  ),
-                ],
                 Positioned(
                   left: 0,
                   right: 0,
@@ -1341,7 +1180,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
                         (
                           Icons.location_on_rounded,
                           'GPS: $_gpsStatusLabel',
-                          AppColors.statusActive,
+                          _hasGpsFix
+                              ? AppColors.statusActive
+                              : AppColors.statusError,
                         ),
                         (
                           Icons.height_rounded,
@@ -1372,59 +1213,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
           child: Column(
             children: [
-              if (!_hasGpsFix ||
-                  !_hasNetworkConnectivity ||
-                  _isMockLocationDetected)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppColors.surfaceElevated,
-                      border: Border.all(color: AppColors.borderActive),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          _isMockLocationDetected
-                              ? Icons.gps_off_rounded
-                              : !_hasGpsFix
-                              ? Icons.location_searching_rounded
-                              : Icons.wifi_off_rounded,
-                          size: 16,
-                          color: _isMockLocationDetected
-                              ? AppColors.statusError
-                              : !_hasGpsFix
-                              ? AppColors.statusActive
-                              : AppColors.statusError,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _captureBlockedMessage,
-                            style: AppTextStyles.bodySmall.copyWith(
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: _refreshCaptureReadiness,
-                          child: Text(
-                            'RETRY',
-                            style: AppTextStyles.labelMedium.copyWith(
-                              color: AppColors.primary,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+              _buildReadinessCard(appController),
               Container(
                 height: 112,
                 decoration: BoxDecoration(
@@ -1472,6 +1261,86 @@ class _CaptureScreenState extends State<CaptureScreen> {
     );
   }
 
+  // Single readiness card for the live-capture screen: shows what's blocking
+  // capture (or, once toggled, that a crew override is active) with the
+  // Switch that actually controls the corresponding force toggle right next
+  // to its own status line, rather than as a separate, unlabeled icon
+  // elsewhere on screen (offline-capture design doc §4/§4a).
+  Widget _buildReadinessCard(GraniteLakeController appController) {
+    if (_isMockLocationDetected) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: _CaptureReadinessBanner(
+          icon: Icons.gps_off_rounded,
+          iconColor: AppColors.statusError,
+          message: _captureBlockedMessage,
+          onRetry: _refreshCaptureReadiness,
+        ),
+      );
+    }
+
+    final gpsDetail = _gpsReadinessDetail;
+    final internetDetail = _internetReadinessDetail;
+    if (gpsDetail == null && internetDetail == null) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceElevated,
+          border: Border.all(color: AppColors.borderActive),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (gpsDetail != null)
+              _CaptureAxisOverrideRow(
+                icon: appController.isGpsCaptureForcedNull
+                    ? Icons.location_off_rounded
+                    : Icons.location_searching_rounded,
+                message: gpsDetail,
+                switchLabel: 'Capture without GPS',
+                value: appController.isGpsCaptureForcedNull,
+                onChanged: appController.setGpsCaptureForcedNull,
+              ),
+            if (gpsDetail != null && internetDetail != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: Divider(height: 1, color: AppColors.border),
+              ),
+            if (internetDetail != null)
+              _CaptureAxisOverrideRow(
+                icon: appController.isOfflineCaptureForced
+                    ? Icons.wifi_off_rounded
+                    : Icons.wifi_rounded,
+                message: internetDetail,
+                switchLabel: 'Capture without internet',
+                value: appController.isOfflineCaptureForced,
+                onChanged: appController.setOfflineCaptureForced,
+              ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: _refreshCaptureReadiness,
+                child: Text(
+                  'RETRY',
+                  style: AppTextStyles.labelMedium.copyWith(
+                    color: AppColors.primary,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildReviewScreen(
     BuildContext context,
     GraniteLakeController appController,
@@ -1485,6 +1354,17 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final projects = appController.projects;
     final selectedProjectId = appController.selectedProjectId;
     final hasProjects = projects.isNotEmpty;
+    // Whether this staged capture needs a crew-entered reason for that axis
+    // (offline-capture design doc §4b) - gates both the reason fields below
+    // and the SAVE CAPTURE button, mirroring _submitCapture's own check.
+    final needsInternetReason =
+        metadata != null && _needsInternetReason(metadata);
+    final needsGpsReason = metadata != null && _needsGpsReason(metadata);
+    final canSubmit =
+        hasProjects &&
+        (!needsInternetReason ||
+            _internetReasonController.text.trim().isNotEmpty) &&
+        (!needsGpsReason || _gpsReasonController.text.trim().isNotEmpty);
 
     return Container(
       key: const ValueKey('review-capture'),
@@ -1642,6 +1522,95 @@ class _CaptureScreenState extends State<CaptureScreen> {
                             color: AppColors.textPrimary,
                           ),
                         ),
+                        if (needsInternetReason || needsGpsReason) ...[
+                          const SizedBox(height: 18),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: AppColors.textWarning.withAlpha(26),
+                              border: Border.all(
+                                color: AppColors.textWarning.withAlpha(160),
+                                width: 1.4,
+                              ),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(
+                                      Icons.warning_amber_rounded,
+                                      size: 18,
+                                      color: AppColors.textWarning,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'REASON REQUIRED',
+                                      style: AppTextStyles.labelMedium.copyWith(
+                                        color: AppColors.textWarning,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 1.1,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'This capture was recorded without internet and/or GPS. Explain why before saving - this is stored with the capture and hashed on-chain.',
+                                  style: AppTextStyles.bodySmall.copyWith(
+                                    color: AppColors.textSecondary,
+                                  ),
+                                ),
+                                if (needsInternetReason) ...[
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    'INTERNET',
+                                    style: AppTextStyles.labelMedium.copyWith(
+                                      color: AppColors.textWarning,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  TextField(
+                                    controller: _internetReasonController,
+                                    maxLines: 2,
+                                    style: AppTextStyles.bodyMedium.copyWith(
+                                      color: AppColors.textPrimary,
+                                    ),
+                                    decoration: _inputDecoration(
+                                      hintText:
+                                          'Why is internet unavailable/overridden?',
+                                    ),
+                                    onChanged: (_) => setState(() {}),
+                                  ),
+                                ],
+                                if (needsGpsReason) ...[
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    'GPS',
+                                    style: AppTextStyles.labelMedium.copyWith(
+                                      color: AppColors.textWarning,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  TextField(
+                                    controller: _gpsReasonController,
+                                    maxLines: 2,
+                                    style: AppTextStyles.bodyMedium.copyWith(
+                                      color: AppColors.textPrimary,
+                                    ),
+                                    decoration: _inputDecoration(
+                                      hintText:
+                                          'Why is GPS unavailable/overridden?',
+                                    ),
+                                    onChanged: (_) => setState(() {}),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 18),
                         Container(
                           width: double.infinity,
@@ -1704,7 +1673,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                             const SizedBox(width: 12),
                             Expanded(
                               child: ElevatedButton(
-                                onPressed: hasProjects ? _submitCapture : null,
+                                onPressed: canSubmit ? _submitCapture : null,
                                 child: Text(
                                   _isCapturing ? 'SUBMITTING' : 'SAVE CAPTURE',
                                   style: AppTextStyles.buttonText,
@@ -1726,140 +1695,154 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   Widget _buildSubmissionScreen(BuildContext context) {
-    return Container(
+    // LayoutBuilder + SingleChildScrollView + a min-height ConstrainedBox is
+    // what lets the Spacer()s below keep vertically centering this content
+    // when there's room, while still scrolling instead of overflowing when
+    // there isn't - e.g. the review screen's note/reason field can still be
+    // closing its keyboard right as this screen appears, which transiently
+    // shrinks the available height and previously showed the yellow/black
+    // overflow-hazard stripes for a frame while that animation finished.
+    return LayoutBuilder(
       key: const ValueKey('submitting-capture'),
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
-      child: Column(
-        children: [
-          const Spacer(),
-          SizedBox(
-            width: 176,
-            height: 176,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Container(
-                  width: 176,
-                  height: 176,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: AppColors.statusActive.withAlpha(70),
-                      width: 2,
-                    ),
-                  ),
-                ),
-                SizedBox(
-                  width: 64,
-                  height: 64,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 3,
-                    valueColor: AlwaysStoppedAnimation(AppColors.statusActive),
-                  ),
-                ),
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: CustomPaint(painter: _SubmissionScanPainter()),
-                  ),
-                ),
-              ],
-            ),
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: IntrinsicHeight(child: _buildSubmissionScreenContent()),
           ),
-          const SizedBox(height: 28),
-          Text(
-            _submissionHeadline,
-            style: AppTextStyles.headlineLarge.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 10),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 380),
-            child: Text(
-              _submissionDetail,
-              textAlign: TextAlign.center,
-              style: AppTextStyles.bodyMedium.copyWith(
-                color: AppColors.textSecondary,
-                height: 1.5,
+        );
+      },
+    );
+  }
+
+  Widget _buildSubmissionScreenContent() {
+    return Column(
+      children: [
+        const Spacer(),
+        SizedBox(
+          width: 176,
+          height: 176,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Container(
+                width: 176,
+                height: 176,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: AppColors.statusActive.withAlpha(70),
+                    width: 2,
+                  ),
+                ),
               ),
+              SizedBox(
+                width: 64,
+                height: 64,
+                child: CircularProgressIndicator(
+                  strokeWidth: 3,
+                  valueColor: AlwaysStoppedAnimation(AppColors.statusActive),
+                ),
+              ),
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(painter: _SubmissionScanPainter()),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 28),
+        Text(
+          _submissionHeadline,
+          style: AppTextStyles.headlineLarge.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 10),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Text(
+            _submissionDetail,
+            textAlign: TextAlign.center,
+            style: AppTextStyles.bodyMedium.copyWith(
+              color: AppColors.textSecondary,
+              height: 1.5,
             ),
           ),
-          const SizedBox(height: 24),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 380),
-            child: Column(
-              children: [
-                _SubmissionStep(
-                  title: 'Hashing And Signing Evidence',
-                  value: _submissionStageValue(
-                    AttestationSubmissionStage.signing,
-                    activeLabel:
-                        'Hashing the image and signing the proof bundle',
-                    completeLabel: 'Proof bundle signed for this session',
-                    failedLabel: 'Signing the local proof bundle failed',
-                  ),
-                  state:
-                      _submissionStageStates[AttestationSubmissionStage
-                          .signing]!,
+        ),
+        const SizedBox(height: 24),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Column(
+            children: [
+              _SubmissionStep(
+                title: 'Hashing And Signing Evidence',
+                value: _submissionStageValue(
+                  AttestationSubmissionStage.signing,
+                  activeLabel: 'Hashing the image and signing the proof bundle',
+                  completeLabel: 'Proof bundle signed for this session',
+                  failedLabel: 'Signing the local proof bundle failed',
                 ),
-                _SubmissionStep(
-                  title: 'Saving Local Record',
-                  value: _submissionStageValue(
-                    AttestationSubmissionStage.savingLocalRecord,
-                    activeLabel:
-                        'Writing image metadata and manifest to this device',
-                    completeLabel: 'Local capture record saved on-device',
-                    failedLabel: 'Saving the local capture record failed',
-                  ),
-                  state:
-                      _submissionStageStates[AttestationSubmissionStage
-                          .savingLocalRecord]!,
+                state:
+                    _submissionStageStates[AttestationSubmissionStage.signing]!,
+              ),
+              _SubmissionStep(
+                title: 'Saving Local Record',
+                value: _submissionStageValue(
+                  AttestationSubmissionStage.savingLocalRecord,
+                  activeLabel:
+                      'Writing image metadata and manifest to this device',
+                  completeLabel: 'Local capture record saved on-device',
+                  failedLabel: 'Saving the local capture record failed',
                 ),
-                _SubmissionStep(
-                  title: _isQueuedOfflineSubmission
-                      ? 'Queuing For Submission'
-                      : 'Submitting To Sui Testnet',
-                  value: _isQueuedOfflineSubmission
-                      ? _submissionStageValue(
-                          AttestationSubmissionStage.submittingToChain,
-                          activeLabel:
-                              'Recording capture for automatic submission once online',
-                          completeLabel:
-                              'Capture queued locally - no connectivity needed yet',
-                          failedLabel: 'Queuing the capture locally failed',
-                        )
-                      : _submissionStageValue(
-                          AttestationSubmissionStage.submittingToChain,
-                          activeLabel:
-                              'Calling `attest_photo` with UserCap, Registry, hash, GPS, altitude, and project id',
-                          completeLabel:
-                              'Sui attestation transaction submitted',
-                          failedLabel: 'Sui attestation transaction failed',
-                        ),
-                  state:
-                      _submissionStageStates[AttestationSubmissionStage
-                          .submittingToChain]!,
+                state:
+                    _submissionStageStates[AttestationSubmissionStage
+                        .savingLocalRecord]!,
+              ),
+              _SubmissionStep(
+                title: _isQueuedOfflineSubmission
+                    ? 'Queuing For Submission'
+                    : 'Submitting To Sui Testnet',
+                value: _isQueuedOfflineSubmission
+                    ? _submissionStageValue(
+                        AttestationSubmissionStage.submittingToChain,
+                        activeLabel:
+                            'Recording capture for automatic submission once online',
+                        completeLabel:
+                            'Capture queued locally - no connectivity needed yet',
+                        failedLabel: 'Queuing the capture locally failed',
+                      )
+                    : _submissionStageValue(
+                        AttestationSubmissionStage.submittingToChain,
+                        activeLabel:
+                            'Calling `attest_photo` with UserCap, Registry, hash, GPS, altitude, and project id',
+                        completeLabel: 'Sui attestation transaction submitted',
+                        failedLabel: 'Sui attestation transaction failed',
+                      ),
+                state:
+                    _submissionStageStates[AttestationSubmissionStage
+                        .submittingToChain]!,
+              ),
+              _SubmissionStep(
+                title: 'Refreshing Device History',
+                value: _submissionStageValue(
+                  AttestationSubmissionStage.refreshingHistory,
+                  activeLabel: 'Refreshing the local capture ledger',
+                  completeLabel:
+                      'Capture ledger updated with the latest status',
+                  failedLabel: 'Refreshing the local capture ledger failed',
                 ),
-                _SubmissionStep(
-                  title: 'Refreshing Device History',
-                  value: _submissionStageValue(
-                    AttestationSubmissionStage.refreshingHistory,
-                    activeLabel: 'Refreshing the local capture ledger',
-                    completeLabel:
-                        'Capture ledger updated with the latest status',
-                    failedLabel: 'Refreshing the local capture ledger failed',
-                  ),
-                  state:
-                      _submissionStageStates[AttestationSubmissionStage
-                          .refreshingHistory]!,
-                ),
-              ],
-            ),
+                state:
+                    _submissionStageStates[AttestationSubmissionStage
+                        .refreshingHistory]!,
+              ),
+            ],
           ),
-          const Spacer(),
-        ],
-      ),
+        ),
+        const Spacer(),
+      ],
     );
   }
 
@@ -2053,6 +2036,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
                           _errorMessage = null;
                           _submissionStep = 0;
                           _noteController.clear();
+                          _internetReasonController.clear();
+                          _gpsReasonController.clear();
                           _selectedTag = 'STRUCTURAL';
                         });
                       },
@@ -2078,14 +2063,24 @@ class _CaptureScreenState extends State<CaptureScreen> {
     );
   }
 
+  // Whether the capture recorded in [metadata] needs a crew-entered reason
+  // for that axis - true when the axis was actually unavailable or when the
+  // crew force-overrode it via the app toggle (offline-capture design doc
+  // §4b). Shared by the review screen's reason fields/SAVE gate and by
+  // _submitCapture's authoritative validation, so both agree on when a
+  // reason is mandatory.
+  bool _needsInternetReason(_CaptureMetadataSnapshot metadata) =>
+      !metadata.isOnline || metadata.isForcedOffline;
+
+  bool _needsGpsReason(_CaptureMetadataSnapshot metadata) =>
+      !metadata.hasGps || metadata.isGpsForcedNull;
+
   _CaptureMetadataSnapshot _buildMetadataSnapshot(
     DateTime capturedAtUtc, {
     required bool isOnline,
     required bool isForcedOffline,
-    String? internetNullReason,
     required bool hasGps,
     required bool isGpsForcedNull,
-    String? gpsNullReason,
   }) {
     return _CaptureMetadataSnapshot(
       capturedAtUtc: capturedAtUtc,
@@ -2097,10 +2092,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
       networkLabel: _networkStatusLabel,
       isOnline: isOnline,
       isForcedOffline: isForcedOffline,
-      internetNullReason: internetNullReason,
       hasGps: hasGps,
       isGpsForcedNull: isGpsForcedNull,
-      gpsNullReason: gpsNullReason,
     );
   }
 
@@ -2296,6 +2289,58 @@ class _CaptureScreenState extends State<CaptureScreen> {
       return 'Force No GPS is on - this capture will be recorded without location.';
     }
     return 'Force Offline Mode is on - this capture will be queued for submission.';
+  }
+
+  // Per-axis status text for the live-capture readiness card
+  // (_buildReadinessCard) - unlike _captureBlockedMessage (a single
+  // prioritized sentence for the transient press-time error banner), these
+  // are independent, don't mention the override toggle by name, and return
+  // null once that axis is fine. The toggle now sits right next to this text
+  // as an explicit Switch, so the message doesn't need to describe it too.
+  String? get _gpsReadinessDetail {
+    if (_hasGpsFix) {
+      return null;
+    }
+    if (GraniteLakeScope.of(context).isGpsCaptureForcedNull) {
+      return 'Capturing without GPS - this capture will be recorded without location.';
+    }
+    if (_gpsStatusLabel == 'Location off') {
+      // This is the device-wide Location services toggle (Settings >
+      // Location), not this app's own Location permission - the app
+      // permission page can say "Allowed" while this is still off, and no
+      // app can get a fix until it's on.
+      return 'Location is off in device Settings. Turn it on, or '
+          "capture without GPS - this is separate from this app's own "
+          'Location permission, which can already be granted while the '
+          'device-wide toggle is off.';
+    }
+    final debugError = _gpsDebugError;
+    final base =
+        'No GPS fix yet - a first fix outdoors can take a few minutes. '
+        'Status: $_gpsStatusLabel';
+    return debugError == null ? base : '$base\n\n$debugError';
+  }
+
+  String? get _internetReadinessDetail {
+    if (_hasNetworkConnectivity) {
+      return null;
+    }
+    if (GraniteLakeScope.of(context).isOfflineCaptureForced) {
+      return 'Capturing without internet - this capture will be queued for submission.';
+    }
+    if (!_connectivityService.hasBothWifiAndMobileActive) {
+      // Deliberately stricter than the actual is_online/shutter-gate logic
+      // (which correctly treats a single active radio as online - see
+      // ConnectivityHeuristicService.hasOsInterface). This message
+      // specifically asks for both Wi-Fi and mobile data on, per explicit
+      // direction, so it also covers the "only one radio is on" case, not
+      // just "both off." Since airplane mode disables every radio, both
+      // being simultaneously active already proves airplane mode is off too
+      // - no separate check needed.
+      return 'Turn on both Wi-Fi and mobile data, and make sure Airplane '
+          'Mode is off, to restore connectivity.';
+    }
+    return 'No internet connectivity. Status: $_networkStatusLabel';
   }
 
   bool _hasAttestationFailure(AttestationRecord record) {
@@ -2605,34 +2650,115 @@ class _TelemetryBar extends StatelessWidget {
   }
 }
 
-class _LabeledMetric extends StatelessWidget {
-  const _LabeledMetric({
-    required this.label,
-    required this.value,
-    this.alignEnd = false,
+class _CaptureReadinessBanner extends StatelessWidget {
+  const _CaptureReadinessBanner({
+    required this.icon,
+    required this.iconColor,
+    required this.message,
+    required this.onRetry,
   });
 
-  final String label;
-  final String value;
-  final bool alignEnd;
+  final IconData icon;
+  final Color iconColor;
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceElevated,
+        border: Border.all(color: AppColors.borderActive),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: iconColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: AppTextStyles.bodySmall.copyWith(
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: onRetry,
+            child: Text(
+              'RETRY',
+              style: AppTextStyles.labelMedium.copyWith(
+                color: AppColors.primary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// A status line paired with the one Switch that actually controls it - keeps
+// the explanation of *why* an axis is blocked (or that it's being overridden)
+// right next to the control that changes that, instead of a plain-text
+// mention of a toggle that lives somewhere else on screen.
+class _CaptureAxisOverrideRow extends StatelessWidget {
+  const _CaptureAxisOverrideRow({
+    required this.icon,
+    required this.message,
+    required this.switchLabel,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final IconData icon;
+  final String message;
+  final String switchLabel;
+  final bool value;
+  final ValueChanged<bool> onChanged;
 
   @override
   Widget build(BuildContext context) {
     return Column(
-      crossAxisAlignment: alignEnd
-          ? CrossAxisAlignment.end
-          : CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          label,
-          style: AppTextStyles.hudLabel.copyWith(color: AppColors.textMuted),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              icon,
+              size: 16,
+              color: value ? AppColors.statusActive : AppColors.statusError,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                message,
+                style: AppTextStyles.bodySmall.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: AppTextStyles.labelMedium.copyWith(
-            color: AppColors.textPrimary,
-          ),
+        Row(
+          children: [
+            Switch(
+              value: value,
+              activeThumbColor: AppColors.primary,
+              onChanged: onChanged,
+            ),
+            Expanded(
+              child: Text(
+                switchLabel,
+                style: AppTextStyles.labelMedium.copyWith(
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );
