@@ -589,11 +589,18 @@ class _SecurityBadge extends StatelessWidget {
         children: [
           Icon(Icons.lock_rounded, size: 12, color: AppColors.textMuted),
           const SizedBox(width: 6),
-          Text(
-            'CAPTURES ARE HASHED AND SIGNED ON DEVICE',
-            style: AppTextStyles.labelSmall.copyWith(
-              color: AppColors.textMuted,
-              letterSpacing: 0.6,
+          // Flexible, not a bare Text: on narrower screens (observed on a
+          // Samsung SM-A166P) the full label at its natural width doesn't
+          // fit the available space, and MainAxisSize.min alone doesn't
+          // stop an unconstrained child from overflowing the Row - it
+          // needs to be allowed to wrap instead.
+          Flexible(
+            child: Text(
+              'CAPTURES ARE HASHED AND SIGNED ON DEVICE',
+              style: AppTextStyles.labelSmall.copyWith(
+                color: AppColors.textMuted,
+                letterSpacing: 0.6,
+              ),
             ),
           ),
         ],
