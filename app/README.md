@@ -49,8 +49,8 @@ Bundled defaults live in:
 Current testnet defaults:
 
 - RPC URL: `https://fullnode.testnet.sui.io:443`
-- package id: `0x6f174dfdde327fff0ad51867053b5459360cd2905c3b1657fce979649d4294e6`
-- registry id: `0x6b73e5ab8ad7ed73c00fdf5123a660f70030384ebf4f602e259e151f301af543`
+- package id: `0xd06ff3a35bb182b5e4577440d71470373fc4c36315c27dca90c8af3e8d9367b6`
+- registry id: `0xe8a73abe8d822ad0b9441bd0df47510251c8b2c9d84f1d6ffcaa340bf2daea4e`
 - module: `photo_attestation`
 - faucet URL: `https://faucet.sui.io/?network=testnet`
 - OTP / UTC backend URL: resolved dynamically at runtime (see Backend URL Configuration below)
