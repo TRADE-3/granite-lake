@@ -439,124 +439,98 @@ Today, `_hasNetworkConnectivity` in `capture_screen.dart` is a single boolean de
 one HTTP round trip: a `Timer.periodic(30s)` calls `_refreshBackendStatus()`, which calls
 `AppUtils.hasBackendConnectivity(domain)` (`app/lib/core/utils/utils.dart`), which does a
 `forceRefresh` call to `resolveOtpBackendConfig` — a `GET /utc` against each configured
-backend candidate in turn, each with its own 3-5s timeout. One dropped packet flips the
-label from `Connected` to `Offline` and back on the next tick; there's no OS-level
-reachability signal to short-circuit that round trip when the radio is plainly off, and no
-notion of "reachable but too slow to be worth it." This section replaces that single probe
-with two explicit checks, run by a new `ConnectivityHeuristicService`, whose combined
-result is what §4 uses to decide whether offline capture is offered.
+backend candidate in turn, each with its own 3-5s timeout. There's no OS-level
+reachability signal to short-circuit that round trip when the radio is plainly off. This
+section replaces that single probe with two explicit checks, run by a new
+`ConnectivityHeuristicService`, whose result is what §4 uses to decide whether offline
+capture is offered.
 
 **`ConnectivityHeuristicService`** (new file:
 `app/lib/core/services/connectivity_heuristic_service.dart`) — **implemented and wired
 into `capture_screen.dart`**: `_hasNetworkConnectivity` now returns
 `_connectivityService.isOnlineCapable` directly, `_startClock()`'s `Timer` reschedules
 itself off `_connectivityService.pollInterval` (replacing the old flat 30s interval),
-and `_refreshBackendStatus()` reads `.isOnlineCapable`/`.label`/`.classification` off the
-service rather than a single-probe boolean. The wiring described as deferred below, when
-this section was originally written, has since landed. The service itself is also
-unit-tested in isolation
-(`app/test/core/services/connectivity_heuristic_service_test.dart`, 14 tests) via a
+and `_refreshBackendStatus()` reads `.isOnlineCapable`/`.classification` off the service
+rather than a single-probe boolean. The service is also unit-tested in isolation
+(`app/test/core/services/connectivity_heuristic_service_test.dart`) via a
 synthetic-outcome seam (`recordSyntheticOutcomeForTesting`, `@visibleForTesting`) that
-drives the ring-buffer/threshold/hysteresis logic directly, without needing a real
-platform channel or HTTP call.
+drives the classification logic directly, without needing a real platform channel or
+HTTP call.
 
-**Step 1 — is a radio on at all.** Add `connectivity_plus` as a new dependency and check
-the OS-reported interface state first. No active interface (airplane mode, no SIM and no
-Wi-Fi) → skip straight to `offline`, no network round trip. This is the case where the
-existing probe is both most expensive (every candidate times out at 3-5s) and least
-informative — the radio being off already answers the question. An active interface
-(`wifi` or `mobile` present) moves to step 2; it only confirms a radio is associated, not
-that it actually reaches anything (see the earlier discussion of this limitation), which
-is exactly what step 2 is for.
+**Binary online/offline, no middle state, no memory of past ticks — revised after field
+testing.** The service originally shipped with a third `degraded` state and a rolling
+5-outcome window (latency threshold, consecutive-failure/consecutive-confirmation
+counters, a debounced `label` distinct from the raw `classification`) meant to smooth
+over marginal-signal flapping. On-device testing (S23 Ultra) surfaced the actual cost of
+that: a single early transient failure (e.g. the very first backend probe during app
+cold start, before the network stack was fully up) could keep the connectivity badge
+reading `Degraded` for up to ~5 poll ticks afterward — up to a minute or more — even
+though every check in between succeeded quickly, because the classifier was reading a
+window of history rather than the current state. That read as "the connection is fine
+but the app still says it isn't," which is worse for a field crew than a label that
+occasionally flickers on a genuinely marginal connection. The service was simplified to
+have no memory beyond the tick that just ran: whatever the connection looks like right
+now is what's reported, immediately, every time.
 
-**Step 2 — is what it reaches good enough.** Run the existing `GET /utc` probe and treat
-it as a lightweight reachability + quality check rather than only a pass/fail:
+**Step 1 — is a radio on at all.** `connectivity_plus` reports the OS-level interface
+state first. No active interface (airplane mode, no SIM and no Wi-Fi) → `offline`
+immediately, no network round trip — this is the case where the old single probe was both
+most expensive (every candidate times out at 3-5s) and least informative. An active
+interface (`wifi` or `mobile` present) moves to step 2; it only confirms a radio is
+associated, not that it actually reaches anything, which is exactly what step 2 is for.
+
+**Step 2 — can it actually reach the backend.** Run the existing `GET /utc` probe as a
+plain pass/fail reachability check:
 
 - The transaction payload this all exists to submit is tiny — a hash plus a handful of
-  short byte fields, no image bytes go on-chain — so raw throughput isn't the real
-  constraint; a dedicated large-payload speed test was considered and rejected because it
-  would burn a field crew's data budget precisely in the marginal-connectivity conditions
-  being tested, for a number that doesn't predict submission success as well as latency
-  does.
-- **Bandwidth/throughput estimation is deferred, not implemented in the current
-  `ConnectivityHeuristicService`** — classification is reachability + latency only for
-  now. The originally-planned "estimate throughput for free from the probe" (response
-  bytes ÷ elapsed time) turns out unreliable at the `/utc` endpoint's actual payload size:
-  a few dozen bytes divided by round-trip time is dominated by TCP/TLS handshake overhead,
-  not real throughput, so it wasn't implemented as a signal. The other planned source,
-  Android's `NetworkCapabilities.getLinkDownstreamBandwidthKbps()` via a small native
-  platform channel (mirroring the existing biometric-gate channel in `MainActivity.kt`),
-  is real native Kotlin work that's still outstanding — `minimumSufficientBandwidthKbps`
-  is intentionally not yet defined in `app_constants.dart`, with a comment there explaining
-  why, ready to be added back once that channel lands.
-- "Good enough" (`minimumSufficientBandwidthKbps`, once added) is meant as a floor beneath
-  which requests reliably stall or time out, not a real bandwidth budget — a "not
-  painfully slow" filter more than a speed test.
-- Latency matters independently of throughput: a probe that succeeds but exceeds a p50
-  latency threshold (e.g. 2s) counts as `degraded`, since a connection that's technically
-  up but slow to respond will make a crew wait through the exact submission delay offline
-  mode exists to avoid.
+  short byte fields, no image bytes go on-chain — so a dedicated bandwidth/throughput
+  signal was considered and dropped rather than deferred: on top of the earlier concern
+  that a large-payload speed test would burn a field crew's data budget precisely in the
+  marginal-connectivity conditions being tested, a binary classifier has no "good enough
+  but not great" tier left to feed such a number into. `minimumSufficientBandwidthKbps`
+  and the native `NetworkCapabilities.getLinkDownstreamBandwidthKbps()` channel discussed
+  in earlier drafts of this doc are no longer planned.
+- Latency is no longer classified separately either — a probe that succeeds, however
+  slowly (up to its own 5s timeout), counts as `online`. A slow-but-working connection is
+  still a connection; the crew isn't blocked from trying it, and offline capture remains
+  available as a deliberate override (§4) regardless.
 - Failing the probe outright (timeout, `SocketException`, non-2xx) with an active
-  interface present is `degraded`/`offline` depending on persistence (below) — an
-  interface that can't complete a request is functionally no better than no interface.
+  interface present is `offline` — an interface that can't complete a request is
+  functionally no better than no interface.
 
-**Rolling classification, not a single shot. Implemented as designed**, via a `Queue` ring
-buffer capped at 5 `_ProbeOutcome`s (`hasInterface`, `success`, `latency`): `offline`
-immediately (no 2-consecutive requirement) when the latest outcome has no OS interface —
-this is a per-tick check, not a streak; `offline` after 2 consecutive probe _failures_
-with an interface present; `degraded` when the latest probe succeeds but the recent window
-still shows a failure ("succeeds but intermittently"), or exceeds the latency threshold, or
-a single probe fails without yet reaching 2 consecutive; `online` otherwise. The
-`minimumSufficientBandwidthKbps` clause is pending the bandwidth-signal deferral noted
-above. `online` is the only state §4 treats as online-capable; `degraded` and `offline`
-both make offline capture available automatically.
+**Each `check()` call is independent.** `classification` is set directly from that one
+tick: no interface → `offline`; no domain configured to probe → `offline`; the probe
+throws → `offline`; the probe succeeds → `online`. There is no ring buffer, no
+consecutive-failure/consecutive-confirmation counting, and no separate debounced `label`
+— `classification` is the only state, and `isOnlineCapable` (`classification == online`)
+reads it directly. `online` is the only state §4 treats as online-capable; `offline`
+makes offline capture available automatically.
 
-- **Hysteresis on the user-facing label — implemented, with a real bug caught by writing
-  the tests, not assumed correct.** The label (`ConnectivityHeuristicService.label`, read
-  by `is_online`/§4 eligibility — never the raw `classification`) flips only after 2
-  _consecutive identical_ raw classifications that disagree with the current label. The
-  first implementation instead counted any two ticks that merely disagreed with the
-  current label, even if they disagreed with _each other_ too (e.g. `online` then
-  `degraded` in a row) — which would have flipped the label after two different,
-  non-matching classifications, not two matching ones. Caught by a failing unit test
-  (`connectivity_heuristic_service_test.dart`) before this shipped; fixed by tracking a
-  separate "pending direction + streak" pair, reset whenever the new classification
-  doesn't match the pending one, distinct from the current label. This is what stops a
-  marginal-signal area from bouncing `Connected`/`Offline` every tick, which today would
-  also bounce the recorded `is_online` value and the §4 eligibility decision itself.
-- **Adaptive poll cadence — `pollInterval` getter implemented and wired** (10s degraded /
-  75s offline / 30s online, `app_constants.dart`), reading off the debounced `label`, not
-  the raw `classification`, matching the same "don't act on a single tick" principle as
-  the label itself. `capture_screen.dart`'s `_startClock()` reschedules each tick off
-  `_connectivityService.pollInterval` rather than a flat 30s `Timer.periodic`. The
-  existing reconnect trigger (§7: app foreground/resume) still fires an immediate
-  out-of-cycle check, so backing off the steady poll doesn't delay recovery.
-- **One unified network-error classifier — done (Phase 0 item 1 of the implementation
-  plan), with an important nuance found while doing it.** Both classifiers now live in
-  one file, `app/lib/core/utils/network_error_classifier.dart`: `isTransientNetworkError`
-  (type-based, moved verbatim from `sui_graphql_service.dart`'s old
-  `_isTransientNetworkError`) and `looksLikeTransientNetworkFailure` (string-based, moved
-  verbatim from `granite_lake_controller.dart`'s old `_shouldRetryChainVerification`
-  body). **The plan for this originally assumed the type-based one could simply replace
-  the string-based one wherever a real error object is available** ("strictly more
-  precise"), but reading the actual call sites first caught a case where that's wrong:
-  `granite_lake_controller.dart`'s verification-retry catch block (around line 1284)
-  catches a plain `StateError` thrown by `sui_graphql_service.dart`'s `getTransaction()`
-  on indexer lag ("...may not be indexed yet") — not a
+- **Poll cadence — `pollInterval` getter** (30s online / 75s offline, `app_constants.dart`)
+  reads directly off the current `classification`. `capture_screen.dart`'s `_startClock()`
+  reschedules each tick off `_connectivityService.pollInterval` rather than a flat 30s
+  `Timer.periodic`. The existing reconnect trigger (§7: app foreground/resume) still fires
+  an immediate out-of-cycle check, so backing off the steady poll doesn't delay recovery.
+- **One unified network-error classifier — unaffected by the above.** Both classifiers
+  live in one file, `app/lib/core/utils/network_error_classifier.dart`:
+  `isTransientNetworkError` (type-based, moved verbatim from `sui_graphql_service.dart`'s
+  old `_isTransientNetworkError`) and `looksLikeTransientNetworkFailure` (string-based,
+  moved verbatim from `granite_lake_controller.dart`'s old `_shouldRetryChainVerification`
+  body). `granite_lake_controller.dart`'s verification-retry catch block (around line 1284) catches a plain `StateError` thrown by `sui_graphql_service.dart`'s
+  `getTransaction()` on indexer lag ("...may not be indexed yet") — not a
   `SocketException`/`TimeoutException`/`http.ClientException` by type, so only the
-  string-keyword check catches it. That call site was kept on
-  `looksLikeTransientNetworkFailure`; `sui_graphql_service.dart`'s `_withNetworkRetry`
-  uses `isTransientNetworkError` (unchanged, it already had the real exception object and
-  never needed indexer-lag messages). `ConnectivityHeuristicService`'s own probe-failure
-  classification doesn't consume this classifier directly — see §5 above.
+  string-keyword check catches it; that call site stays on
+  `looksLikeTransientNetworkFailure`, while `sui_graphql_service.dart`'s
+  `_withNetworkRetry` uses `isTransientNetworkError`. `ConnectivityHeuristicService`'s own
+  probe-failure classification doesn't consume this classifier directly.
 
 **`is_online` at capture time** is read from `ConnectivityHeuristicService.isOnlineCapable`
-(`label == online`) at the moment of capture, rather than the raw success/failure of one
-live timestamp fetch (§3). Same field semantics as originally designed — still "did
-this device have live connectivity at capture time" — just sourced from the debounced
-two-step classifier instead of a single point-in-time call that could land on one unlucky
-retry. `is_forced_offline` (§4) is recorded alongside it from the toggle's raw state,
-independently of this classification.
+(`classification == online`) at the moment of capture, rather than the raw success/failure
+of one live timestamp fetch (§3). Same field semantics as originally designed — still
+"did this device have live connectivity at capture time" — just sourced from the two-step
+classifier's most recent tick instead of a single point-in-time call that could land on
+one unlucky retry. `is_forced_offline` (§4) is recorded alongside it from the toggle's raw
+state, independently of this classification.
 
 ## 6. Capture flow changes
 
@@ -970,7 +944,7 @@ reason text/hash columns above.
 
 - Capture screen's app bar carries the "Force Offline Mode" toggle (§4) and the
   independent "Force No GPS" toggle (§4a), next to the connectivity and GPS indicators;
-  connectivity state (now `Connected`/`Degraded`/`Offline`, per §5) and GPS state (`Fix
+  connectivity state (`Connected`/`Offline`, per §5) and GPS state (`Fix
 acquired`/`No fix`) are each shown as their own informational banner. When either is
   not in its normal state, the banner explains whether that's automatic or an override.
 - §4b's mandatory reason prompt appears inline in the capture flow the moment a field is
@@ -1080,14 +1054,16 @@ permission, §7.2), `pubspec.yaml` (new `trusted_time`, `connectivity_plus`, `wo
   `_sessionSigningKey` (§7.1) is still live — reconnect. Confirm a biometric prompt is
   still raised before resubmission (for the decrypt-key unwrap), rather than the existing
   signing session alone being enough to auto-submit.
-- `ConnectivityHeuristicService` unit tests: state transitions require consecutive
-  confirmations (no single-probe flapping); airplane-mode toggling short-circuits to
-  `offline` without a network call; a simulated slow-but-reachable or under-threshold-
-  bandwidth backend classifies as `degraded`, not `online`.
+- `ConnectivityHeuristicService` unit tests: airplane-mode toggling short-circuits to
+  `offline` without a network call; a failed probe classifies `offline` immediately, with
+  no consecutive-failure requirement; classification reflects only the most recent
+  `check()` call, with no memory of earlier ticks (a probe recovering on the very next
+  check reads `online` right away, not delayed by prior history).
 - Manual marginal-signal pass (e.g. throttled network via device dev tools or a
-  low-signal location): confirm the status label doesn't flap on every 10-30s tick, and
-  that the shutter switches to offline-available automatically once §5 leaves `online`
-  (no toggle interaction required).
+  low-signal location): confirm the status label reflects each tick's real outcome (a slow
+  but successful probe still reads `Connected`), and that the shutter switches to
+  offline-available automatically once §5 reports `offline` (no toggle interaction
+  required).
 - Manual background-reconnect pass (§7.2): capture offline, force-stop or background the
   app (not just navigate away — actually leave it backgrounded long enough that Android
   would suspend a plain in-app timer), then restore connectivity at the OS level.
@@ -1115,18 +1091,18 @@ permission, §7.2), `pubspec.yaml` (new `trusted_time`, `connectivity_plus`, `wo
    toggles (e.g. distinct icon states for "online, toggle off", "online, toggle on
    (override)", "offline, toggle off (automatic)", "offline, toggle on" — doubled for the
    GPS toggle, and however the two are shown together when both apply).
-5. Tune the §5 thresholds (consecutive-failure count for `offline`,
-   `minimumSufficientBandwidthKbps`, latency threshold for `degraded`, poll cadences)
-   against real field data rather than guessing up front — ship with conservative
-   defaults and treat them as adjustable constants.
-6. Decide whether `degraded` (as opposed to `offline`) should also make offline capture
-   available, or whether a crew should still be required to force it with the toggle in
-   that middle state — this design currently treats `degraded` the same as `offline` for
-   eligibility (§5), which is the more conservative choice for submission reliability but
-   means a merely-slow connection also loses the "try online first" behavior.
+5. Tune the §5 poll cadences (`app_constants.dart`'s `connectivityPollIntervalOnline`/
+   `connectivityPollIntervalOffline`) against real field data rather than guessing up
+   front — ship with conservative defaults and treat them as adjustable constants.
+6. ~~Decide whether `degraded` (as opposed to `offline`) should also make offline capture
+   available...~~ No longer applicable — after on-device testing showed the windowed
+   `degraded` classifier reading stale ("connection's fine now but still says Degraded"
+   for up to ~5 poll ticks after one earlier transient failure), §5 was simplified to a
+   binary `online`/`offline` classifier with no history window. There is no middle state
+   left to decide eligibility for.
 7. Decide whether §5's automatic online/offline banner copy should be dismissible or
-   persistent while `degraded`/`offline` holds, so it informs without nagging a crew
-   that's deliberately working near the edge of coverage.
+   persistent while `offline` holds, so it informs without nagging a crew that's
+   deliberately working near the edge of coverage.
 8. §7.2's background reconnect task rides on Android `JobScheduler` via `workmanager`,
    which some OEMs (Xiaomi, Huawei, and others with aggressive custom battery-management)
    restrict or delay beyond stock Android's Doze behavior. The in-app §7.1 CTA is the

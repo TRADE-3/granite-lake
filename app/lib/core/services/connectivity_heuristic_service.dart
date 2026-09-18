@@ -1,5 +1,3 @@
-import 'dart:async';
-import 'dart:collection';
 import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -34,40 +32,20 @@ class MobilePhoneState {
   final bool? dataEnabled;
 }
 
-/// Two-step, debounced connectivity classifier (offline-capture design doc
-/// §5), replacing a single HTTP-probe-per-tick with: (1) is a radio on at
-/// all (OS-level, no network round trip), (2) is what it reaches good
-/// enough (reachability + latency, via the existing `/utc` probe).
-///
-/// [online] is the only state the offline-capture design treats as
-/// online-capable; [degraded] and [offline] both make offline capture
-/// available automatically.
-enum ConnectivityClass { online, degraded, offline }
+/// Two states only: [online] means the most recent [check] found an OS-level
+/// interface and reached the backend; everything else - no interface, no
+/// domain to probe, or the probe failing - is [offline]. Whatever the
+/// connection looks like right now, not a windowed/debounced read of recent
+/// history.
+enum ConnectivityClass { online, offline }
 
-class _ProbeOutcome {
-  const _ProbeOutcome({
-    required this.hasInterface,
-    required this.success,
-    this.latency,
-  });
-
-  /// Step 1: was an OS-level network interface present at all. `false`
-  /// means the probe in step 2 was skipped entirely — no network call.
-  final bool hasInterface;
-
-  /// Step 2: did the `/utc` probe succeed. Only meaningful when
-  /// [hasInterface] is `true` — always `false` otherwise, by convention.
-  final bool success;
-
-  final Duration? latency;
-}
-
-/// Wraps `connectivity_plus` (step 1) and the existing backend `/utc` probe
-/// (step 2) into a debounced `online`/`degraded`/`offline` classification,
-/// per the offline-capture design doc §5. Not a singleton — one instance is
-/// expected to live for the lifetime of whatever screen/controller needs
-/// live connectivity classification (mirroring how other services in this
-/// app are constructed and held, not globally shared).
+/// Wraps `connectivity_plus` (step 1: is a radio on at all) and the existing
+/// backend `/utc` probe (step 2: can it actually reach the backend) into a
+/// binary `online`/`offline` classification (offline-capture design doc §5).
+/// Not a singleton — one instance is expected to live for the lifetime of
+/// whatever screen/controller needs live connectivity classification
+/// (mirroring how other services in this app are constructed and held, not
+/// globally shared).
 class ConnectivityHeuristicService {
   /// [checkConnectivity] defaults to `Connectivity().checkConnectivity`.
   /// Overridable as a plain function reference (rather than injecting a
@@ -170,27 +148,7 @@ class ConnectivityHeuristicService {
     }
   }
 
-  static const _ringBufferSize = 5;
-  final Queue<_ProbeOutcome> _recentOutcomes = Queue<_ProbeOutcome>();
-
   ConnectivityClass _classification = ConnectivityClass.offline;
-  ConnectivityClass _label = ConnectivityClass.offline;
-
-  // Tracks a run of *consecutive identical* raw classifications that
-  // disagree with the current label — not merely "disagrees with the
-  // label," which would let two different non-label classifications in a
-  // row (e.g. online, then degraded) incorrectly accumulate toward a flip
-  // even though they're not the same direction as each other.
-  ConnectivityClass? _pendingLabelDirection;
-  int _pendingLabelStreak = 0;
-
-  // The hysteresis below exists to stop a *live* label from flapping on a
-  // single marginal tick - it isn't meant to delay the very first reading
-  // of a session. Without this, [_label] starts hardcoded at [offline] and
-  // a freshly opened screen with real connectivity would still report
-  // offline for a full extra check (until a second consecutive "online"
-  // tick confirms it), which reads as "always offline until you retry."
-  bool _hasClassifiedOnce = false;
 
   // Whether the most recent tick saw an OS-level network interface at all
   // (step 1) - independent of whether step 2's probe then succeeded. This
@@ -200,9 +158,14 @@ class ConnectivityHeuristicService {
   // deliberate device-level action - see [hasOsInterface] doc).
   bool _hasOsInterface = true;
 
-  /// The raw classification from the most recent [check] call, updated
-  /// every tick with no debouncing.
+  /// The classification from the most recent [check] call - purely a
+  /// function of that one tick, updated every call with no debouncing or
+  /// memory of past ticks.
   ConnectivityClass get classification => _classification;
+
+  /// `true` only when [classification] is [ConnectivityClass.online] — the
+  /// single state the offline-capture design treats as online-capable.
+  bool get isOnlineCapable => _classification == ConnectivityClass.online;
 
   /// `false` when the most recent tick found no OS-level network interface
   /// at all - wifi and mobile data both off, or airplane mode on. This is a
@@ -211,16 +174,14 @@ class ConnectivityHeuristicService {
   /// equivalent to the crew's own Force Offline Mode toggle (both mean
   /// "the crew chose this") rather than as an ordinary unforced outage
   /// (interface present, probe just fails - a dead zone or a router with no
-  /// upstream, not something the crew did). Raw, per-tick, no debouncing -
-  /// mirrors [classification], not [label].
+  /// upstream, not something the crew did).
   bool get hasOsInterface => _hasOsInterface;
 
   // Refreshed only when check() finds no interface (see check() below) -
   // these are a soft, advisory signal (messaging + is_forced_offline
-  // attribution), never part of the hasInterface/classification/label
-  // pipeline above, so there's no reason to pay for a platform-channel
-  // round trip (or risk the READ_PHONE_STATE prompt firing) while normally
-  // online.
+  // attribution), never part of the hasInterface/classification pipeline
+  // above, so there's no reason to pay for a platform-channel round trip
+  // (or risk the READ_PHONE_STATE prompt firing) while normally online.
   bool _hasSim = true;
   bool _isAirplaneModeOn = false;
   bool _isWifiRadioOn = true;
@@ -326,26 +287,11 @@ class ConnectivityHeuristicService {
     }
   }
 
-  /// The debounced, user-facing classification — flips only after
-  /// [AppConstants.connectivityConsecutiveConfirmationsForLabelFlip]
-  /// consecutive same-direction [classification] results, so a
-  /// marginal-signal area doesn't bounce the displayed state (and, more
-  /// importantly, the recorded `is_online` value) on every tick. This is
-  /// what offline-capture eligibility (design §4) and `is_online` at
-  /// capture time (§5) both read from — never [classification] directly.
-  ConnectivityClass get label => _label;
-
-  /// `true` only when [label] is [ConnectivityClass.online] — the single
-  /// state the offline-capture design treats as online-capable.
-  bool get isOnlineCapable => _label == ConnectivityClass.online;
-
-  /// Adaptive poll cadence for a `Timer.periodic`-style caller: short while
-  /// degraded (confirm/recover quickly), long once solidly offline
-  /// (conserve battery/data in a dead zone), standard once online.
+  /// Adaptive poll cadence for a `Timer.periodic`-style caller: short-ish
+  /// while online, long once offline (conserve battery/data in a dead
+  /// zone).
   Duration get pollInterval {
-    switch (_label) {
-      case ConnectivityClass.degraded:
-        return AppConstants.connectivityPollIntervalDegraded;
+    switch (_classification) {
       case ConnectivityClass.offline:
         return AppConstants.connectivityPollIntervalOffline;
       case ConnectivityClass.online:
@@ -353,185 +299,70 @@ class ConnectivityHeuristicService {
     }
   }
 
-  /// Runs one classification cycle and returns the updated raw
-  /// [classification]. [domain] is the company domain used to resolve the
-  /// backend probe target (same as the existing `AppUtils` connectivity
-  /// calls) — a null/empty domain is treated as step 2 failing outright
-  /// (nothing to probe), same as today's behavior.
+  /// Runs one classification cycle and returns the updated [classification]
+  /// - purely a function of this tick: no OS interface, no domain to probe,
+  /// or the probe failing are all [ConnectivityClass.offline]; an interface
+  /// plus a successful probe is [ConnectivityClass.online]. [domain] is the
+  /// company domain used to resolve the backend probe target (same as the
+  /// existing `AppUtils` connectivity calls).
   Future<ConnectivityClass> check({required String? domain}) async {
-    // Refreshed on every call, unconditionally - not just when
-    // hasInterface below is false. A multi-radio device (Wi-Fi off,
-    // mobile still on as a fallback interface) keeps hasInterface true
-    // even with Wi-Fi switched off, so gating this on "no interface at
-    // all" left isWifiRadioOn stuck at a stale value whenever some other
-    // interface was still up - exactly the case this signal most needs to
-    // be right for. These are cheap, mostly permission-free local calls
-    // (see refreshRadioState's own doc for the one exception), so paying
-    // for them every tick is the correct trade-off for a signal that
-    // feeds messaging and is_forced_offline attribution.
+    // Refreshed on every call, unconditionally - not just when hasInterface
+    // below is false. A multi-radio device (Wi-Fi off, mobile still on as a
+    // fallback interface) keeps hasInterface true even with Wi-Fi switched
+    // off, so gating this on "no interface at all" left isWifiRadioOn stuck
+    // at a stale value whenever some other interface was still up - exactly
+    // the case this signal most needs to be right for. These are cheap,
+    // mostly permission-free local calls (see refreshRadioState's own doc
+    // for the one exception), so paying for them every tick is the correct
+    // trade-off for a signal that feeds messaging and is_forced_offline
+    // attribution.
     await refreshRadioState();
 
     final interfaces = await _checkConnectivity();
-    final hasInterface = interfaces.any(
+    _hasOsInterface = interfaces.any(
       (result) => result != ConnectivityResult.none,
     );
 
-    if (!hasInterface) {
-      _recordOutcome(const _ProbeOutcome(hasInterface: false, success: false));
-      return _reclassify();
+    if (!_hasOsInterface) {
+      _classification = ConnectivityClass.offline;
+      return _classification;
     }
 
     if (domain == null || domain.isEmpty) {
-      _recordOutcome(const _ProbeOutcome(hasInterface: true, success: false));
-      return _reclassify();
+      _classification = ConnectivityClass.offline;
+      return _classification;
     }
 
-    final stopwatch = Stopwatch()..start();
     try {
       // Reuses the existing `/utc` probe rather than a dedicated speed
       // test: the transaction payload this all exists to submit is tiny,
-      // so raw throughput isn't the real constraint — latency is a better
-      // predictor of submission success, and a dedicated large-payload
-      // test would burn a field crew's data budget precisely in the
-      // marginal-connectivity conditions being tested (design §5).
+      // so raw throughput isn't the real constraint (design §5).
       await AppUtils.resolveOtpBackendConfig(
         domain: domain,
         forceRefresh: true,
         timeout: const Duration(seconds: 5),
       );
-      _recordOutcome(
-        _ProbeOutcome(
-          hasInterface: true,
-          success: true,
-          latency: stopwatch.elapsed,
-        ),
-      );
+      _classification = ConnectivityClass.online;
     } catch (_) {
-      _recordOutcome(
-        _ProbeOutcome(
-          hasInterface: true,
-          success: false,
-          latency: stopwatch.elapsed,
-        ),
-      );
+      _classification = ConnectivityClass.offline;
     }
 
-    return _reclassify();
+    return _classification;
   }
 
-  /// Drives the classifier with a synthetic probe outcome, bypassing
+  /// Drives the classifier with a synthetic outcome, bypassing
   /// `connectivity_plus`/HTTP entirely — the seam unit tests use to exercise
-  /// the ring-buffer/threshold/hysteresis logic in isolation and
-  /// deterministically. Not for production call sites.
+  /// the classification logic in isolation and deterministically. Not for
+  /// production call sites.
   @visibleForTesting
   ConnectivityClass recordSyntheticOutcomeForTesting({
     required bool hasInterface,
     required bool success,
-    Duration? latency,
   }) {
-    _recordOutcome(
-      _ProbeOutcome(
-        hasInterface: hasInterface,
-        success: success,
-        latency: latency,
-      ),
-    );
-    return _reclassify();
-  }
-
-  void _recordOutcome(_ProbeOutcome outcome) {
-    _hasOsInterface = outcome.hasInterface;
-    _recentOutcomes.addLast(outcome);
-    while (_recentOutcomes.length > _ringBufferSize) {
-      _recentOutcomes.removeFirst();
-    }
-  }
-
-  int _trailingConsecutiveProbeFailures() {
-    var count = 0;
-    for (final outcome in _recentOutcomes.toList().reversed) {
-      if (outcome.hasInterface && !outcome.success) {
-        count += 1;
-      } else {
-        break;
-      }
-    }
-    return count;
-  }
-
-  ConnectivityClass _reclassify() {
-    if (_recentOutcomes.isEmpty) {
-      _classification = ConnectivityClass.offline;
-      _updateLabelWithHysteresis(_classification);
-      return _classification;
-    }
-
-    final last = _recentOutcomes.last;
-
-    if (!last.hasInterface) {
-      // No OS interface — offline immediately, per-tick, no consecutive-
-      // failure requirement (design §5 step 1). This is a deterministic
-      // OS-level signal (the radio is off), not a noisy probe result, so it
-      // also bypasses the label's hysteresis below rather than waiting for
-      // a second confirming tick - a crew that turns off wifi/data must see
-      // the app go offline immediately, not up to a full poll cycle later.
-      // The reverse (interface returns, probe succeeds) still debounces
-      // normally, since a probe outcome genuinely can be flaky/marginal.
-      _classification = ConnectivityClass.offline;
-      _hasClassifiedOnce = true;
-      _label = ConnectivityClass.offline;
-      _pendingLabelDirection = null;
-      _pendingLabelStreak = 0;
-      return _classification;
-    } else if (!last.success) {
-      final consecutiveFailures = _trailingConsecutiveProbeFailures();
-      _classification =
-          consecutiveFailures >=
-              AppConstants.connectivityConsecutiveFailuresForOffline
-          ? ConnectivityClass.offline
-          : ConnectivityClass.degraded;
-    } else if (last.latency != null &&
-        last.latency! > AppConstants.connectivityDegradedLatencyThreshold) {
-      _classification = ConnectivityClass.degraded;
-    } else if (_recentOutcomes.any((outcome) => !outcome.success)) {
-      // Succeeded this tick, but the recent window shows a failure —
-      // "succeeds but intermittently" (design §5).
-      _classification = ConnectivityClass.degraded;
-    } else {
-      _classification = ConnectivityClass.online;
-    }
-
-    _updateLabelWithHysteresis(_classification);
+    _hasOsInterface = hasInterface;
+    _classification = (hasInterface && success)
+        ? ConnectivityClass.online
+        : ConnectivityClass.offline;
     return _classification;
-  }
-
-  void _updateLabelWithHysteresis(ConnectivityClass next) {
-    if (!_hasClassifiedOnce) {
-      _hasClassifiedOnce = true;
-      _label = next;
-      _pendingLabelDirection = null;
-      _pendingLabelStreak = 0;
-      return;
-    }
-
-    if (next == _label) {
-      _pendingLabelDirection = null;
-      _pendingLabelStreak = 0;
-      return;
-    }
-
-    if (next == _pendingLabelDirection) {
-      _pendingLabelStreak += 1;
-    } else {
-      _pendingLabelDirection = next;
-      _pendingLabelStreak = 1;
-    }
-
-    if (_pendingLabelStreak >=
-        AppConstants.connectivityConsecutiveConfirmationsForLabelFlip) {
-      _label = next;
-      _pendingLabelDirection = null;
-      _pendingLabelStreak = 0;
-    }
   }
 }

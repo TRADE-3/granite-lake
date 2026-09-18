@@ -420,13 +420,12 @@ class _CaptureScreenState extends State<CaptureScreen> {
     try {
       final classification = await _connectivityService.check(domain: domain);
       debugPrint(
-        '[READINESS] _refreshBackendStatus DONE classification=$classification label=${_connectivityService.label} totalElapsed=${sw.elapsedMilliseconds}ms',
+        '[READINESS] _refreshBackendStatus DONE classification=$classification totalElapsed=${sw.elapsedMilliseconds}ms',
       );
       if (!mounted) return;
       setState(() {
-        _networkStatusLabel = switch (_connectivityService.label) {
+        _networkStatusLabel = switch (classification) {
           ConnectivityClass.online => 'Connected',
-          ConnectivityClass.degraded => 'Degraded',
           ConnectivityClass.offline => 'Offline',
         };
       });
@@ -637,9 +636,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
       await _connectivityService.check(domain: domain);
       if (mounted) {
         setState(() {
-          _networkStatusLabel = switch (_connectivityService.label) {
+          _networkStatusLabel = switch (_connectivityService.classification) {
             ConnectivityClass.online => 'Connected',
-            ConnectivityClass.degraded => 'Degraded',
             ConnectivityClass.offline => 'Offline',
           };
         });

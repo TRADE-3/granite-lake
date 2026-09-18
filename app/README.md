@@ -538,9 +538,10 @@ Capture logic spans:
 ### Connectivity and GPS are each independently optional
 
 Neither is a single "offline mode" toggle. `ConnectivityHeuristicService` classifies the
-connection as `online` / `degraded` / `offline` (radio state, then reachability +
-latency + estimated bandwidth — not a single HTTP-probe-per-tick check); the shutter is
-available without connectivity whenever that classifier isn't `online`, or the app bar's
+connection as `online` / `offline` (radio state, then a plain reachability probe —
+whatever the connection looks like on the most recent check, with no history window or
+debouncing); the shutter is available without connectivity whenever that classifier is
+`offline`, or the app bar's
 "Force Offline Mode" toggle is on regardless. Independently, a "Force No GPS" toggle
 lets the shutter proceed without a fix even when one is available; a _missing_ fix is
 always allowed to be optional, but a _detected fake_ (mock-location) fix remains a hard

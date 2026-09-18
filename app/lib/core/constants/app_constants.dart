@@ -191,31 +191,10 @@ abstract final class AppConstants {
   static const int minimumAttestationMistBalance = 4000000;
   static const int maximumAttestationTimeGapMinutes = 15;
 
-  // ConnectivityHeuristicService (offline-capture design doc §5). Conservative
-  // defaults, meant to be tuned against real field data rather than guessed
-  // precisely up front.
-  //
-  // NOTE: a `minimumSufficientBandwidthKbps` threshold is intentionally not
-  // defined yet. Estimating throughput from the existing `/utc` probe
-  // (bytes ÷ elapsed time) is unreliable at this payload's size — a few
-  // dozen bytes divided by round-trip time is dominated by TCP/TLS
-  // handshake overhead, not real throughput. The design's other suggested
-  // signal, Android's NetworkCapabilities.getLinkDownstreamBandwidthKbps()
-  // via a platform channel, needs real native code and is deferred; add
-  // this constant back when that lands. For now, classification is
-  // reachability + latency only.
-  //
-  // A probe that succeeds but exceeds this p50 latency counts as `degraded`,
-  // since a connection that's technically up but slow to respond makes a
-  // crew wait through the exact delay offline mode exists to avoid.
-  static const Duration connectivityDegradedLatencyThreshold = Duration(
-    seconds: 2,
-  );
-  static const int connectivityConsecutiveFailuresForOffline = 2;
-  static const int connectivityConsecutiveConfirmationsForLabelFlip = 2;
-  static const Duration connectivityPollIntervalDegraded = Duration(
-    seconds: 10,
-  );
+  // ConnectivityHeuristicService (offline-capture design doc §5): binary
+  // online/offline, driven entirely by the most recent check() - whatever
+  // the connection looks like right now, not a windowed/debounced read of
+  // recent history.
   static const Duration connectivityPollIntervalOnline = Duration(seconds: 30);
   static const Duration connectivityPollIntervalOffline = Duration(seconds: 75);
 }
