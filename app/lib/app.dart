@@ -56,22 +56,48 @@ class _GraniteLakeAppState extends State<GraniteLakeApp>
     _queuePollTimer = Timer.periodic(const Duration(seconds: 20), (_) {
       unawaited(_checkConnectivityAndRetryQueue());
     });
-    unawaited(
-      _reconnectNotificationService
-          .initialize(
-            onNotificationTapped: () =>
-                _router.go('${AppRoutes.dashboard}?tab=0'),
-          )
-          // initialize() is async; the controller can finish loading
-          // pending rows and fire its own notifyListeners() before this
-          // resolves, which would otherwise make the first
-          // _syncReconnectNotificationSchedule() call no-op (it's guarded
-          // on being initialized) and silently drop an already-queued
-          // capture from being watched. Re-sync once initialize() actually
-          // lands to catch that case.
-          .then((_) => _syncReconnectNotificationSchedule()),
-    );
+    unawaited(_startReconnectNotificationService());
     _controller.addListener(_syncReconnectNotificationSchedule);
+  }
+
+  // Deferred past the first frame, not fired synchronously here: this is
+  // the very first moment of the app's life, while the native splash
+  // screen is still mid-exit-transition and GoRouter's redirect is
+  // actively hopping through boot -> localDataInit -> (onboarding or
+  // dashboard) as _controller's async initialize() resolves each step
+  // (see app_router.dart's redirect, driven by refreshListenable:
+  // controller). Requesting POST_NOTIFICATIONS synchronously into that
+  // churn is the same failure mode confirmed on-device for the capture
+  // screen's location permission (capture_screen.dart's initState): a
+  // system permission dialog competing with active window/surface/route
+  // transitions for the Activity's focus can silently fail to render at
+  // all. The settle delay after the first frame is a deliberate trade-off
+  // for a still-upfront, once-per-launch request - it's not a signal tied
+  // to any specific redirect hop (which, for a brand-new install walking
+  // through onboarding, can take far longer than any fixed delay), just
+  // enough for the splash-exit animation and boot's near-instant first
+  // redirect to clear before the dialog is requested.
+  Future<void> _startReconnectNotificationService() async {
+    final firstFrame = Completer<void>();
+    WidgetsBinding.instance.addPostFrameCallback((_) => firstFrame.complete());
+    await firstFrame.future;
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    if (!mounted) {
+      return;
+    }
+    await _reconnectNotificationService
+        .initialize(
+          onNotificationTapped: () =>
+              _router.go('${AppRoutes.dashboard}?tab=0'),
+        )
+        // initialize() is async; the controller can finish loading
+        // pending rows and fire its own notifyListeners() before this
+        // resolves, which would otherwise make the first
+        // _syncReconnectNotificationSchedule() call no-op (it's guarded
+        // on being initialized) and silently drop an already-queued
+        // capture from being watched. Re-sync once initialize() actually
+        // lands to catch that case.
+        .then((_) => _syncReconnectNotificationSchedule());
   }
 
   @override

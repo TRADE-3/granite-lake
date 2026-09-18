@@ -88,6 +88,17 @@ class _CaptureScreenState extends State<CaptureScreen> {
   bool _isCapturing = false;
   bool _isFlashEnabled = false;
   String? _errorMessage;
+  // True only when _errorMessage currently holds _captureBlockedMessage's
+  // snapshot (set at shutter-press time) rather than some other failure
+  // (camera exception, flash error, etc). _captureBlockedMessage is a
+  // getter, not a live binding to the banner - once shown it stays exactly
+  // as worded until something explicitly clears it, even after the GPS/
+  // connectivity condition it described has since resolved in the
+  // background (_refreshCaptureReadiness runs independently of the shutter
+  // press). This flag lets that readiness refresh recognize "the reason I
+  // showed this banner is gone" and clear it, instead of leaving a stale
+  // "No GPS fix"/exception message on screen after GPS has already locked.
+  bool _errorMessageIsCaptureBlocked = false;
   String _buildLabel =
       '${AppConstants.appVersion} (${AppConstants.appVersion})';
   String _gpsStatusLabel = 'Locating...';
@@ -151,16 +162,23 @@ class _CaptureScreenState extends State<CaptureScreen> {
     debugPrint('[READINESS] initState @${DateTime.now().toIso8601String()}');
     _startClock();
     unawaited(_loadBuildInfo());
-    // Deferred to a microtask: _refreshCaptureReadiness -> _refreshBackendStatus
-    // calls GraniteLakeScope.of(context), an inherited-widget lookup that
-    // Flutter forbids calling synchronously before initState() returns.
-    // Future.wait's list literal evaluates both branches synchronously, so
-    // calling this directly here throws every time the screen opens
-    // (silently, since nothing awaits it) and only ever succeeds once
-    // something else re-triggers the check later (the 30s timer or a manual
-    // retry) — which read as "network always fails on first load."
-    unawaited(Future.microtask(_refreshCaptureReadiness));
-    _prepareCamera();
+    // Sequenced after _prepareCamera(), not fired alongside it: opening the
+    // camera does heavy native Surface/window setup (CameraX capture-session
+    // negotiation), and starting the location-permission/GPS request at the
+    // same moment makes it compete with that for the Activity's window/input
+    // focus. Confirmed on-device (S23 Ultra logcat): the location permission
+    // dialog took ~2.7s to resolve while CameraX was mid capture-session-
+    // open, and Play Services' follow-up "improve location accuracy"
+    // resolution dialog didn't get a chance to render at all until the crew
+    // navigated away and the camera session tore down - only then did GPS
+    // actually acquire a fix. Waiting for the camera to finish opening
+    // first (it also self-guards with mounted/try-catch, so this never
+    // throws) avoids that contention. This also satisfies the
+    // GraniteLakeScope.of(context) lookup inside _refreshBackendStatus,
+    // which Flutter forbids calling synchronously before initState()
+    // returns - the await inside _prepareCamera() already puts us well past
+    // that point by the time this runs.
+    unawaited(_prepareCamera().then((_) => _refreshCaptureReadiness()));
     // Push-based: connectivity_plus reports an OS-level radio change (wifi
     // or mobile data toggled) the instant it happens, rather than waiting
     // for the next scheduled poll tick (up to connectivityPollIntervalOnline
@@ -455,6 +473,33 @@ class _CaptureScreenState extends State<CaptureScreen> {
     debugPrint(
       '[READINESS] _refreshCaptureReadiness ALL DONE @${DateTime.now().toIso8601String()}',
     );
+    _clearErrorBannerIfNoLongerBlocked();
+  }
+
+  // _captureBlockedMessage is a getter, not a live binding to the banner -
+  // once _capturePhoto() snapshots it into _errorMessage at shutter-press
+  // time, it stays worded exactly as it was even after the condition it
+  // described (no GPS fix, no connectivity, mock location) has since
+  // resolved in the background via this same readiness poll. Mirrors the
+  // exact block conditions _capturePhoto() itself checks, so the banner
+  // disappears the moment they're no longer true, instead of sitting there
+  // stale (e.g. showing a since-resolved GPS exception) until the crew
+  // presses the shutter again.
+  void _clearErrorBannerIfNoLongerBlocked() {
+    if (!_errorMessageIsCaptureBlocked || !mounted) {
+      return;
+    }
+    final appController = GraniteLakeScope.of(context);
+    final stillBlocked =
+        _isMockLocationDetected ||
+        (!_hasNetworkConnectivity && !appController.isOfflineCaptureForced) ||
+        (!_hasGpsFix && !appController.isGpsCaptureForcedNull);
+    if (!stillBlocked) {
+      setState(() {
+        _errorMessage = null;
+        _errorMessageIsCaptureBlocked = false;
+      });
+    }
   }
 
   Future<void> _prepareCamera() async {
@@ -854,6 +899,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
         _flow = _CaptureFlow.review;
         _submissionStep = 0;
         _errorMessage = result.message;
+        _errorMessageIsCaptureBlocked = false;
       });
       return;
     }
