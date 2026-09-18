@@ -522,6 +522,19 @@ class AttestationRecord {
     this.fileExtension,
     this.previewKind = AttestationPreviewKind.image,
     this.storageMode = 'LOCAL_ONLY',
+    this.isOnline = true,
+    this.isForcedOffline = false,
+    this.internetNullReason,
+    this.internetNullReasonHash,
+    this.hasGps = true,
+    this.isGpsForcedNull = false,
+    this.gpsNullReason,
+    this.gpsNullReasonHash,
+    this.submissionAttemptCount = 0,
+    this.lastAttemptAt,
+    this.encryptedPayload,
+    this.payloadIv,
+    this.wrappedDataKey,
   });
 
   factory AttestationRecord.fromJson(Map<String, dynamic> json) {
@@ -583,6 +596,20 @@ class AttestationRecord {
           _readStringValue(json['storageMode']) ??
           _readStringValue(proofPayload['storageMode']) ??
           'LOCAL_ONLY',
+      isOnline: json['isOnline'] as bool? ?? true,
+      isForcedOffline: json['isForcedOffline'] as bool? ?? false,
+      internetNullReason: json['internetNullReason'] as String?,
+      internetNullReasonHash: json['internetNullReasonHash'] as String?,
+      hasGps: json['hasGps'] as bool? ?? true,
+      isGpsForcedNull: json['isGpsForcedNull'] as bool? ?? false,
+      gpsNullReason: json['gpsNullReason'] as String?,
+      gpsNullReasonHash: json['gpsNullReasonHash'] as String?,
+      submissionAttemptCount:
+          _readIntValue(json['submissionAttemptCount']) ?? 0,
+      lastAttemptAt: _parseOptionalTimestamp(json['lastAttemptAt']),
+      encryptedPayload: json['encryptedPayload'] as String?,
+      payloadIv: json['payloadIv'] as String?,
+      wrappedDataKey: json['wrappedDataKey'] as String?,
     );
   }
 
@@ -609,6 +636,39 @@ class AttestationRecord {
   final String? fileExtension;
   final AttestationPreviewKind previewKind;
   final String storageMode;
+  // Offline-capture design doc §4/§4a: ground-truth connectivity and GPS
+  // state at capture time, and whether the crew overrode either via its
+  // force toggle. hasGps/isGpsForcedNull/gpsNullReason apply to photo
+  // captures only - always their defaults (true/false/null) on a file
+  // record, since file attestation never carried location data.
+  final bool isOnline;
+  final bool isForcedOffline;
+  // Plaintext, kept locally for disclosure - never transmitted on-chain.
+  final String? internetNullReason;
+  // Computed once at capture time from internetNullReason (same moment as
+  // photo_hash) and folded into the signed proof bundle, so it's the
+  // tamper-evident value submitted on-chain - see
+  // migrations.dart's version-11 migration comment.
+  final String? internetNullReasonHash;
+  final bool hasGps;
+  final bool isGpsForcedNull;
+  final String? gpsNullReason;
+  final String? gpsNullReasonHash;
+  // App-local only - never submitted on-chain. How many genuine submission
+  // attempts have been made (the initial online attempt, plus every queue
+  // retry) and when the most recent one happened - see
+  // migrations.dart's version-12 migration comment.
+  final int submissionAttemptCount;
+  final DateTime? lastAttemptAt;
+  // Offline-queue at-rest encryption (offline-capture design doc §7.3).
+  // Non-null exactly for a row that took the offline/forced-offline path -
+  // see migrations.dart's version-13 migration comment for what's folded
+  // in here instead of sitting in the plaintext columns above.
+  final String? encryptedPayload;
+  final String? payloadIv;
+  final String? wrappedDataKey;
+
+  bool get isEncryptedAtRest => encryptedPayload != null;
 
   bool get isPhoto => assetType == AttestationAssetType.photo;
 
@@ -642,6 +702,13 @@ class AttestationRecord {
 
   bool get isAttestationFailed =>
       !isAttestationAnchored && !isAttestationPending;
+
+  // Offline-queue at-rest encryption (offline-capture design doc §7.3): a
+  // terminal state distinct from a normal FAILED_SUBMISSION - this row's
+  // on-disk data failed its AES-GCM tag check on decrypt, meaning it was
+  // altered since capture, not that the chain rejected a transaction.
+  bool get isTamperDetected =>
+      normalizedSuiSubmissionStatus == 'TAMPER_DETECTED';
 
   String? get attestationErrorLabel {
     final normalized = suiErrorMessage.trim();
@@ -933,6 +1000,19 @@ class PhotoCaptureRecord {
     this.note,
     this.previewKind = AttestationPreviewKind.image,
     this.storageMode = 'LOCAL_ONLY',
+    this.isOnline = true,
+    this.isForcedOffline = false,
+    this.internetNullReason,
+    this.internetNullReasonHash,
+    this.hasGps = true,
+    this.isGpsForcedNull = false,
+    this.gpsNullReason,
+    this.gpsNullReasonHash,
+    this.submissionAttemptCount = 0,
+    this.lastAttemptAt,
+    this.encryptedPayload,
+    this.payloadIv,
+    this.wrappedDataKey,
   });
 
   factory PhotoCaptureRecord.fromJson(Map<String, dynamic> json) {
@@ -970,6 +1050,22 @@ class PhotoCaptureRecord {
         assetType: AttestationAssetType.photo,
       ),
       storageMode: json['storageMode'] as String? ?? 'LOCAL_ONLY',
+      isOnline: json['isOnline'] as bool? ?? true,
+      isForcedOffline: json['isForcedOffline'] as bool? ?? false,
+      internetNullReason: json['internetNullReason'] as String?,
+      internetNullReasonHash: json['internetNullReasonHash'] as String?,
+      hasGps: json['hasGps'] as bool? ?? true,
+      isGpsForcedNull: json['isGpsForcedNull'] as bool? ?? false,
+      gpsNullReason: json['gpsNullReason'] as String?,
+      gpsNullReasonHash: json['gpsNullReasonHash'] as String?,
+      submissionAttemptCount:
+          AttestationRecord._readIntValue(json['submissionAttemptCount']) ?? 0,
+      lastAttemptAt: AttestationRecord._parseOptionalTimestamp(
+        json['lastAttemptAt'],
+      ),
+      encryptedPayload: json['encryptedPayload'] as String?,
+      payloadIv: json['payloadIv'] as String?,
+      wrappedDataKey: json['wrappedDataKey'] as String?,
     );
   }
 
@@ -993,6 +1089,19 @@ class PhotoCaptureRecord {
       note: record.note,
       previewKind: record.previewKind,
       storageMode: record.storageMode,
+      isOnline: record.isOnline,
+      isForcedOffline: record.isForcedOffline,
+      internetNullReason: record.internetNullReason,
+      internetNullReasonHash: record.internetNullReasonHash,
+      hasGps: record.hasGps,
+      isGpsForcedNull: record.isGpsForcedNull,
+      gpsNullReason: record.gpsNullReason,
+      gpsNullReasonHash: record.gpsNullReasonHash,
+      submissionAttemptCount: record.submissionAttemptCount,
+      lastAttemptAt: record.lastAttemptAt,
+      encryptedPayload: record.encryptedPayload,
+      payloadIv: record.payloadIv,
+      wrappedDataKey: record.wrappedDataKey,
     );
   }
 
@@ -1014,6 +1123,19 @@ class PhotoCaptureRecord {
   final String? note;
   final AttestationPreviewKind previewKind;
   final String storageMode;
+  final bool isOnline;
+  final bool isForcedOffline;
+  final String? internetNullReason;
+  final String? internetNullReasonHash;
+  final bool hasGps;
+  final bool isGpsForcedNull;
+  final String? gpsNullReason;
+  final String? gpsNullReasonHash;
+  final int submissionAttemptCount;
+  final DateTime? lastAttemptAt;
+  final String? encryptedPayload;
+  final String? payloadIv;
+  final String? wrappedDataKey;
 
   AttestationRecord toAttestationRecord() {
     return AttestationRecord(
@@ -1036,6 +1158,19 @@ class PhotoCaptureRecord {
       assetType: AttestationAssetType.photo,
       previewKind: previewKind,
       storageMode: storageMode,
+      isOnline: isOnline,
+      isForcedOffline: isForcedOffline,
+      internetNullReason: internetNullReason,
+      internetNullReasonHash: internetNullReasonHash,
+      hasGps: hasGps,
+      isGpsForcedNull: isGpsForcedNull,
+      gpsNullReason: gpsNullReason,
+      gpsNullReasonHash: gpsNullReasonHash,
+      submissionAttemptCount: submissionAttemptCount,
+      lastAttemptAt: lastAttemptAt,
+      encryptedPayload: encryptedPayload,
+      payloadIv: payloadIv,
+      wrappedDataKey: wrappedDataKey,
     );
   }
 
@@ -1059,6 +1194,19 @@ class PhotoCaptureRecord {
       'note': note,
       'previewKind': previewKind.name,
       'storageMode': storageMode,
+      'isOnline': isOnline,
+      'isForcedOffline': isForcedOffline,
+      'internetNullReason': internetNullReason,
+      'internetNullReasonHash': internetNullReasonHash,
+      'hasGps': hasGps,
+      'isGpsForcedNull': isGpsForcedNull,
+      'gpsNullReason': gpsNullReason,
+      'gpsNullReasonHash': gpsNullReasonHash,
+      'submissionAttemptCount': submissionAttemptCount,
+      'lastAttemptAt': lastAttemptAt?.toIso8601String(),
+      'encryptedPayload': encryptedPayload,
+      'payloadIv': payloadIv,
+      'wrappedDataKey': wrappedDataKey,
     };
   }
 }
@@ -1087,6 +1235,15 @@ class UploadedFileRecord {
     this.fileExtension,
     this.previewKind = AttestationPreviewKind.document,
     this.storageMode = 'LOCAL_ONLY',
+    this.isOnline = true,
+    this.isForcedOffline = false,
+    this.internetNullReason,
+    this.internetNullReasonHash,
+    this.submissionAttemptCount = 0,
+    this.lastAttemptAt,
+    this.encryptedPayload,
+    this.payloadIv,
+    this.wrappedDataKey,
   });
 
   factory UploadedFileRecord.fromJson(Map<String, dynamic> json) {
@@ -1128,6 +1285,18 @@ class UploadedFileRecord {
         assetType: AttestationAssetType.file,
       ),
       storageMode: json['storageMode'] as String? ?? 'LOCAL_ONLY',
+      isOnline: json['isOnline'] as bool? ?? true,
+      isForcedOffline: json['isForcedOffline'] as bool? ?? false,
+      internetNullReason: json['internetNullReason'] as String?,
+      internetNullReasonHash: json['internetNullReasonHash'] as String?,
+      submissionAttemptCount:
+          AttestationRecord._readIntValue(json['submissionAttemptCount']) ?? 0,
+      lastAttemptAt: AttestationRecord._parseOptionalTimestamp(
+        json['lastAttemptAt'],
+      ),
+      encryptedPayload: json['encryptedPayload'] as String?,
+      payloadIv: json['payloadIv'] as String?,
+      wrappedDataKey: json['wrappedDataKey'] as String?,
     );
   }
 
@@ -1155,6 +1324,15 @@ class UploadedFileRecord {
       fileExtension: record.fileExtension,
       previewKind: record.previewKind,
       storageMode: record.storageMode,
+      isOnline: record.isOnline,
+      isForcedOffline: record.isForcedOffline,
+      internetNullReason: record.internetNullReason,
+      internetNullReasonHash: record.internetNullReasonHash,
+      submissionAttemptCount: record.submissionAttemptCount,
+      lastAttemptAt: record.lastAttemptAt,
+      encryptedPayload: record.encryptedPayload,
+      payloadIv: record.payloadIv,
+      wrappedDataKey: record.wrappedDataKey,
     );
   }
 
@@ -1180,6 +1358,15 @@ class UploadedFileRecord {
   final String? fileExtension;
   final AttestationPreviewKind previewKind;
   final String storageMode;
+  final bool isOnline;
+  final bool isForcedOffline;
+  final String? internetNullReason;
+  final String? internetNullReasonHash;
+  final int submissionAttemptCount;
+  final DateTime? lastAttemptAt;
+  final String? encryptedPayload;
+  final String? payloadIv;
+  final String? wrappedDataKey;
 
   AttestationRecord toAttestationRecord() {
     return AttestationRecord(
@@ -1206,6 +1393,15 @@ class UploadedFileRecord {
       fileExtension: fileExtension,
       previewKind: previewKind,
       storageMode: storageMode,
+      isOnline: isOnline,
+      isForcedOffline: isForcedOffline,
+      internetNullReason: internetNullReason,
+      internetNullReasonHash: internetNullReasonHash,
+      submissionAttemptCount: submissionAttemptCount,
+      lastAttemptAt: lastAttemptAt,
+      encryptedPayload: encryptedPayload,
+      payloadIv: payloadIv,
+      wrappedDataKey: wrappedDataKey,
     );
   }
 
@@ -1233,6 +1429,15 @@ class UploadedFileRecord {
       'fileExtension': fileExtension,
       'previewKind': previewKind.name,
       'storageMode': storageMode,
+      'isOnline': isOnline,
+      'isForcedOffline': isForcedOffline,
+      'internetNullReason': internetNullReason,
+      'internetNullReasonHash': internetNullReasonHash,
+      'submissionAttemptCount': submissionAttemptCount,
+      'lastAttemptAt': lastAttemptAt?.toIso8601String(),
+      'encryptedPayload': encryptedPayload,
+      'payloadIv': payloadIv,
+      'wrappedDataKey': wrappedDataKey,
     };
   }
 }

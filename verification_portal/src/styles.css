@@ -13,6 +13,7 @@
   --accent-strong: #6a35c5;
   --ok: #059669;
   --warn: #f75835;
+  --caution: #a16207;
   --error: #dc2626;
   --edge: #f5d7bf;
   --shadow: 0 14px 40px rgba(6, 4, 48, 0.06);
@@ -31,6 +32,7 @@
   --accent-strong: #b898e9;
   --ok: #10b981;
   --warn: #fb6e4c;
+  --caution: #fbbf24;
   --error: #ef4444;
   --edge: #1a1660;
   --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
@@ -500,6 +502,36 @@ code {
   grid-column: 1 / -1;
 }
 
+/* Withheld despite being available — the most concerning state. */
+.detail-card-danger {
+  border: 2px solid var(--error);
+  background: color-mix(in oklab, var(--error) 16%, var(--panel-soft) 84%);
+}
+
+.detail-card-danger > span {
+  color: var(--error);
+}
+
+/* Genuinely unavailable, not forced — the least concerning "missing" state. */
+.detail-card-caution {
+  border: 2px solid var(--caution);
+  background: color-mix(in oklab, var(--caution) 16%, var(--panel-soft) 84%);
+}
+
+.detail-card-caution > span {
+  color: var(--caution);
+}
+
+/* Forced off, but moot since it was unavailable anyway. */
+.detail-card-warn {
+  border: 2px solid var(--warn);
+  background: color-mix(in oklab, var(--warn) 16%, var(--panel-soft) 84%);
+}
+
+.detail-card-warn > span {
+  color: var(--warn);
+}
+
 .detail-card span {
   color: var(--muted);
   font-size: 0.75rem;
@@ -517,6 +549,71 @@ code {
   color: var(--accent);
   font-weight: 600;
   text-decoration: none;
+}
+
+.secondary-button {
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--panel);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.secondary-button:hover {
+  border-color: var(--accent);
+}
+
+.secondary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.reason-check {
+  margin-top: 8px;
+}
+
+.reason-check summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.reason-check-body {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.reason-check-input {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--panel);
+}
+
+.reason-check-result {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.reason-check-result.is-match {
+  color: var(--ok);
+}
+
+.reason-check-result.is-nomatch {
+  color: var(--error);
 }
 
 .wallet-result-panel {

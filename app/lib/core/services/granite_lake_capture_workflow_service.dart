@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:on_chain/sui/sui.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
@@ -10,12 +12,25 @@ import '../constants/app_constants.dart';
 import '../database/controllers/photo_capture_data_controller.dart';
 import '../database/controllers/uploaded_file_data_controller.dart';
 import '../state/granite_lake_models.dart';
+import 'capture_encryption_service.dart';
 
 class GraniteLakeCaptureWorkflowService {
-  GraniteLakeCaptureWorkflowService({Sha256? sha256})
-    : _sha256 = sha256 ?? Sha256();
+  GraniteLakeCaptureWorkflowService({
+    Sha256? sha256,
+    CaptureEncryptionService? captureEncryptionService,
+  }) : _sha256 = sha256 ?? Sha256(),
+       _captureEncryptionService =
+           captureEncryptionService ?? CaptureEncryptionService();
 
   final Sha256 _sha256;
+  final CaptureEncryptionService _captureEncryptionService;
+
+  // Same native channel MainActivity.kt already exposes for capture-time
+  // Keystore work (see CaptureEncryptionService) - `stripGpsExif` lives
+  // there too since it needs androidx.exifinterface, a native dependency.
+  static const MethodChannel _nativeChannel = MethodChannel(
+    'granite_lake/biometric_gate',
+  );
 
   Future<AttestationActionResult> persistCapture({
     required PhotoCaptureDataController photoCaptureDataController,
@@ -34,6 +49,12 @@ class GraniteLakeCaptureWorkflowService {
     String? cameraLabel,
     String? cameraDetailsLabel,
     void Function(AttestationSubmissionProgress progress)? onProgress,
+    bool isOnline = true,
+    bool isForcedOffline = false,
+    String? internetNullReason,
+    bool hasGps = true,
+    bool isGpsForcedNull = false,
+    String? gpsNullReason,
   }) async {
     var currentStage = AttestationSubmissionStage.signing;
     try {
@@ -65,6 +86,12 @@ class GraniteLakeCaptureWorkflowService {
         altitudeLabel: altitudeLabel,
         cameraLabel: cameraLabel,
         cameraDetailsLabel: cameraDetailsLabel,
+        isOnline: isOnline,
+        isForcedOffline: isForcedOffline,
+        internetNullReason: internetNullReason,
+        hasGps: hasGps,
+        isGpsForcedNull: isGpsForcedNull,
+        gpsNullReason: gpsNullReason,
       );
 
       onProgress?.call(
@@ -124,6 +151,9 @@ class GraniteLakeCaptureWorkflowService {
     String? buildLabel,
     String? domain,
     void Function(AttestationSubmissionProgress progress)? onProgress,
+    bool isOnline = true,
+    bool isForcedOffline = false,
+    String? internetNullReason,
   }) async {
     var currentStage = AttestationSubmissionStage.signing;
     try {
@@ -154,6 +184,9 @@ class GraniteLakeCaptureWorkflowService {
         submittedAtUtc: submittedAtUtc,
         buildLabel: buildLabel,
         forcedRecordId: provisionalId,
+        isOnline: isOnline,
+        isForcedOffline: isForcedOffline,
+        internetNullReason: internetNullReason,
         extraProofPayload: <String, dynamic>{
           'domain': domain,
           'fileSizeBytes': fileSizeBytes,
@@ -223,6 +256,12 @@ class GraniteLakeCaptureWorkflowService {
     String? cameraDetailsLabel,
     String? forcedRecordId,
     Map<String, dynamic>? extraProofPayload,
+    bool isOnline = true,
+    bool isForcedOffline = false,
+    String? internetNullReason,
+    bool hasGps = true,
+    bool isGpsForcedNull = false,
+    String? gpsNullReason,
   }) async {
     final capturedAt = capturedAtUtc?.toUtc() ?? DateTime.now().toUtc();
     final captureId = forcedRecordId ?? '${capturedAt.microsecondsSinceEpoch}';
@@ -238,9 +277,34 @@ class GraniteLakeCaptureWorkflowService {
       sourcePath,
     ).copy(destinationImagePath);
 
+    if (assetType == AttestationAssetType.photo) {
+      // Must happen before hashing: GPS proof comes from Geolocator (passed
+      // in separately as gpsLabel/proofPayload below), never from this
+      // EXIF tag, so stripping it here costs nothing. Leaving it in would
+      // mean Android's MediaProvider location redaction (silently zeroing
+      // those EXIF bytes for any reader without ACCESS_MEDIA_LOCATION -
+      // hash apps, share sheets, uploads) could change this file's hash
+      // after it's already attested, on a copy nothing actually tampered
+      // with.
+      await _stripGpsExif(destinationImagePath);
+    }
+
     final imageBytes = await destinationImageFile.readAsBytes();
     final imageHash = await _sha256.hash(imageBytes);
     final imageSha256 = _hex(imageHash.bytes);
+    // Computed once, here, at the same moment as imageSha256 - not deferred
+    // to whenever the transaction actually gets submitted (which, for a
+    // queued offline capture, could be much later). Folding this into
+    // signedMetadata below locks it into the same signature that already
+    // covers photo_hash/gpsLabel/etc., so a later edit to the plaintext
+    // reason column is detectable against what was actually signed at
+    // capture time.
+    final internetNullReasonHash = internetNullReason == null
+        ? null
+        : _hex((await _sha256.hash(utf8.encode(internetNullReason))).bytes);
+    final gpsNullReasonHash = gpsNullReason == null
+        ? null
+        : _hex((await _sha256.hash(utf8.encode(gpsNullReason))).bytes);
     final submittedAt = submittedAtUtc?.toUtc();
     final fileSizeBytes = imageBytes.length;
     final previewKind = _previewKindFor(
@@ -281,6 +345,28 @@ class GraniteLakeCaptureWorkflowService {
       'projectId': projectId,
       'tags': tags,
       'note': note,
+      // Offline-capture design doc §8's narrative provenance: folded into
+      // the signed bundle the same way gpsLabel/altitudeLabel already are,
+      // so the raw connectivity/GPS state at capture time is part of the
+      // cryptographic signature too, not just a plain DB column.
+      'isOnline': isOnline,
+      'isForcedOffline': isForcedOffline,
+      ...?internetNullReason == null
+          ? null
+          : {
+              'internetNullReason': internetNullReason,
+              'internetNullReasonHash': internetNullReasonHash,
+            },
+      if (assetType == AttestationAssetType.photo) ...{
+        'hasGps': hasGps,
+        'isGpsForcedNull': isGpsForcedNull,
+        ...?gpsNullReason == null
+            ? null
+            : {
+                'gpsNullReason': gpsNullReason,
+                'gpsNullReasonHash': gpsNullReasonHash,
+              },
+      },
       ...?extraProofPayload,
     };
 
@@ -288,18 +374,60 @@ class GraniteLakeCaptureWorkflowService {
     final signature = account.signPersonalMessage(
       utf8.encode(jsonEncode(signedMetadata)),
     );
+    final signatureBase64Value = base64Encode(signature.signature.signature);
+    final isPhotoAsset = assetType == AttestationAssetType.photo;
+    final effectiveHasGps = isPhotoAsset ? hasGps : true;
+    final effectiveIsGpsForcedNull = isPhotoAsset ? isGpsForcedNull : false;
+    final effectiveGpsNullReason = isPhotoAsset ? gpsNullReason : null;
+    final effectiveGpsNullReasonHash = isPhotoAsset ? gpsNullReasonHash : null;
+
+    // Offline-queue at-rest encryption (offline-capture design doc §7.3): a
+    // row taking the offline/forced-offline path can sit in
+    // PENDING_SUBMISSION for the length of a whole field trip, so its
+    // submission-relevant fields are encrypted the instant they're written
+    // instead of left in plaintext columns for that entire window. A row
+    // that submits immediately while online doesn't sit at rest long
+    // enough to matter, so it keeps writing the plaintext columns directly.
+    final isQueuedOffline = !isOnline || isForcedOffline;
+    String? encryptedPayloadBase64;
+    String? payloadIvBase64;
+    String? wrappedDataKeyBase64;
+    if (isQueuedOffline) {
+      final encrypted = await _captureEncryptionService.encryptPayload(
+        captureId: captureId,
+        payload: <String, dynamic>{
+          'imageSha256': imageSha256,
+          'signatureBase64': signatureBase64Value,
+          'proofPayload': signedMetadata,
+          'isOnline': isOnline,
+          'isForcedOffline': isForcedOffline,
+          'internetNullReason': internetNullReason,
+          'internetNullReasonHash': internetNullReasonHash,
+          'hasGps': effectiveHasGps,
+          'isGpsForcedNull': effectiveIsGpsForcedNull,
+          'gpsNullReason': effectiveGpsNullReason,
+          'gpsNullReasonHash': effectiveGpsNullReasonHash,
+        },
+      );
+      encryptedPayloadBase64 = encrypted.ciphertextBase64;
+      payloadIvBase64 = encrypted.ivBase64;
+      wrappedDataKeyBase64 = encrypted.wrappedDataKeyBase64;
+    }
+
     final record = AttestationRecord(
       captureId: captureId,
       capturedAt: capturedAt,
       submittedAt: submittedAt,
       imagePath: destinationImagePath,
-      imageSha256: imageSha256,
-      signatureBase64: base64Encode(signature.signature.signature),
+      imageSha256: isQueuedOffline ? '' : imageSha256,
+      signatureBase64: isQueuedOffline ? '' : signatureBase64Value,
       walletAddress: identity.walletAddress,
       publicKeyHex: identity.publicKeyHex,
-      proofPayload: AttestationProofPayload.fromJson(
-        Map<String, dynamic>.from(signedMetadata),
-      ),
+      proofPayload: isQueuedOffline
+          ? AttestationProofPayload.fromJson(const <String, dynamic>{})
+          : AttestationProofPayload.fromJson(
+              Map<String, dynamic>.from(signedMetadata),
+            ),
       suiTxDigest: '',
       suiObjectId: '',
       suiSubmissionStatus: 'PENDING_SUBMISSION',
@@ -314,6 +442,17 @@ class GraniteLakeCaptureWorkflowService {
       fileExtension: fileExtension,
       previewKind: previewKind,
       storageMode: 'LOCAL_ONLY',
+      isOnline: isQueuedOffline ? true : isOnline,
+      isForcedOffline: isQueuedOffline ? false : isForcedOffline,
+      internetNullReason: isQueuedOffline ? null : internetNullReason,
+      internetNullReasonHash: isQueuedOffline ? null : internetNullReasonHash,
+      hasGps: isQueuedOffline ? true : effectiveHasGps,
+      isGpsForcedNull: isQueuedOffline ? false : effectiveIsGpsForcedNull,
+      gpsNullReason: isQueuedOffline ? null : effectiveGpsNullReason,
+      gpsNullReasonHash: isQueuedOffline ? null : effectiveGpsNullReasonHash,
+      encryptedPayload: encryptedPayloadBase64,
+      payloadIv: payloadIvBase64,
+      wrappedDataKey: wrappedDataKeyBase64,
     );
 
     final sourceFile = File(sourcePath);
@@ -330,6 +469,21 @@ class GraniteLakeCaptureWorkflowService {
     );
     if (await captureDirectory.exists()) {
       await captureDirectory.delete(recursive: true);
+    }
+  }
+
+  Future<void> _stripGpsExif(String imagePath) async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    try {
+      await _nativeChannel.invokeMethod<void>('stripGpsExif', {
+        'path': imagePath,
+      });
+    } on PlatformException catch (error) {
+      // Best-effort: a capture with GPS EXIF still intact is strictly
+      // better than losing the capture outright over a stripping failure.
+      debugPrint('stripGpsExif failed: ${error.message}');
     }
   }
 

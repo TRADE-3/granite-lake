@@ -1,20 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 
 import 'package:http/http.dart' as http;
 import 'package:on_chain/on_chain.dart';
 
-/// True for network-level failures (dropped connection, DNS blip, timeout)
-/// worth a quiet retry. False for anything the server actually responded to
-/// — a bad status code or a GraphQL `errors` payload means the request was
-/// received and rejected, so retrying it would just repeat the failure.
-bool _isTransientNetworkError(Object error) {
-  return error is SocketException ||
-      error is TimeoutException ||
-      error is http.ClientException;
-}
+import '../utils/network_error_classifier.dart';
 
 /// Retries [request] on transient network errors only. Bounded and short by
 /// design: this runs underneath higher-level retry/backoff already in the
@@ -29,7 +20,7 @@ Future<T> _withNetworkRetry<T>(
     try {
       return await request();
     } catch (error) {
-      if (attempt == attempts || !_isTransientNetworkError(error)) {
+      if (attempt == attempts || !isTransientNetworkError(error)) {
         rethrow;
       }
       await Future<void>.delayed(baseDelay * pow(2, attempt - 1));

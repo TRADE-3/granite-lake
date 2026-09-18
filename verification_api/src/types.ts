@@ -45,6 +45,17 @@ export type AttestationRecord = {
   checkpointTimeIso: string | null;
   userCapObjectId: string | null;
   hashHex: string;
+  // Offline-capture provenance (present on both attest_photo and
+  // attest_file events). capturedAtMs/attestedAtMs are decimal-string u64
+  // millisecond timestamps (kept as strings to avoid precision loss, same
+  // convention as eventTimestampMs). internetNullReasonHashHex is the
+  // on-chain reason hash - empty ("") exactly when is_online is true and
+  // is_forced_offline is false, the one state needing no reason.
+  capturedAtMs?: string | null;
+  attestedAtMs?: string | null;
+  isOnline?: boolean;
+  isForcedOffline?: boolean;
+  internetNullReasonHashHex?: string;
   photoHashHex?: string;
   fileHashHex?: string;
   fileIdRawHex?: string;
@@ -53,6 +64,12 @@ export type AttestationRecord = {
   gpsDecoded?: string;
   altitudeRawHex?: string;
   altitudeDecoded?: string;
+  // GPS provenance - attest_photo only, since attest_file never carried
+  // location data. gpsNullReasonHashHex is empty ("") exactly when has_gps
+  // is true and is_gps_forced_null is false.
+  hasGps?: boolean;
+  isGpsForcedNull?: boolean;
+  gpsNullReasonHashHex?: string;
   projectIdRawHex: string;
   projectIdDecoded: string;
   userWallet: string;

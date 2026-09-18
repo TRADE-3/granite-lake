@@ -9,13 +9,68 @@ class DomainBackendConfig {
   final String apiKey;
 }
 
+/// Applies the same on-chain-submission fallback substitution used by
+/// attestation submission, so verification recomputes against the same
+/// value instead of comparing the substituted chain value against a raw
+/// null/empty local field.
+String resolveAttestationLabel(String? value, {required String fallback}) {
+  final trimmed = value?.trim();
+  return trimmed != null && trimmed.isNotEmpty ? trimmed : fallback;
+}
+
 abstract final class AppConstants {
+  // ── Attestation label fallbacks ───────────────────────────────────────────
+  static const String attestationUnknownLabel = 'UNKNOWN';
+  static const String attestationUnassignedLabel = 'UNASSIGNED';
+
+  // ── Reconnect notification (offline-capture design doc §7.2) ──────────────
+  // Background watchdog that nudges the crew to unlock and submit once
+  // connectivity returns while the app is closed/backgrounded - the queue
+  // sweep itself (retryPendingAttestations) only ever runs in the
+  // foreground, so this is strictly check-and-notify, never signs anything.
+  // Android's periodic-task floor is 15 minutes, and the *first* run of a
+  // freshly-registered periodic task is not immediate - it can lag a full
+  // period behind registration. A one-off task has no such floor and fires
+  // as soon as its constraint is met, so both are registered together:
+  // the one-off catches the immediate/first reconnect, the periodic one
+  // is the durable backstop for a later reconnect after the app was
+  // relaunched and the one-off was consumed.
+  static const String reconnectNotificationImmediateTaskUniqueName =
+      'granite_lake_reconnect_watch_immediate';
+  static const String reconnectNotificationPeriodicTaskUniqueName =
+      'granite_lake_reconnect_watch_periodic';
+  static const String reconnectNotificationTaskName =
+      'granite_lake_reconnect_check';
+  static const String reconnectNotificationChannelId = 'granite_lake_reconnect';
+  static const String reconnectNotificationChannelName = 'Submission reminders';
+  static const String reconnectNotificationChannelDescription =
+      'Reminds you to unlock and submit captures queued while offline.';
+  static const int reconnectNotificationId = 7301;
+  // Bare Android drawable resource name (android/app/src/main/res/
+  // drawable-*/ic_stat_reconnect.png) - a white-on-transparent silhouette
+  // of the T3 mark, generated from assets/logos/trade3/
+  // trade3_icon_foreground.png. Deliberately NOT the launcher mipmap: a
+  // full-color, fully-opaque launcher icon has no meaningful alpha shape,
+  // so Android's notification-icon renderer (which draws only the alpha
+  // channel, in white) would show a solid blob instead of the T3 mark.
+  static const String reconnectNotificationIcon = 'ic_stat_reconnect';
+  static const String reconnectNotificationLastSentConfigKey =
+      'reconnect_notification_last_sent_at_ms';
+  static const int reconnectNotificationDebounceMinutes = 30;
+
   // ── App meta ───────────────────────────────────────────────────────────────
   static const String appName = 'TRADE3';
   static const String appTitle = 'Trade3';
   static const String appVersion = 'V1.0';
   static const String walletCreateAsset = 'assets/images/wallet_create.png';
   static const int captureSessionDurationMinutes = 30;
+  // Offline-queue at-rest encryption (offline-capture design doc §7.3,
+  // intentionally modified from the doc's original no-caching design):
+  // independent of, and shorter than, captureSessionDurationMinutes above -
+  // governs how long a batch-decrypted queue payload cache stays in memory
+  // after one "unlock to submit" prompt before it's destroyed and a fresh
+  // unlock is required.
+  static const int queueUnlockDurationMinutes = 5;
   static const String captureDirectoryName = 'captures';
 
   // ── Onboarding ─────────────────────────────────────────────────────────────
@@ -129,10 +184,38 @@ abstract final class AppConstants {
 
   static const String defaultPhotoAttestationModule = 'photo_attestation';
   static const String defaultPhotoAttestationPackageId =
-      '0xf4b83a02ad29b78266f8b1a39f5b533bde6bd5ef00eb434db46c3f7be29639db';
+      '0xd06ff3a35bb182b5e4577440d71470373fc4c36315c27dca90c8af3e8d9367b6';
   static const String defaultPhotoAttestationRegistryId =
-      '0xde8b9f476c91dbdb05238c656a6ea3aa9f670e3b732e3e5d48628f5d2b66122d';
+      '0xe8a73abe8d822ad0b9441bd0df47510251c8b2c9d84f1d6ffcaa340bf2daea4e';
   static const double minimumAttestationSuiBalance = 0.004;
   static const int minimumAttestationMistBalance = 4000000;
   static const int maximumAttestationTimeGapMinutes = 15;
+
+  // ConnectivityHeuristicService (offline-capture design doc §5). Conservative
+  // defaults, meant to be tuned against real field data rather than guessed
+  // precisely up front.
+  //
+  // NOTE: a `minimumSufficientBandwidthKbps` threshold is intentionally not
+  // defined yet. Estimating throughput from the existing `/utc` probe
+  // (bytes ÷ elapsed time) is unreliable at this payload's size — a few
+  // dozen bytes divided by round-trip time is dominated by TCP/TLS
+  // handshake overhead, not real throughput. The design's other suggested
+  // signal, Android's NetworkCapabilities.getLinkDownstreamBandwidthKbps()
+  // via a platform channel, needs real native code and is deferred; add
+  // this constant back when that lands. For now, classification is
+  // reachability + latency only.
+  //
+  // A probe that succeeds but exceeds this p50 latency counts as `degraded`,
+  // since a connection that's technically up but slow to respond makes a
+  // crew wait through the exact delay offline mode exists to avoid.
+  static const Duration connectivityDegradedLatencyThreshold = Duration(
+    seconds: 2,
+  );
+  static const int connectivityConsecutiveFailuresForOffline = 2;
+  static const int connectivityConsecutiveConfirmationsForLabelFlip = 2;
+  static const Duration connectivityPollIntervalDegraded = Duration(
+    seconds: 10,
+  );
+  static const Duration connectivityPollIntervalOnline = Duration(seconds: 30);
+  static const Duration connectivityPollIntervalOffline = Duration(seconds: 75);
 }

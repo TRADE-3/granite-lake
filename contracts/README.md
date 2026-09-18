@@ -37,7 +37,9 @@ transfer UserCap → user wallet
 
 User
     ↓
-attest_photo(user_cap, registry, hash, gps, altitude, project_id)
+attest_photo(user_cap, registry, hash, gps, altitude, project_id,
+             captured_at, is_online, is_forced_offline, internet_null_reason_hash,
+             has_gps, is_gps_forced_null, gps_null_reason_hash, clock)
 
 Contract
     ↓
@@ -45,12 +47,20 @@ emit PhotoAttested event
 
 User
     ↓
-attest_file(user_cap, registry, hash, file_id, project_id)
+attest_file(user_cap, registry, hash, file_id, project_id,
+            captured_at, is_online, is_forced_offline, internet_null_reason_hash, clock)
 
 Contract
     ↓
 emit FileAttested event
 ```
+
+`captured_at`/`is_online`/`is_forced_offline`/`internet_null_reason_hash` (and, for
+photos, `has_gps`/`is_gps_forced_null`/`gps_null_reason_hash`) support field crews
+attesting while offline and/or without a GPS fix — see
+[the offline-capture design](../granite-lake-offline-capture-design.md) for the full
+rationale. `clock` is the shared Sui `Clock` object, used to derive `attested_at`
+on-chain so it can't be client-spoofed.
 
 ---
 
@@ -93,6 +103,27 @@ The capability also carries the user's domain so the contract can validate the s
 
 ---
 
+## 3. On-Chain Connectivity & GPS Provenance
+
+Internet and GPS are each independently optional at capture time, and neither is ever allowed to go missing (or have a working state overridden) silently. Whenever a field is null, **or** the crew deliberately overrides an available connection/fix via a client-side force toggle, a reason is required and its hash goes on-chain — the plaintext reason itself never does.
+
+The contract enforces this directly rather than trusting the client:
+
+```move
+assert!(
+    internet_null_reason_hash.is_empty() == (is_online && !is_forced_offline),
+    E_INTERNET_NULL_REASON_MISMATCH,
+);
+assert!(
+    gps_null_reason_hash.is_empty() == (has_gps && !is_gps_forced_null),
+    E_GPS_NULL_REASON_MISMATCH,
+);
+```
+
+A reason hash present when it shouldn't be, or missing when it's required, reverts the transaction — a malformed submission can never land a capture whose reason disclosure is unverifiable. See [the offline-capture design](../granite-lake-offline-capture-design.md) for the full field-crew rationale.
+
+---
+
 # Move Package
 
 Package name:
@@ -119,6 +150,7 @@ Required for:
 
 ```move
 add_domain()
+set_domain_admin()
 ```
 
 ---
@@ -192,6 +224,22 @@ Emitted when admin disables a user wallet.
 
 ---
 
+## DomainAdminChanged
+
+Emitted when the owner rotates a domain's admin wallet via `set_domain_admin`.
+
+```move
+DomainAdminChanged {
+    domain,
+    old_admin_wallet,
+    new_admin_wallet
+}
+```
+
+Gated on `OwnerCap`, not the domain's own current admin wallet — if the admin key itself is what was compromised or lost, requiring its signature to replace itself would defeat the point. Without this, a compromised or lost admin key was permanent and unrecoverable.
+
+---
+
 ## PhotoAttested
 
 Main photo attestation event.
@@ -202,11 +250,20 @@ PhotoAttested {
     gps,
     altitude,
     project_id,
-    user_wallet
+    user_wallet,
+    domain,
+    captured_at,
+    attested_at,
+    is_online,
+    is_forced_offline,
+    internet_null_reason_hash,
+    has_gps,
+    is_gps_forced_null,
+    gps_null_reason_hash
 }
 ```
 
-This is the primary verification source for photo attestations.
+This is the primary verification source for photo attestations. `domain` lets a verifier read attribution straight from the event instead of reconstructing it from whichever `UserCap` the attesting wallet currently happens to hold. `captured_at` is client-supplied (an offline-safe synced-clock fallback when no live clock was reachable at capture time); `attested_at` is derived on-chain from the shared `Clock` object, so it can't be spoofed by the client. `is_online`/`has_gps` are ground truth (untouched by the force toggles); `is_forced_offline`/`is_gps_forced_null` record whether the crew deliberately overrode a working connection or an available GPS fix. See [§3](#3-on-chain-connectivity--gps-provenance) for the null-reason-hash invariant.
 
 ---
 
@@ -219,11 +276,17 @@ FileAttested {
     file_hash,
     user_wallet,
     file_id,
-    project_id
+    project_id,
+    domain,
+    captured_at,
+    attested_at,
+    is_online,
+    is_forced_offline,
+    internet_null_reason_hash
 }
 ```
 
-This is the primary verification source for uploaded files.
+This is the primary verification source for uploaded files. Same connectivity-provenance fields as `PhotoAttested`; file attestation never carries GPS fields since file uploads have no location data.
 
 ---
 
@@ -241,6 +304,22 @@ add_domain(
 ```
 
 Registers a new domain.
+
+---
+
+## set_domain_admin
+
+Owner-only.
+
+```move
+set_domain_admin(
+    registry,
+    domain,
+    new_admin_wallet
+)
+```
+
+Rotates a domain's admin wallet. Emits `DomainAdminChanged`.
 
 ---
 
@@ -288,11 +367,19 @@ attest_photo(
     hash,
     gps,
     altitude,
-    project_id
+    project_id,
+    captured_at,
+    is_online,
+    is_forced_offline,
+    internet_null_reason_hash,
+    has_gps,
+    is_gps_forced_null,
+    gps_null_reason_hash,
+    clock
 )
 ```
 
-Creates a photo attestation event.
+Creates a photo attestation event. Reverts (`E_INTERNET_NULL_REASON_MISMATCH`/`E_GPS_NULL_REASON_MISMATCH`) if either null-reason hash doesn't match whether its field is actually null/overridden — see [§3](#3-on-chain-connectivity--gps-provenance).
 
 ---
 
@@ -306,11 +393,16 @@ attest_file(
     registry,
     hash,
     file_id,
-    project_id
+    project_id,
+    captured_at,
+    is_online,
+    is_forced_offline,
+    internet_null_reason_hash,
+    clock
 )
 ```
 
-Creates a file attestation event.
+Creates a file attestation event. Same `internet_null_reason_hash` enforcement as `attest_photo`; no GPS fields.
 
 ---
 

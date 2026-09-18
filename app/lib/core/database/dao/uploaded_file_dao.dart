@@ -48,6 +48,18 @@ class UploadedFileDao {
         'file_extension': uploadedFile['fileExtension'],
         'preview_kind': uploadedFile['previewKind'] ?? 'document',
         'storage_mode': uploadedFile['storageMode'] ?? 'LOCAL_ONLY',
+        'is_online': (uploadedFile['isOnline'] as bool? ?? true) ? 1 : 0,
+        'is_forced_offline': (uploadedFile['isForcedOffline'] as bool? ?? false)
+            ? 1
+            : 0,
+        'internet_null_reason': uploadedFile['internetNullReason'],
+        'internet_null_reason_hash': uploadedFile['internetNullReasonHash'],
+        'submission_attempt_count':
+            uploadedFile['submissionAttemptCount'] as int? ?? 0,
+        'last_attempt_at': uploadedFile['lastAttemptAt'],
+        'encrypted_payload': uploadedFile['encryptedPayload'],
+        'payload_iv': uploadedFile['payloadIv'],
+        'wrapped_data_key': uploadedFile['wrappedDataKey'],
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
@@ -56,5 +68,17 @@ class UploadedFileDao {
   Future<void> deleteAll() async {
     final database = await _databaseService.database;
     await database.delete(GraniteLakeDatabaseService.uploadedFilesTable);
+  }
+
+  /// Read-only count of rows still awaiting on-chain submission. Safe to
+  /// call from a background isolate (reconnect_notification_service.dart) -
+  /// touches no signing state, just a status column.
+  Future<int> countPendingSubmissions() async {
+    final database = await _databaseService.database;
+    final result = await database.rawQuery(
+      'SELECT COUNT(*) AS count FROM ${GraniteLakeDatabaseService.uploadedFilesTable} '
+      "WHERE sui_submission_status IN ('PENDING_SUBMISSION', 'PENDING', 'SUBMITTING')",
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
   }
 }

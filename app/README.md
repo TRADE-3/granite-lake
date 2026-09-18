@@ -4,16 +4,19 @@ Cryptographically attested photo and file records for field operations.
 
 ## Overview
 
-Granite Lake is an Android-focused Flutter app for:
+Granite Lake (shipped to end users as **Trade3** — see `AppConstants.appTitle`; "Granite Lake" is the engineering/repo name, used throughout code and this doc) is an Android-focused Flutter app for:
 
 - creating a device-local Sui wallet
 - protecting that wallet with Android biometrics
-- capturing photos with signed local proof data
+- capturing photos with signed local proof data, with or without live connectivity or a GPS fix
 - uploading files with signed local proof data
-- submitting photo and file attestations to a Sui testnet smart contract
+- submitting photo and file attestations to a Sui testnet smart contract, immediately when online or automatically once connectivity returns for a capture made offline
+- protecting a capture queued while offline from on-device tampering before it reaches the chain (AES-256-GCM at rest, Android Keystore-wrapped, biometric-gated decrypt)
 - verifying saved captures against the on-chain `PhotoAttested` and `FileAttested` events
 
 The app currently targets Android because the biometric gate is implemented through Flutter plus an Android `MethodChannel` bridge backed by Android Keystore.
+
+See [`../granite-lake-offline-capture-design.md`](../granite-lake-offline-capture-design.md) and its [detailed companion](../granite-lake-offline-capture-design-detail.md) for the full offline-capture/connectivity/GPS-optionality/at-rest-encryption design — this README covers it at implementation-summary level, in the relevant sections below.
 
 ## User Flow
 
@@ -46,8 +49,8 @@ Bundled defaults live in:
 Current testnet defaults:
 
 - RPC URL: `https://fullnode.testnet.sui.io:443`
-- package id: `0xf4b83a02ad29b78266f8b1a39f5b533bde6bd5ef00eb434db46c3f7be29639db`
-- registry id: `0xde8b9f476c91dbdb05238c656a6ea3aa9f670e3b732e3e5d48628f5d2b66122d`
+- package id: `0xd06ff3a35bb182b5e4577440d71470373fc4c36315c27dca90c8af3e8d9367b6`
+- registry id: `0xe8a73abe8d822ad0b9441bd0df47510251c8b2c9d84f1d6ffcaa340bf2daea4e`
 - module: `photo_attestation`
 - faucet URL: `https://faucet.sui.io/?network=testnet`
 - OTP / UTC backend URL: resolved dynamically at runtime (see Backend URL Configuration below)
@@ -255,13 +258,14 @@ Schema and migrations:
 
 Current database version:
 
-- `6`
+- `13`
 
 Current tables:
 
 - `employees`
 - `projects`
-- `captures`
+- `photo_captures` (camera captures — split out from a single `captures` table at version 8)
+- `uploaded_files` (file attestations — split out the same way)
 - `app_config`
 
 #### `employees`
@@ -291,35 +295,43 @@ Behavior:
 
 Stores project definitions used during capture and history filtering.
 
-#### `captures`
+#### `photo_captures`
 
-Stores all persisted capture records, including:
+Stores all persisted camera-capture records. Schema:
+`lib/core/database/migrations.dart` (`_createPhotoCapturesTable`). Fields:
 
-- `captured_at`
-- `submitted_at`
-- local image path
-- image SHA-256
-- signature
-- proof payload JSON
-- `sui_tx_digest`
-- `sui_object_id` (`UserCap` object id)
-- `sui_submission_status`
-- `sui_error_message`
-- project id
-- tags
-- note
+- `photo_capture_id` (primary key), `captured_at`, `submitted_at`
+- `image_path`, `image_sha256`, `signature_base64`
+- `wallet_address`, `public_key_hex`, `proof_payload_json`
+- `sui_tx_digest`, `sui_object_id` (`UserCap` object id), `sui_submission_status`, `sui_error_message`
+- `project_id`, `tags_json`, `note`
+- `preview_kind`, `storage_mode`
+- **Connectivity/GPS provenance** (offline-capture design, version 10):
+  `is_online`, `is_forced_offline`, `has_gps`, `is_gps_forced_null` — ground truth plus
+  whether the crew manually overrode it, recorded per capture so a later resubmission
+  reuses the original values rather than values recomputed at retry time
+- **Mandatory null reasons** (version 11): `internet_null_reason` /
+  `internet_null_reason_hash`, `gps_null_reason` / `gps_null_reason_hash` — plaintext
+  reason kept locally for disclosure, hash computed at capture time (same moment as
+  `image_sha256`) and folded into the signed proof bundle
+- **Resubmission tracking, app-local only** (version 12): `submission_attempt_count`,
+  `last_attempt_at`
+- **Offline-queue at-rest encryption** (version 13, see Android Keystore below):
+  `encrypted_payload`, `payload_iv`, `wrapped_data_key` — populated only for a row that
+  took the offline/forced-offline path; when set, the plaintext columns above
+  (`image_sha256`, `signature_base64`, `proof_payload_json`, the connectivity/GPS/
+  null-reason fields) are written empty instead, and are only readable after a
+  biometric-gated decrypt at resubmission time
 
 #### `uploaded_files`
 
-Stores uploaded file attestations separately from camera captures, including:
-
-- local file path and name
-- MIME type and size
-- file SHA-256
-- transaction digest
-- UserCap object id
-- submission status and error message
-- project id, tags, and note
+Stores uploaded file attestations separately from camera captures. Same shape as
+`photo_captures` above, minus anything GPS-specific (file attestation never carries
+location data) — `file_path`, `file_sha256`, `file_name`, `mime_type`,
+`file_size_bytes`, `file_extension` in place of the image fields, and only
+`is_online`/`is_forced_offline` (no `has_gps`/`is_gps_forced_null`/`gps_null_reason*`)
+for the connectivity axis. Carries the same `submission_attempt_count`/`last_attempt_at`
+and `encrypted_payload`/`payload_iv`/`wrapped_data_key` columns as `photo_captures`.
 
 #### `app_config`
 
@@ -363,7 +375,7 @@ Important properties of the Keystore key:
 
 Implementation:
 
-- `android/app/src/main/kotlin/com/example/granite_lake/MainActivity.kt`
+- `android/app/src/main/kotlin/io/trade3/app/MainActivity.kt` (applicationId `io.trade3.app`)
 
 Important Android key configuration includes:
 
@@ -377,11 +389,35 @@ This means:
 - the key can only be used after biometric authentication
 - Android invalidates the key automatically if the enrolled biometric set changes
 
-Exposed method channel operations are:
+Exposed method channel operations, all on the single `granite_lake/biometric_gate` channel:
 
-- `createBiometricGate`
-- `unlockBiometricGate`
-- `deleteBiometricGate`
+- `createBiometricGate` / `unlockBiometricGate` / `deleteBiometricGate` — the AES
+  biometric gate key above
+- `ensureCaptureWrapKey` / `wrapCaptureDataKey` / `unwrapCaptureDataKeys` — a **separate**
+  long-lived RSA keypair (alias `granite_lake_capture_wrap_key_v2`) used only for the
+  offline-queue at-rest encryption below. The public half wraps each queued row's random
+  AES data key with zero biometric involvement (capture must never block on a prompt,
+  even fully offline); the private half is Keystore-gated with a short validity window
+  after one successful biometric auth, so one prompt can unwrap a whole batch of queued
+  rows in `unwrapCaptureDataKeys`, but decrypting — and therefore resubmitting — always
+  needs a fresh biometric check per reconnect
+- `stripGpsExif` — strips GPS EXIF tags from a captured photo in place
+  (`androidx.exifinterface`), called at capture time before hashing; see Capture Pipeline
+  below
+
+### Offline-queue at-rest encryption
+
+When a capture takes the offline/forced-offline path (`capture_encryption_service.dart`,
+offline-capture design doc §7.3), its submission-relevant fields (`image_sha256`,
+`signature_base64`, `proof_payload_json`, connectivity/GPS booleans, null-reason
+text/hash) are encrypted per-row with AES-256-GCM the instant the row is written, rather
+than sitting on disk in plaintext until submission. The AES data key is random per row
+and wrapped by the RSA capture-wrap keypair above; GCM's authentication tag turns
+on-disk tampering into a detected decrypt failure (surfaced as history's
+`TAMPER_DETECTED` state) instead of silently signing a corrupted value at resubmission.
+Decrypting a queued row — and therefore resubmitting it — always requires a fresh,
+uncached biometric check, independent of whether the normal signing-session cache (30
+min, see Sui Private Key Lifecycle below) is still live.
 
 ### What is actually encrypted by the biometric gate?
 
@@ -492,47 +528,142 @@ Another biometric unlock is required before more signing can happen.
 
 Capture logic spans:
 
+- `lib/features/capture/screens/capture_screen.dart`
 - `lib/core/services/granite_lake_capture_workflow_service.dart`
+- `lib/core/services/connectivity_heuristic_service.dart`
+- `lib/core/services/time_sync_service.dart`
+- `lib/core/services/capture_encryption_service.dart`
 - `lib/core/state/granite_lake_controller.dart`
 
-Current sequence:
+### Connectivity and GPS are each independently optional
+
+Neither is a single "offline mode" toggle. `ConnectivityHeuristicService` classifies the
+connection as `online` / `degraded` / `offline` (radio state, then reachability +
+latency + estimated bandwidth — not a single HTTP-probe-per-tick check); the shutter is
+available without connectivity whenever that classifier isn't `online`, or the app bar's
+"Force Offline Mode" toggle is on regardless. Independently, a "Force No GPS" toggle
+lets the shutter proceed without a fix even when one is available; a _missing_ fix is
+always allowed to be optional, but a _detected fake_ (mock-location) fix remains a hard
+block in every case. Whenever the pending capture will have `is_online: false`,
+`is_forced_offline: true`, `has_gps: false`, or `is_gps_forced_null: true`, a mandatory
+free-text reason prompt blocks the shutter until filled in — the reason is hashed at the
+same moment as the image hash (SHA-256, same convention) and both plaintext and hash are
+persisted; only the hash goes into the signed proof bundle / on-chain.
+
+Capture timestamp (`capturedAt`) prefers a live fetch when connectivity allows it, and
+falls back to `TimeSyncService` (network-synced, anchored to the hardware monotonic
+clock so it survives the system clock changing while offline) otherwise, with the raw
+device clock as a last resort if `TimeSyncService` itself can't return a reading.
+
+### Sequence
 
 1. copy the image into app documents storage
-2. compute SHA-256 of the image
-3. record `capturedAt` from the backend `GET /utc` endpoint at capture-button press time
-4. re-check current GPS and altitude at submit time and fail submission if the normalized formatted values no longer match the captured values
-5. record `submittedAt` from the backend `GET /utc` endpoint at submit-button press time
-6. build the signed proof payload
-7. sign the payload with the active session key
-8. save the local capture row to SQLite with:
-   - `suiTxDigest = ''`
-   - `suiObjectId = ''`
-   - `suiSubmissionStatus = 'PENDING_SUBMISSION'`
-   - `suiErrorMessage = ''`
-   - both `captured_at` and `submitted_at`
-9. submit `attest_photo` to Sui testnet
-10. update the same capture row with:
+2. strip GPS EXIF from the image before hashing (native, `MainActivity.kt`'s
+   `stripGpsExif`, using `androidx.exifinterface`) — GPS provenance is already captured
+   independently via the device's location API into the proof payload below, never read
+   back from image EXIF, so this loses no proof data. Needed because Android's
+   `MediaStore` redacts GPS EXIF for any reader without `ACCESS_MEDIA_LOCATION` (hash
+   tools, share sheets, MTP transfer, even the in-app gallery save below) — with GPS
+   EXIF gone from the source file there's nothing left for that redaction to alter, so
+   the attested hash stays stable. Confirmed on-device: an image transferred/read
+   through a non-privileged path came back with exactly 31 bytes different from the
+   original, all inside the JPEG's EXIF header, all GPS-field values zeroed — same file
+   size, image data untouched, hash different
+3. compute SHA-256 of the (now GPS-EXIF-free) image
+4. record `capturedAt` (live fetch, or `TimeSyncService`/device-clock fallback per above)
+5. re-check current GPS and altitude at submit time and fail submission if the normalized formatted values no longer match the captured values, when GPS is expected
+6. record `submittedAt` the same way as `capturedAt`
+7. build the signed proof payload, including the connectivity/GPS booleans and hashed
+   null reason(s) from above
+8. sign the payload with the active session key
+9. save the local capture row to SQLite (`photo_captures`) with `sui_submission_status =
+'PENDING_SUBMISSION'` and the fields above; if the capture is taking the
+   offline/forced-offline path, the submission-relevant fields are encrypted at rest
+   instead of written in plaintext (see Offline-queue at-rest encryption above)
+10. if online: submit `attest_photo` to Sui testnet immediately and update the row with
+    the transaction digest, `UserCap` object id, submission status, and a translated
+    error message on failure. If offline/queued: skip this step entirely — no network
+    call is attempted — and leave the row `PENDING_SUBMISSION` for the retry queue below
 
-- transaction digest
-- `UserCap` object id
-- submission status
-- translated error message if submission failed
+### Submission queue (offline/queued captures)
 
-Submission preconditions now include:
+`GraniteLakeController.retryPendingAttestations()` sweeps `PENDING_SUBMISSION` rows
+oldest-first, resubmitting with the _original_ captured-at/connectivity/GPS/null-reason
+values (a fresh `attested_at` is supplied by the chain on landing). It runs on two
+triggers: the connectivity classifier transitioning to `online`, and app
+foreground/resume. Every resubmission first needs a fresh, uncached biometric check to
+decrypt the row (see Offline-queue at-rest encryption above) — the queue never
+auto-submits silently; it surfaces an explicit "unlock to submit" action instead. A
+local, on-device notification (`reconnect_notification_service.dart`, OS-scheduled
+background check, not push) fires when connectivity returns while rows are queued and
+the app isn't open.
 
-- backend connectivity via `GET /utc`
-- non-null `capturedAt`
-- non-null `submittedAt`
-- non-empty GPS label
-- non-empty altitude label
+Submission preconditions include:
+
+- non-null `capturedAt` / `submittedAt`
+- non-empty GPS label and altitude label, when GPS is expected for this capture
 - non-empty project id
+- a mandatory null-reason hash present exactly when required, absent otherwise
+  (contract-enforced — see `contracts/README.md`)
 
-The post-submit progress screen now reflects real pipeline stages:
+The post-submit progress screen reflects real pipeline stages:
 
 - hashing and signing evidence
 - saving local record
-- submitting to Sui testnet
+- submitting to Sui testnet (or queuing, if offline)
 - refreshing device history
+
+## GPS Data Is Removed From The Photo File Itself
+
+This is intentional, not a missing feature. A captured photo's GPS location is **not**
+present in the image file the app hashes, signs, exports, or stores — but it is still
+fully captured and part of the attestation.
+
+Where GPS actually lives:
+
+- captured independently via the device's location API (`Geolocator`,
+  `capture_screen.dart`) at the moment of capture
+- carried in the signed proof payload (`gpsLabel`/`altitudeLabel`,
+  `proof_payload_json`) and submitted on-chain with the attestation (`gps`/`altitude`
+  fields on `PhotoAttested`, see `contracts/README.md`)
+- shown in capture-detail/history and checked during verification the same as any other
+  attested field
+
+Why it's stripped from the image file: cameras normally also embed GPS as EXIF metadata
+directly in the JPEG. Since Android 10, `MediaStore` redacts that EXIF GPS data for any
+reader that lacks the `ACCESS_MEDIA_LOCATION` permission and doesn't explicitly request
+the unredacted original — which covers most real-world readers: generic hash-checker
+utilities, share sheets, cloud upload, MTP/USB transfer to a computer, and even the
+app's own in-app Gallery save. The redaction zeroes those EXIF bytes in place (same file
+size, image data untouched), so the photo looks and behaves identically while its
+SHA-256 silently changes. Confirmed on-device: a copy read through a non-privileged path
+came back with exactly 31 bytes different from the original, all inside the JPEG's EXIF
+header, all GPS-field values zeroed.
+
+Since the image's own EXIF copy of GPS was always redundant with the proof payload above
+and never the source of truth, the fix removes it from the file entirely, at capture
+time, before hashing (`granite_lake_capture_workflow_service.dart`, native strip via
+`androidx.exifinterface` in `MainActivity.kt`'s `stripGpsExif` — see Capture Pipeline
+above and Android Keystore below). With no GPS EXIF left in the file, there's nothing
+left for `MediaStore`'s redaction to alter, so the attested hash stays identical no
+matter who reads, exports, or transfers the photo afterward.
+
+## Export / Save
+
+`lib/features/history/screens/capture_detail_screen.dart`:
+
+- Before either export path below writes anything out, the stored asset's bytes are
+  re-hashed and compared against the record's attested `contentSha256`; a mismatch aborts
+  the save instead of exporting a silently-corrupted file. Skipped only for offline-queued
+  rows still encrypted at rest, since their hash is legitimately empty until decrypt.
+- Photos: `Gal.putImage` (Gallery/`MediaStore` insert, `gal` package). Safe now that GPS
+  EXIF is stripped at capture time (see Capture Pipeline above) — previously this path
+  could produce a saved copy whose hash no longer matched the attestation, purely from
+  Android's own GPS-EXIF redaction on `MediaStore` reads (any reader lacking
+  `ACCESS_MEDIA_LOCATION`), not any real corruption.
+- Files (non-image attestations): `FilePicker.platform.saveFile` (Storage Access
+  Framework, `file_picker` package) — a raw byte copy to wherever the user picks, never
+  routed through `MediaStore`.
 
 ## On-Chain Verification
 
@@ -562,9 +693,17 @@ against local capture data:
 History behavior:
 
 - successful submission alone is not treated as fully verified
-- an anchored photo or file is marked verified only after the event fields match
+- an anchored photo or file is marked verified only after the event fields above match
 - chain timestamp is checked against local `submittedAt` with the configured tolerance window
 - mismatches and chain lookup failures are surfaced in history/detail state
+
+The on-chain event also carries `is_online`, `is_forced_offline`,
+`internet_null_reason_hash`, and (photo only) `has_gps`/`is_gps_forced_null`/
+`gps_null_reason_hash` (see `attest_photo`/`attest_file` in `contracts/README.md`), and
+history/detail displays them, but they are **not currently part of the
+verified/mismatched pass-fail computation above** — whether a mismatch on one of these
+should be a hard verification failure or just an informational note is an open design
+decision (`granite-lake-offline-capture-design-detail.md` §12, item 2).
 
 ## Error Handling
 
@@ -622,10 +761,11 @@ When biometric enrollment changes and the Android Keystore key is invalidated:
 4. if confirmed, Granite Lake clears:
    - secure storage state
    - local capture artifacts
-   - SQLite captures
-   - SQLite projects
-   - SQLite employees
-   - SQLite config
+   - SQLite `photo_captures`
+   - SQLite `uploaded_files`
+   - SQLite `projects`
+   - SQLite `employees`
+   - SQLite `app_config`
 
 The app then returns to onboarding.
 
@@ -639,6 +779,13 @@ What Granite Lake does well now:
 - invalidates access when the biometric enrollment set changes
 - keeps the recovered Sui private key only in process memory during an active session
 - persists operational state in SQLite while keeping secrets in secure storage / Keystore
+- encrypts a queued offline capture's submission-relevant fields at rest (AES-256-GCM,
+  per-row random key wrapped by a separate Keystore RSA keypair) the instant it's
+  written, and requires a fresh, uncached biometric check to decrypt before resubmission
+- turns on-disk tampering of a queued capture into a detected decrypt failure (GCM
+  authentication tag) rather than a silently-resubmitted bad value
+- strips GPS EXIF from captured images before hashing, so a copy exported later can't
+  drift from the attested hash via Android's own GPS-metadata redaction
 
 Important limitations:
 

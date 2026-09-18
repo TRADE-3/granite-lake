@@ -1,20 +1,31 @@
 package io.trade3.app
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
+import android.security.keystore.UserNotAuthenticatedException
+import android.telephony.TelephonyManager
+import android.util.Log
 import android.view.WindowManager
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.exifinterface.media.ExifInterface
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.security.InvalidAlgorithmParameterException
+import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.spec.MGF1ParameterSpec
 import java.util.UUID
 import javax.crypto.BadPaddingException
 import javax.crypto.Cipher
@@ -22,13 +33,80 @@ import javax.crypto.IllegalBlockSizeException
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.OAEPParameterSpec
+import javax.crypto.spec.PSource
 
 class MainActivity : FlutterFragmentActivity() {
 	private val channelName = "granite_lake/biometric_gate"
 	private val keyStoreProvider = "AndroidKeyStore"
+	private val logTag = "GraniteLakeCapture"
+
+	// Offline-queue at-rest encryption: a single, long-lived RSA keypair (not
+	// per-capture) used to wrap/unwrap each row's random AES data key. Unlike
+	// the AES gate above, an asymmetric key lets the public half wrap a data
+	// key with zero biometric involvement (capture must never block on a
+	// prompt, even fully offline with no recent auth), while the private
+	// half stays Keystore-gated so unwrapping - and therefore resubmitting -
+	// a queued row always needs a fresh biometric check.
+	//
+	// _v2: bumped because Keystore keys are immutable - the v1 key was
+	// generated with per-operation auth (no validity window), which turned
+	// out to be incompatible with batch-decrypting more than one item per
+	// prompt (see captureWrapKeyValidityDurationSeconds below). Any
+	// already-queued row wrapped under v1 cannot be recovered under v2 and
+	// needs to be recaptured.
+	private val captureWrapKeyAlias = "granite_lake_capture_wrap_key_v2"
+
+	// How long after one successful biometric auth the private key stays
+	// usable without prompting again - keep this in sync with Dart's
+	// AppConstants.queueUnlockDurationMinutes (currently 5 minutes: 300s).
+	// This is what actually makes "one prompt unlocks the whole batch"
+	// possible: a Keystore2 operation closes the moment doFinal() is
+	// called, so reusing one authenticated Cipher object for a second
+	// item's doFinal() fails with KEY_USER_NOT_AUTHENTICATED (confirmed
+	// on-device) - Cipher.doFinal() only resets the JCA-level object, not
+	// the underlying Keystore operation. A validity-duration key sidesteps
+	// this entirely: every item gets its own fresh Cipher.init()+doFinal(),
+	// each authorized by "was there a recent successful biometric auth"
+	// rather than by being tied to one specific CryptoObject.
+	private val captureWrapKeyValidityDurationSeconds = 300
+
+	// Explicit OAEP parameters, used identically for both wrap (public key,
+	// software path) and unwrap (private key, Keystore-enforced path).
+	// Relying on the transformation string alone
+	// ("RSA/ECB/OAEPWithSHA-256AndMGF1Padding") to imply the MGF1 digest is
+	// a well-documented Android Keystore trap: `setDigests(SHA256)` at key
+	// generation only authorizes SHA-256 as the *main* OAEP digest - the
+	// MGF1 digest is a separate authorization that defaults to (and, below
+	// API 33's setMgf1Digests(), can only ever be) SHA-1. Requesting
+	// SHA-256 for both, as the transformation string implies, makes the
+	// public-key wrap succeed (software path, unenforced) while every
+	// unwrap fails with `KeyStoreException ... INCOMPATIBLE_MGF_DIGEST` -
+	// confirmed against a real KeyMint error, not just a hypothesis.
+	// SHA-256 main digest + SHA-1 MGF1 is the documented, universally
+	// supported combination for this exact failure.
+	private val captureWrapOaepParams = OAEPParameterSpec(
+		"SHA-256",
+		"MGF1",
+		MGF1ParameterSpec.SHA1,
+		PSource.PSpecified.DEFAULT,
+	)
 
 	private var pendingResult: MethodChannel.Result? = null
 	private var pendingCreateAliasForCleanup: String? = null
+
+	// getMobilePhoneState (soft connectivity messaging + is_forced_offline
+	// attribution: telling "mobile radio truly off" apart from "on but no
+	// signal", and reading the actual Mobile Data toggle) needs
+	// READ_PHONE_STATE, which isn't granted at install time. Requested at
+	// most once per process - respecting a denial rather than re-prompting
+	// on every check, matching the contextual-not-upfront philosophy
+	// already used for POST_NOTIFICATIONS (ReconnectNotificationService.
+	// initialize). A denial permanently falls back to the SIM-presence
+	// heuristic on the Dart side (ConnectivityHeuristicService).
+	private var pendingPhoneStateResult: MethodChannel.Result? = null
+	private var hasRequestedPhoneStatePermission = false
+	private val phoneStatePermissionRequestCode = 4201
 
 	override fun onCreate(savedInstanceState: Bundle?) {
 		// Every screen in this app can show captured evidence photos or their
@@ -51,6 +129,14 @@ class MainActivity : FlutterFragmentActivity() {
 					"createBiometricGate" -> createBiometricGate(call, result)
 					"unlockBiometricGate" -> unlockBiometricGate(call, result)
 					"deleteBiometricGate" -> deleteBiometricGate(call, result)
+					"ensureCaptureWrapKey" -> ensureCaptureWrapKey(call, result)
+					"wrapCaptureDataKey" -> wrapCaptureDataKey(call, result)
+					"unwrapCaptureDataKeys" -> unwrapCaptureDataKeys(call, result)
+					"stripGpsExif" -> stripGpsExif(call, result)
+					"hasActiveSim" -> hasActiveSim(call, result)
+					"isAirplaneModeOn" -> isAirplaneModeOn(call, result)
+					"isWifiRadioOn" -> isWifiRadioOn(call, result)
+					"getMobilePhoneState" -> getMobilePhoneState(call, result)
 					else -> result.notImplemented()
 				}
 			}
@@ -157,6 +243,240 @@ class MainActivity : FlutterFragmentActivity() {
 		result.success(null)
 	}
 
+	// Offline-queue at-rest encryption (capture_encryption_service.dart).
+	// idempotent - generates the wrap keypair only if this device doesn't
+	// already have one. No auth: creating an asymmetric keypair touches
+	// neither half's key material in a way that needs gating.
+	private fun ensureCaptureWrapKey(call: MethodCall, result: MethodChannel.Result) {
+		try {
+			val keyStore = KeyStore.getInstance(keyStoreProvider).apply { load(null) }
+			if (!keyStore.containsAlias(captureWrapKeyAlias)) {
+				generateCaptureWrapKeyPair()
+				Log.d(logTag, "ensureCaptureWrapKey: generated new keypair")
+			} else {
+				Log.d(logTag, "ensureCaptureWrapKey: keypair already present")
+			}
+			result.success(null)
+		} catch (error: Exception) {
+			Log.e(logTag, "ensureCaptureWrapKey failed: ${error.message}")
+			result.error("wrap_key_failed", error.message ?: "Could not prepare capture wrap key.", null)
+		}
+	}
+
+	// Wraps one row's random AES-256 data key with the RSA public key - a
+	// public-key operation, so Android Keystore never gates it behind
+	// biometrics regardless of the private key's setUserAuthenticationRequired
+	// flag. Safe to call at capture time with no session and no connectivity.
+	private fun wrapCaptureDataKey(call: MethodCall, result: MethodChannel.Result) {
+		val dataKeyBase64 = call.argument<String>("dataKeyBase64")
+		val captureId = call.argument<String>("captureId") ?: "unknown"
+		if (dataKeyBase64.isNullOrEmpty()) {
+			result.error("invalid_arguments", "Missing data key to wrap.", null)
+			return
+		}
+
+		try {
+			val keyStore = KeyStore.getInstance(keyStoreProvider).apply { load(null) }
+			val certificate = keyStore.getCertificate(captureWrapKeyAlias)
+				?: throw IllegalStateException("Capture wrap key not found.")
+			val cipher = Cipher.getInstance("RSA/ECB/OAEPPadding")
+			cipher.init(Cipher.ENCRYPT_MODE, certificate.publicKey, captureWrapOaepParams)
+			val rawKeyBytes = android.util.Base64.decode(dataKeyBase64, android.util.Base64.NO_WRAP)
+			Log.d(
+				logTag,
+				"wrapCaptureDataKey[$captureId]: attempting wrap, rawKeyBytes=${rawKeyBytes.size}",
+			)
+			val wrapped = cipher.doFinal(rawKeyBytes)
+			Log.d(logTag, "wrapCaptureDataKey[$captureId]: wrap succeeded, wrappedBytes=${wrapped.size}")
+			result.success(android.util.Base64.encodeToString(wrapped, android.util.Base64.NO_WRAP))
+		} catch (error: Exception) {
+			Log.e(
+				logTag,
+				"wrapCaptureDataKey[$captureId] failed: ${error::class.java.simpleName}: ${error.message}",
+				error,
+			)
+			result.error("wrap_failed", error.message ?: "Could not wrap capture data key.", null)
+		}
+	}
+
+	// Batch-unwraps every currently-queued row's wrapped data key behind a
+	// single biometric prompt: Cipher.doFinal() resets an initialized cipher
+	// back to a ready state rather than invalidating it, so the same
+	// authenticated CryptoObject from one BiometricPrompt success can decrypt
+	// every wrapped key in the batch without a prompt per row. If the crew's
+	// last auth already fell outside captureWrapKeyValidityDurationSeconds,
+	// a second, plain re-auth prompt runs first (see buildUnwrapPromptCipher
+	// and authenticatePlain) before the same batch decrypt in unwrapBatch.
+	private fun unwrapCaptureDataKeys(call: MethodCall, result: MethodChannel.Result) {
+		if (!ensureNoPendingOperation(result) || !ensureBiometricSupport(result)) {
+			return
+		}
+
+		val wrappedKeys = call.argument<List<String>>("wrappedKeysBase64")
+		val captureIds = call.argument<List<String>>("captureIds") ?: emptyList()
+		if (wrappedKeys.isNullOrEmpty()) {
+			result.error("invalid_arguments", "No wrapped keys supplied.", null)
+			return
+		}
+
+		pendingResult = result
+		try {
+			val keyStore = KeyStore.getInstance(keyStoreProvider).apply { load(null) }
+			val privateKey = keyStore.getKey(captureWrapKeyAlias, null) as? java.security.PrivateKey
+				?: throw UnrecoverableBiometricGateException("gate_missing", "Capture wrap key not found.")
+
+			val promptCipher = try {
+				buildUnwrapPromptCipher(privateKey)
+			} catch (error: UserNotAuthenticatedException) {
+				// captureWrapKeyValidityDurationSeconds's window since the crew's
+				// last biometric auth has already lapsed - Keystore refuses to
+				// even construct a Cipher (let alone doFinal()) until they
+				// re-authenticate, so there's no Cipher yet to bind a
+				// BiometricPrompt's CryptoObject to. This used to fall straight
+				// into the generic catch below and report "unlock_failed"
+				// without ever showing a prompt - a dead end once the window
+				// expired, since every retry hit the exact same wall. Falling
+				// back to a plain (no-CryptoObject) prompt here is enough:
+				// any successful Class 3 biometric auth refreshes Android's
+				// shared hardware-auth-token regardless of which Cipher (if
+				// any) triggered it, which is what the retry below then
+				// succeeds against.
+				Log.d(
+					logTag,
+					"unwrapCaptureDataKeys: validity window expired, requesting fresh auth before retrying",
+				)
+				authenticatePlain(
+					title = "Unlock queued captures",
+					subtitle = "Verify biometrics to decrypt and submit queued captures.",
+					onSuccess = {
+						unwrapBatch(privateKey, wrappedKeys, captureIds)
+					},
+				)
+				return
+			}
+
+			Log.d(logTag, "unwrapCaptureDataKeys: prompting for batch of ${wrappedKeys.size}")
+			authenticate(
+				title = "Unlock queued captures",
+				subtitle = "Verify biometrics to decrypt and submit queued captures.",
+				cipher = promptCipher,
+				onSuccess = {
+					unwrapBatch(privateKey, wrappedKeys, captureIds)
+				},
+			)
+		} catch (error: KeyPermanentlyInvalidatedException) {
+			finishError("biometric_changed", "Biometrics changed on this device. Re-bind required.")
+		} catch (error: UnrecoverableBiometricGateException) {
+			finishError(error.code, error.message)
+		} catch (error: Exception) {
+			Log.e(
+				logTag,
+				"unwrapCaptureDataKeys setup failed: ${error::class.java.simpleName}: ${error.message}",
+				error,
+			)
+			finishError("unlock_failed", error.message ?: "Could not unlock queued captures.")
+		}
+	}
+
+	// This Cipher only exists to give the BiometricPrompt below a
+	// CryptoObject to bind to and trigger the actual prompt UI - its
+	// doFinal() is never called. Every batch item unwrapped below gets its
+	// own freshly-init'd Cipher instead, because a Keystore2 operation
+	// closes the moment doFinal() is called once; a validity-duration key
+	// (captureWrapKeyValidityDurationSeconds) is what lets each of those
+	// fresh Ciphers succeed without its own prompt, as long as they're all
+	// within the window one authentication opens. Throws
+	// UserNotAuthenticatedException if that window has already lapsed - see
+	// the caller's handling of that.
+	private fun buildUnwrapPromptCipher(privateKey: java.security.PrivateKey): Cipher {
+		val cipher = Cipher.getInstance("RSA/ECB/OAEPPadding")
+		cipher.init(Cipher.DECRYPT_MODE, privateKey, captureWrapOaepParams)
+		return cipher
+	}
+
+	// The actual batch decrypt, shared by both the normal path (prompt
+	// succeeded on the first try) and the expired-window retry path (plain
+	// re-auth, then this). A per-item failure (a tampered wrapped_data_key
+	// column) is reported as a null at that index rather than failing the
+	// whole batch, so one bad row doesn't block the rest of the queue from
+	// submitting.
+	private fun unwrapBatch(
+		privateKey: java.security.PrivateKey,
+		wrappedKeys: List<String>,
+		captureIds: List<String>,
+	) {
+		val unwrapped = wrappedKeys.mapIndexed { index, wrappedKeyBase64 ->
+			val captureId = captureIds.getOrNull(index) ?: "unknown"
+			try {
+				val wrappedBytes = android.util.Base64.decode(
+					wrappedKeyBase64,
+					android.util.Base64.NO_WRAP,
+				)
+				Log.d(
+					logTag,
+					"unwrapCaptureDataKeys[$captureId]: attempting unwrap, wrappedBytes=${wrappedBytes.size}",
+				)
+				val itemCipher = Cipher.getInstance("RSA/ECB/OAEPPadding")
+				itemCipher.init(Cipher.DECRYPT_MODE, privateKey, captureWrapOaepParams)
+				val plainBytes = itemCipher.doFinal(wrappedBytes)
+				Log.d(
+					logTag,
+					"unwrapCaptureDataKeys[$captureId]: unwrap succeeded, plainBytes=${plainBytes.size}",
+				)
+				android.util.Base64.encodeToString(plainBytes, android.util.Base64.NO_WRAP)
+			} catch (error: Exception) {
+				// Logged at class-name granularity (BadPaddingException vs.
+				// IllegalBlockSizeException vs. anything else) since that's
+				// what distinguishes "genuinely tampered ciphertext" from "we
+				// built the Cipher with mismatched OAEP parameters" while
+				// debugging this path.
+				Log.e(
+					logTag,
+					"unwrapCaptureDataKeys[$captureId] failed: ${error::class.java.simpleName}: ${error.message}",
+					error,
+				)
+				null
+			}
+		}
+		finishSuccess(unwrapped)
+	}
+
+	private fun generateCaptureWrapKeyPair() {
+		val keyPairGenerator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, keyStoreProvider)
+		val builder = KeyGenParameterSpec.Builder(
+			captureWrapKeyAlias,
+			KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+		)
+			.setKeySize(2048)
+			.setDigests(KeyProperties.DIGEST_SHA256)
+			.setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
+			// Only gates the private (decrypt/unwrap) half - Android Keystore
+			// never requires auth for a public-key operation, which is what
+			// keeps wrapCaptureDataKey prompt-free.
+			.setUserAuthenticationRequired(true)
+			.setInvalidatedByBiometricEnrollment(true)
+			// Legacy (pre-API-30) validity-duration API - see
+			// captureWrapKeyValidityDurationSeconds's doc for why a
+			// time-bound window, not per-operation auth, is required here.
+			.setUserAuthenticationValidityDurationSeconds(captureWrapKeyValidityDurationSeconds)
+
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+			// The API-30+ replacement for the legacy call above - a timeout
+			// of 0 here means "per operation" and would silently override
+			// the legacy setting on this OS version, which is exactly the
+			// bug that caused every second batch item to fail with
+			// KEY_USER_NOT_AUTHENTICATED. Must match
+			// captureWrapKeyValidityDurationSeconds, not 0.
+			builder.setUserAuthenticationParameters(
+				captureWrapKeyValidityDurationSeconds,
+				KeyProperties.AUTH_BIOMETRIC_STRONG,
+			)
+		}
+
+		keyPairGenerator.initialize(builder.build())
+		keyPairGenerator.generateKeyPair()
+	}
+
 	private fun authenticate(
 		title: String,
 		subtitle: String,
@@ -217,6 +537,65 @@ class MainActivity : FlutterFragmentActivity() {
 			.build()
 
 		prompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(cipher))
+	}
+
+	// Same UI as authenticate() above, but with no CryptoObject to bind to -
+	// for the one case where Keystore refused to even construct a Cipher in
+	// the first place (a validity-duration key whose auth window already
+	// lapsed - see unwrapCaptureDataKeys). A successful Class 3 (STRONG)
+	// biometric auth refreshes Android's shared hardware-auth-token
+	// regardless of whether this specific prompt was bound to a Cipher, so
+	// this is enough to let the caller's own Cipher.init() retry succeed
+	// afterward.
+	private fun authenticatePlain(
+		title: String,
+		subtitle: String,
+		onSuccess: () -> Unit,
+	) {
+		val executor = ContextCompat.getMainExecutor(this)
+		val prompt = BiometricPrompt(
+			this,
+			executor,
+			object : BiometricPrompt.AuthenticationCallback() {
+				override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+					finishError(
+						when (errorCode) {
+							BiometricPrompt.ERROR_CANCELED,
+							BiometricPrompt.ERROR_NEGATIVE_BUTTON,
+							BiometricPrompt.ERROR_USER_CANCELED -> "auth_cancelled"
+							else -> "auth_failed"
+						},
+						errString.toString(),
+					)
+				}
+
+				override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+					try {
+						onSuccess()
+					} catch (error: Exception) {
+						Log.e(
+							logTag,
+							"authenticatePlain onSuccess failed: ${error::class.java.simpleName}: ${error.message}",
+							error,
+						)
+						finishError("unlock_failed", error.message ?: "Could not unlock queued captures.")
+					}
+				}
+			},
+		)
+
+		val promptInfo = BiometricPrompt.PromptInfo.Builder()
+			.setTitle(title)
+			.setSubtitle(subtitle)
+			.setNegativeButtonText("Cancel")
+			.apply {
+				if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+					setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+				}
+			}
+			.build()
+
+		prompt.authenticate(promptInfo)
 	}
 
 	private fun ensureNoPendingOperation(result: MethodChannel.Result): Boolean {
@@ -320,6 +699,203 @@ class MainActivity : FlutterFragmentActivity() {
 			keyStore.deleteEntry(alias)
 		}
 	}
+
+	// GPS lat/long for attestation come from Geolocator, not from image EXIF
+	// (see capture_screen.dart) - the EXIF GPS tag on a camera JPEG is only
+	// ever an incidental side effect of the OS/camera writing it when device
+	// location is on. Android's MediaProvider redacts that EXIF GPS block
+	// (zeroes the tag values in place, same file size) for any reader that
+	// lacks ACCESS_MEDIA_LOCATION - including generic hash/share/upload
+	// tools, not just off-device transfers - which silently changes the
+	// file's hash after it was already attested. Stripping GPS at capture
+	// time, before hashing, means there's nothing left for that redaction
+	// to touch: the attested file and every later copy of it stay identical
+	// forever, on any reader.
+	private fun stripGpsExif(call: MethodCall, result: MethodChannel.Result) {
+		val path = call.argument<String>("path")
+		if (path.isNullOrEmpty()) {
+			result.error("invalid_arguments", "Missing image path.", null)
+			return
+		}
+
+		try {
+			val exif = ExifInterface(path)
+			for (tag in gpsExifTags) {
+				exif.setAttribute(tag, null)
+			}
+			exif.saveAttributes()
+			result.success(null)
+		} catch (error: Exception) {
+			Log.e(logTag, "stripGpsExif failed: ${error.message}")
+			result.error("strip_gps_exif_failed", error.message ?: "Could not strip GPS EXIF data.", null)
+		}
+	}
+
+	// Direct SIM-presence signal: "no SIM" means Mobile Data can never be a
+	// viable path regardless of its toggle, so callers know not to expect
+	// one. Only SIM_STATE_ABSENT counts as "no SIM" - every other state
+	// (READY, PIN/PUK-locked, network-locked, restricted, not-ready,
+	// unknown) means some SIM is physically/electronically present, even if
+	// not fully usable right now. No permission required.
+	private fun hasActiveSim(call: MethodCall, result: MethodChannel.Result) {
+		try {
+			val telephonyManager = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
+			result.success(telephonyManager.simState != TelephonyManager.SIM_STATE_ABSENT)
+		} catch (error: Exception) {
+			Log.e(logTag, "hasActiveSim failed: ${error.message}")
+			result.error("has_active_sim_failed", error.message ?: "Could not check SIM state.", null)
+		}
+	}
+
+	// Direct, unambiguous "did the crew turn on airplane mode" signal -
+	// unlike inferring it from a lack of any active interface, which can't
+	// tell that apart from "Wi-Fi on but out of range." No permission
+	// required.
+	private fun isAirplaneModeOn(call: MethodCall, result: MethodChannel.Result) {
+		try {
+			val isOn = Settings.Global.getInt(contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
+			result.success(isOn)
+		} catch (error: Exception) {
+			Log.e(logTag, "isAirplaneModeOn failed: ${error.message}")
+			result.error("is_airplane_mode_on_failed", error.message ?: "Could not read airplane mode state.", null)
+		}
+	}
+
+	// The actual Wi-Fi radio toggle state, independent of whether it's
+	// currently associated with any network - this is what lets the app
+	// tell "Wi-Fi is on but out of range" apart from "Wi-Fi is off"
+	// (connectivity_plus can't distinguish these; both report no active
+	// interface). isWifiEnabled() needs no special permission.
+	private fun isWifiRadioOn(call: MethodCall, result: MethodChannel.Result) {
+		try {
+			val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+			result.success(wifiManager.isWifiEnabled)
+		} catch (error: Exception) {
+			Log.e(logTag, "isWifiRadioOn failed: ${error.message}")
+			result.error("is_wifi_radio_on_failed", error.message ?: "Could not read Wi-Fi radio state.", null)
+		}
+	}
+
+	// The mobile-radio equivalent of isWifiRadioOn's distinction, plus the
+	// actual Mobile Data toggle - both need READ_PHONE_STATE (unlike the
+	// Wi-Fi/SIM/airplane-mode checks above, which are all permission-free),
+	// and are bundled into one call rather than two separate ones
+	// specifically so they can't race on the single
+	// pendingPhoneStateResult/hasRequestedPhoneStatePermission pair below
+	// if Dart ever called both concurrently before permission was
+	// resolved. ServiceState.STATE_POWER_OFF (radio truly off, e.g.
+	// airplane mode) is the only state distinguishable from
+	// STATE_OUT_OF_SERVICE (radio on, no signal - an ordinary dead zone,
+	// not the crew's doing) via this API. Requests the permission at most
+	// once per process (see hasRequestedPhoneStatePermission's doc); a
+	// denial (or any failure) returns both fields null, and the Dart side
+	// falls back to its SIM-presence heuristic rather than blocking on this.
+	private fun getMobilePhoneState(call: MethodCall, result: MethodChannel.Result) {
+		if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) ==
+			PackageManager.PERMISSION_GRANTED
+		) {
+			result.success(readMobilePhoneState())
+			return
+		}
+
+		if (hasRequestedPhoneStatePermission) {
+			// Already asked once this process and it's still not granted -
+			// respect that rather than re-prompting on every tick.
+			result.success(mapOf("serviceState" to null, "dataEnabled" to null))
+			return
+		}
+
+		hasRequestedPhoneStatePermission = true
+		pendingPhoneStateResult = result
+		ActivityCompat.requestPermissions(
+			this,
+			arrayOf(Manifest.permission.READ_PHONE_STATE),
+			phoneStatePermissionRequestCode,
+		)
+	}
+
+	override fun onRequestPermissionsResult(
+		requestCode: Int,
+		permissions: Array<out String>,
+		grantResults: IntArray,
+	) {
+		super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+		if (requestCode != phoneStatePermissionRequestCode) {
+			return
+		}
+		val result = pendingPhoneStateResult ?: return
+		pendingPhoneStateResult = null
+		val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+		result.success(
+			if (granted) readMobilePhoneState() else mapOf("serviceState" to null, "dataEnabled" to null),
+		)
+	}
+
+	// String, not the raw int, to keep the platform channel payload
+	// self-describing on the Dart side rather than mirroring Android's
+	// ServiceState int constants there. Null covers both "no ServiceState
+	// available" and any state this call doesn't need to distinguish.
+	// dataEnabled is a plain boolean (the actual "Mobile Data" toggle,
+	// independent of serviceState - full signal with data toggled off is a
+	// real, common combination this needs to catch separately).
+	private fun readMobilePhoneState(): Map<String, Any?> {
+		return try {
+			val telephonyManager = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
+			val serviceState = when (telephonyManager.serviceState?.state) {
+				android.telephony.ServiceState.STATE_IN_SERVICE -> "in_service"
+				android.telephony.ServiceState.STATE_OUT_OF_SERVICE -> "out_of_service"
+				android.telephony.ServiceState.STATE_EMERGENCY_ONLY -> "emergency_only"
+				android.telephony.ServiceState.STATE_POWER_OFF -> "power_off"
+				else -> null
+			}
+			@Suppress("DEPRECATION")
+			val dataEnabled = try {
+				telephonyManager.isDataEnabled
+			} catch (error: Exception) {
+				Log.e(logTag, "isDataEnabled failed: ${error.message}")
+				null
+			}
+			mapOf("serviceState" to serviceState, "dataEnabled" to dataEnabled)
+		} catch (error: Exception) {
+			Log.e(logTag, "readMobilePhoneState failed: ${error.message}")
+			mapOf("serviceState" to null, "dataEnabled" to null)
+		}
+	}
+
+	private val gpsExifTags = listOf(
+		ExifInterface.TAG_GPS_VERSION_ID,
+		ExifInterface.TAG_GPS_LATITUDE_REF,
+		ExifInterface.TAG_GPS_LATITUDE,
+		ExifInterface.TAG_GPS_LONGITUDE_REF,
+		ExifInterface.TAG_GPS_LONGITUDE,
+		ExifInterface.TAG_GPS_ALTITUDE_REF,
+		ExifInterface.TAG_GPS_ALTITUDE,
+		ExifInterface.TAG_GPS_TIMESTAMP,
+		ExifInterface.TAG_GPS_DATESTAMP,
+		ExifInterface.TAG_GPS_SATELLITES,
+		ExifInterface.TAG_GPS_STATUS,
+		ExifInterface.TAG_GPS_MEASURE_MODE,
+		ExifInterface.TAG_GPS_DOP,
+		ExifInterface.TAG_GPS_SPEED_REF,
+		ExifInterface.TAG_GPS_SPEED,
+		ExifInterface.TAG_GPS_TRACK_REF,
+		ExifInterface.TAG_GPS_TRACK,
+		ExifInterface.TAG_GPS_IMG_DIRECTION_REF,
+		ExifInterface.TAG_GPS_IMG_DIRECTION,
+		ExifInterface.TAG_GPS_MAP_DATUM,
+		ExifInterface.TAG_GPS_DEST_LATITUDE_REF,
+		ExifInterface.TAG_GPS_DEST_LATITUDE,
+		ExifInterface.TAG_GPS_DEST_LONGITUDE_REF,
+		ExifInterface.TAG_GPS_DEST_LONGITUDE,
+		ExifInterface.TAG_GPS_DEST_BEARING_REF,
+		ExifInterface.TAG_GPS_DEST_BEARING,
+		ExifInterface.TAG_GPS_DEST_DISTANCE_REF,
+		ExifInterface.TAG_GPS_DEST_DISTANCE,
+		ExifInterface.TAG_GPS_PROCESSING_METHOD,
+		ExifInterface.TAG_GPS_AREA_INFORMATION,
+		ExifInterface.TAG_GPS_DIFFERENTIAL,
+		ExifInterface.TAG_GPS_H_POSITIONING_ERROR,
+	)
 
 	private fun finishSuccess(payload: Any?) {
 		val result = pendingResult ?: return

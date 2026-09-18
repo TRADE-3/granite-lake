@@ -1,42 +1,54 @@
 # Granite Lake — Offline Capture & On-Chain Timestamp Design (Detail)
 
 **Author:** Nethmi Jayakody
-**Status:** Draft for review
+**Status:** Implemented (contract deployed, app/verification tooling shipped) — remaining open decisions tracked in §12
 **Related:** [granite-lake-offline-capture-design.md](./granite-lake-offline-capture-design.md)
 
 This is the in-depth companion to the high-level design doc. Each section below maps to
 a row in that doc's summary table.
 
-## 1. Contract change: `captured_at` / `attested_at`
+## 1. Contract change: `captured_at` / `attested_at` / connectivity & GPS provenance
 
-Sui package upgrades add new code at a new package address; the layout of an existing
-struct and the signature of an existing entry function stay fixed across an upgrade. This
-project already upgrades in place rather than republishing — `verification_api/src/constants.ts`
-carries both a "current" and an "original" package id, with a comment noting that events
-from the original address remain permanently queryable there. This design follows the
-same shape: new, versioned structs and entry functions are added alongside the existing
-ones, so existing app builds and existing attestations continue to work unchanged.
+This is trade3's own contract with nothing deployed yet, so there is no legacy on-chain
+event shape to preserve. `PhotoAttested`/`FileAttested` and `attest_photo`/`attest_file`
+are modified **in place** — no versioned event scheme (`V2`), no upgrade path, no
+`GRANITE_LAKE_ORIGINAL_PACKAGE_ID`-style dual-address tracking. Existing callers are
+simply recompiled against the new signatures.
 
-`contracts/sources/granite_lake.move`:
+Internet and GPS are each independently optional at capture time. Neither is allowed to
+be null silently: whenever one is, the crew must supply a reason, which is hashed
+(same convention as `photo_hash`) and stored on-chain as `internet_null_reason_hash` /
+`gps_null_reason_hash` — the plaintext reason itself stays in local app storage (§8), not
+on a public ledger. GPS fields only apply to `PhotoAttested`; file attestation never
+carried location data.
+
+`contracts/sources/granite_lake.move` (implemented — see the actual file for the current
+state):
 
 ```move
 use sui::clock::{Self, Clock};
 
-public struct PhotoAttestedV2 has copy, drop {
+public struct PhotoAttested has copy, drop {
     photo_hash: vector<u8>,
     gps: vector<u8>,
     altitude: vector<u8>,
     project_id: vector<u8>,
     user_wallet: address,
     domain: vector<u8>,
-    captured_at: u64,   // client-supplied, ms since epoch
-    attested_at: u64,   // clock::timestamp_ms(clock) at execution — chain-derived
-    is_online: bool,    // client-supplied — whether §5's check found the device online-capable at capture time
-    is_forced_offline: bool, // client-supplied — raw state of the §4 "Force Offline Mode" toggle at capture time
+    captured_at: u64,               // client-supplied, ms since epoch
+    attested_at: u64,               // clock::timestamp_ms(clock) at execution — chain-derived
+    is_online: bool,                // client-supplied — whether §5's check found the device online-capable at capture time
+    is_forced_offline: bool,        // client-supplied — raw state of the §4 "Force Offline Mode" toggle at capture time
+    internet_null_reason_hash: vector<u8>, // hash of the mandatory reason; empty when is_online == true
+    has_gps: bool,                  // client-supplied — whether a real GPS fix was used for this capture
+    is_gps_forced_null: bool,       // client-supplied — raw state of the §4a "Force No GPS" toggle at capture time
+    gps_null_reason_hash: vector<u8>, // hash of the mandatory reason; empty when has_gps == true
 }
-// FileAttestedV2 mirrors this with file_hash/file_id in place of photo_hash
+// FileAttested mirrors this with file_hash/file_id in place of photo_hash/gps/altitude,
+// and carries captured_at/attested_at/is_online/is_forced_offline/
+// internet_null_reason_hash only — no GPS-related fields.
 
-public entry fun attest_photo_v2(
+public entry fun attest_photo(
     user_cap: &UserCap,
     registry: &Registry,
     hash: vector<u8>,
@@ -49,89 +61,220 @@ public entry fun attest_photo_v2(
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    // same auth checks as attest_photo
+    // same auth checks as before
     let attested_at = clock::timestamp_ms(clock);
-    event::emit(PhotoAttestedV2 { photo_hash: hash, gps, altitude, project_id,
+    event::emit(PhotoAttested { photo_hash: hash, gps, altitude, project_id,
         user_wallet: sender, domain: user_cap.domain, captured_at, attested_at, is_online,
         is_forced_offline });
 }
-// attest_file_v2 mirrors this
+// attest_file mirrors this
 ```
+
+`attest_photo`'s full parameter list is therefore: `user_cap, registry, hash, gps,
+altitude, project_id, captured_at, is_online, is_forced_offline,
+internet_null_reason_hash, has_gps, is_gps_forced_null, gps_null_reason_hash, clock,
+ctx`; `attest_file` mirrors this without the three GPS-specific params.
+
+**The contract enforces the mandatory-reason invariant on-chain**, not just client-side:
+`attest_photo` asserts `internet_null_reason_hash.is_empty() == (is_online &&
+!is_forced_offline)` (new error `E_INTERNET_NULL_REASON_MISMATCH`) and
+`gps_null_reason_hash.is_empty() == (has_gps && !is_gps_forced_null)` (new error
+`E_GPS_NULL_REASON_MISMATCH`); `attest_file` asserts only the first. Each is a single
+bidirectional equality check — a reason hash must be non-empty in every state except the
+one unambiguous "present, not overridden" case (see §4/§4a's truth tables — a reason is
+required not only when the field is genuinely null, but also whenever the crew overrode an
+available one via its force toggle) — so a malformed transaction (a reason supplied when
+not needed, or omitted when required) is rejected before it can land on-chain, rather than
+only being caught after the fact client-side (§6) or during verification (§2). `is_online`/
+`is_forced_offline` and `has_gps`/`is_gps_forced_null` themselves remain unvalidated
+pass-through values, same as before — only the reason-hash/field-state relationship is
+checked.
 
 `sui::clock` is already a framework dependency (present under
 `contracts/build/granite_lake/sources/dependencies/Sui/clock.move`), so no new package
-dependency is needed. `attest_photo`/`attest_file`/`PhotoAttested`/`FileAttested` remain
-in the module unchanged.
+dependency is needed.
 
-**Tests:** extend `contracts/tests/granite_lake_tests.move` with V2 equivalents of the
-existing tests (`test_attest_photo_emits_photo_attested_event`,
-`test_only_user_cap_owner_can_call_attest_photo`), using `sui::clock`'s test utilities to
-assert `attested_at` is populated, `captured_at` round-trips, and all four
-`is_online`/`is_forced_offline` combinations (table in §4) round-trip independently of
-each other.
+**Tests:** `contracts/tests/granite_lake_tests.move` covers `captured_at`/`attested_at`/
+`is_online`/`is_forced_offline`/`internet_null_reason_hash`/`has_gps`/
+`is_gps_forced_null`/`gps_null_reason_hash` (a clock is constructed via
+`sui::clock::create_for_testing` in every test that calls `attest_photo`/`attest_file`).
+`test_attest_photo_records_online_and_forced_offline_combinations` exercises all four
+`is_online`/`is_forced_offline` combinations from §4's truth table (with a reason hash
+supplied for every state that now requires one), and an equivalent test exercises the
+four `has_gps`/`is_gps_forced_null` combinations from §4a's truth table. Eight tests
+confirm the on-chain reason-hash enforcement directly: rejecting a reason hash in the one
+no-reason-needed state per axis, rejecting a missing reason in every other state per axis
+(including the "field present but overridden" case), and accepting a correctly-supplied
+reason in the overridden-but-present case —
+`test_attest_photo_rejects_reason_hash_when_online_and_not_forced`,
+`test_attest_photo_rejects_missing_reason_hash_when_offline`,
+`test_attest_photo_rejects_missing_reason_hash_when_forced_offline_despite_online`,
+`test_attest_photo_requires_reason_hash_when_forced_offline_despite_online`,
+`test_attest_photo_rejects_reason_hash_when_gps_available_and_not_overridden`,
+`test_attest_photo_rejects_missing_reason_hash_when_gps_unavailable`,
+`test_attest_photo_requires_reason_hash_when_gps_forced_null_despite_fix`,
+`test_attest_file_rejects_reason_hash_mismatch`. 26/26 tests passing.
 
-**Deployment:** a `sui client upgrade` using the project's retained `UpgradeCap`. The
-shared `Registry` and existing `UserCap`s are unaffected — upgrades change code, not
-already-shared object state. After upgrade:
+**Deployment:** a fresh `sui client publish` (or `sui client upgrade` if something has
+already been deployed by the time this ships) — no compatibility constraint with prior
+events since none exist yet. After deployment:
 
-- `verification_api`/`verification_portal`: set `GRANITE_LAKE_PACKAGE_ID` to the new
-  address; `GRANITE_LAKE_ORIGINAL_PACKAGE_ID` stays pointed at genesis.
+- `verification_api`/`verification_portal`: set `GRANITE_LAKE_PACKAGE_ID` to the deployed
+  address.
 - App: update `defaultPhotoAttestationPackageId` in `app_constants.dart`;
   `defaultPhotoAttestationRegistryId` is unchanged.
 
 ## 2. Verification updates
 
-**`verification_api`** (`src/constants.ts`, `src/services/attestVerification.ts`): add
-`PHOTO_ATTESTED_V2_EVENT_TYPES`/`FILE_ATTESTED_V2_EVENT_TYPES`, recognized alongside the
-existing constants when scanning for events. When a V2 event is found, `captured_at`/
-`attested_at`/`is_online`/`is_forced_offline` are decoded directly (the first two as plain
-`u64`s, the latter two as plain `bool`s, unlike the vector-decoded `gps`/`project_id`
-fields) and returned alongside the existing fields; V1 events continue to report time via
-`event.timestampMs`/`checkpointTimeIso` as they do today, with neither value.
-**`verification_portal`** mirrors this and displays the timestamps plus a badge reflecting
-the §4 table (online / forced-offline-override / auto-offline) when present.
+**`verification_api`** (`src/constants.ts`, `src/services/attestVerification.ts`): the
+existing `PHOTO_ATTESTED_EVENT_TYPES`/`FILE_ATTESTED_EVENT_TYPES` constants are unchanged
+(no new event-type arrays needed, since the event is modified in place, not versioned).
+`captured_at`/`attested_at` are decoded as plain `u64`s and `is_online`/`is_forced_offline`/
+`has_gps`/`is_gps_forced_null` as plain `bool`s (unlike the vector-decoded `gps`/
+`project_id` fields); `internet_null_reason_hash`/`gps_null_reason_hash` are decoded as
+32-byte hashes using the same `decodePhotoHash`-style path already used for `photo_hash`.
+
+**Reason-hash checking is its own endpoint, deliberately separate from
+`/verify-attestation`.** `POST /verify-null-reason` (`src/routes/verifyNullReason.ts`)
+takes `{ reasonText, onChainHashHex }` and returns `{ matches }`, hashing with the same
+SHA-256 convention `verifyAttestation.ts` already uses for uploaded files. This is the
+mechanism by which "checking all of them during verification" (top-level design doc §2)
+is actually performed, since the reason text itself is never on-chain. It is kept apart
+from the photo/file upload flow rather than added as extra multipart fields there: the
+upload in `/verify-attestation` is always compulsory, while a reason disclosure is
+optional, arrives independently (often after the fact, from whoever the attester told),
+and is checked against a hash the caller already has from an `AttestationRecord` — folding
+it into the upload endpoint would tie two unrelated concerns to the same request.
+
+**`verification_portal`** mirrors the decode logic and displays the timestamps and
+connectivity/GPS badges reflecting §4/§4a's tables in the result panel. The reason check
+itself is **not** a separate tab or an upload-time field — it's a foldable (`<details>`)
+control inline next to each Connectivity/GPS Provenance card, shown only once a record is
+already loaded and only when that record's `*_null_reason_hash` is non-empty: paste a
+disclosed reason, it hashes client-side (Web Crypto `SHA-256`, same as `sha256File` already
+uses) and reports match/mismatch against the record's own hash — no network round-trip
+needed since the portal already has everything it needs once a record is resolved.
 
 **App side** (`app/lib/core/services/photo_attestation_service.dart`):
 
-- `attestPhoto`/`attestFile` call `attest_photo_v2`/`attest_file_v2`, passing
-  `captured_at` as a `u64` pure transaction argument (the exact `on_chain` package
-  constructor for a pure `u64` arg should be confirmed at implementation time — the
-  codebase's existing pure-arg usage is all `.bytes()`), `is_online`/`is_forced_offline`
-  each as a `bool` pure argument, and the shared `Clock` object (well-known id `0x6`,
-  `initialSharedVersion: 1`) as an object argument. The existing `_loadRegistryObjectArg`
-  helper (which already builds a `SuiObjectArgSharedObject` for the registry) generalizes
-  into `_loadSharedObjectArg(graphqlUrl, objectId)`, reused for both the registry and the
-  clock.
-- `verifyPhotoAttestation`: when the transaction's event is `PhotoAttestedV2`,
-  `captured_at`/`attested_at`/`is_online`/`is_forced_offline` are decoded directly and
-  `attested_at` is used as `chainTimestamp`; `_resolveChainTimestamp`'s GraphQL-envelope
-  lookup remains the path
-  for V1 events. A `capturedAtMatches` check compares on-chain `captured_at` against the
-  locally stored value, and `timestampWithinTolerance` becomes
-  `attested_at - captured_at <= AppConstants.maximumAttestationTimeGapMinutes`, computed
-  from two on-chain values.
+- `attestPhoto`/`attestFile` pass `captured_at` as a `u64` pure transaction argument via
+  `SuiCallArgPure.u64(BigInt)` and `is_online`/`is_forced_offline`/`has_gps`/
+  `is_gps_forced_null` each as a `bool` pure argument via `SuiCallArgPure.boolean(bool)`
+  — both constructors confirmed present in the locked `on_chain 8.1.0` package (the
+  codebase's existing pure-arg usage was all `.bytes()` before this). Reason hashes
+  (`internet_null_reason_hash`/`gps_null_reason_hash`) are passed as `vector<u8>` pure
+  args via the existing `.bytes()` constructor, same as `photo_hash`. The shared `Clock`
+  object (well-known id `0x6`) is passed as an object argument. The existing
+  `_loadRegistryObjectArg` helper (which already builds a `SuiObjectArgSharedObject` for
+  the registry) generalizes into `_loadSharedObjectArg(graphqlUrl, objectId)`, reused for
+  both the registry and the clock.
+- `verifyPhotoAttestation`: `captured_at`/`attested_at`/`is_online`/`is_forced_offline`/
+  `has_gps`/`is_gps_forced_null`/`internet_null_reason_hash`/`gps_null_reason_hash` are
+  decoded directly from the event and `attested_at` is used as `chainTimestamp`. A
+  `capturedAtMatches` check compares on-chain `captured_at` against the locally stored
+  value, and `timestampWithinTolerance` becomes `attested_at - captured_at <=
+AppConstants.maximumAttestationTimeGapMinutes`, computed from two on-chain values. A
+  new check compares the locally stored plaintext reason's hash (computed the same way as
+  at capture time) against the on-chain `*_null_reason_hash` whenever one is expected
+  (field `false`, or field `true` with its force toggle on), surfacing a mismatch the
+  same way `capturedAtMatches` does.
 
 ## 3. `TimeSyncService`
 
-New file: `app/lib/core/services/time_sync_service.dart`.
+New file: `app/lib/core/services/time_sync_service.dart`, wrapping the
+[`trusted_time`](https://pub.dev/packages/trusted_time) package rather than a bespoke
+wall-clock-offset implementation.
 
-- `Future<void> recordServerTime(DateTime serverUtc)` — called whenever a live `/utc`
-  response is already being fetched (the OTP flow, and the capture screen's existing
-  connectivity-check timer).
-- `DateTime nowUtc()` — synchronous. Derives the current time from `deviceNow +
-lastSyncedOffset`, falling back to the device's own wall clock if no sync has happened
-  yet.
-- `TimeProvenance get provenance` → `fresh | stale | neverSynced`, against thresholds
-  added to `app_constants.dart` near `maximumAttestationTimeGapMinutes`.
-- Persisted through `ConfigDao`/`ConfigDataController`'s existing JSON key-value store
-  (the same mechanism already used for `photoAttestationContractConfig`), as a new config
-  key — no schema migration involved.
+**Scope: offline fallback only, never the online source of truth.** `TimeSyncService.nowUtc()`
+is consulted **only** on the path where a live `/utc` fetch is unavailable or failed
+(§6's `_fetchBackendUtcTimestamp()` fallback). Whenever the device is online, the existing
+live-fetch call remains the sole source for `captured_at`/`submittedAtUtc` — `nowUtc()` is
+never called, and its result never overrides a successful live fetch, even opportunistically.
+`trusted_time`'s own background syncing (`ensureFreshSync()`, its 30-min `refreshInterval`)
+runs independently of this — it exists purely to keep the trust anchor warm for whenever
+offline capture _does_ need it later, not to supply a timestamp while already online.
 
-`captured_at` is derived from a synced wall-clock offset rather than a monotonic device
-clock for this iteration — a lighter-weight approach that fits the current threat model of
-a company-managed device and an honest field operator. A monotonic-clock variant
-(`SystemClock.elapsedRealtime()` via a native channel) can be layered in later without
-changing the on-chain shape, since `captured_at` is just a `u64` the client supplies.
+**Why `trusted_time` instead of a bespoke offset.** A simple `deviceNow + lastSyncedOffset`
+scheme (the original draft of this section) is defeated by a user manually changing the
+system clock while offline — the correction is built on top of `DateTime.now()`, so if
+that itself is tampered with after the last sync, the "corrected" time is just as wrong.
+`trusted_time` avoids this by anchoring its sync to `SystemClock.elapsedRealtime()` —
+Android's hardware monotonic clock, driven by ticks since boot, which manually changing
+Settings → Date & Time does not affect. It syncs to a trusted network time source while
+online, then derives `now()` offline from elapsed hardware ticks since that sync rather
+than from the device's wall clock at all, and it detects tampering/reboots automatically.
+Its own listed properties: offline-safe after first sync, persists across app restarts,
+detects manual clock/timezone changes, and resyncs automatically after a detected reboot
+(`elapsedRealtime()` resets on reboot, which is the one event that invalidates the anchor).
+
+Actual API confirmed by reading the installed `trusted_time` 2.0.2 source (not just its
+package description): synchronization is **not** fed by the app's own backend — the
+package syncs independently against its own configured NTP/HTTPS/NTS sources
+(`pool.ntp.org`, `time.google.com`, `google.com`, `cloudflare.com`, etc. by default) via a
+global `TrustedTime.initialize()` called once at app startup, plus periodic
+`refreshInterval` (30 min default) and manual `TrustedTime.forceResync()`. There is no
+`recordServerTime`-shaped hook to feed it our own `/utc` response.
+
+- `Future<void> ensureFreshSync()` — calls `TrustedTime.forceResync()` opportunistically
+  whenever the app already knows it has connectivity (the capture screen's existing
+  connectivity-check timer, `ConnectivityHeuristicService` transitioning to `online`),
+  rather than waiting on the package's own 30-minute foreground `refreshInterval`. This
+  replaces the originally-planned `recordServerTime(DateTime)` shape — `trusted_time`
+  doesn't accept an externally-supplied timestamp, it re-runs its own consensus.
+- `DateTime nowUtc()` — synchronous, three-tier fallback:
+  1. `TrustedTime.now()` when `TrustedTime.isTrusted` — the primary, fully-anchored path.
+  2. `TrustedTime.nowEstimated()` when tier 1 throws `TrustedTimeNotReadyException` (not
+     yet trusted) — still computed from "elapsed hardware-anchored time since the last
+     verified sync," i.e. still monotonic-anchored, not a live wall-clock read; degrades
+     gracefully rather than being simply unavailable (`TrustedTimeEstimate.confidence`
+     decays from `1.0` fresh to `~0.5` at ~36h since sync to `0.0` stale/invalidated,
+     per the package's own documented model). Returns `null` when there's truly nothing
+     to extrapolate from (typically: a reboot invalidated the anchor and no resync has
+     landed yet, since `elapsedRealtime()` — and therefore the extrapolation baseline —
+     resets on reboot).
+  3. **Fallback, accepted as an interim gap for now**: only when tier 2 also returns
+     `null` — `nowUtc()` falls back to the device's raw, uncorrected wall clock
+     (`DateTime.now()`). This is the only tier that reintroduces the clock-tampering
+     exposure discussed above, and it's narrower than originally scoped (§12 item 18) now
+     that tier 2 covers the "stale but not reboot-invalidated" case gracefully — tier 3 is
+     reached only by a reboot-while-offline with no possible resync since.
+- `TimeProvenance get provenance` → `fresh | stale | neverSynced` (finalized as the
+  originally-scoped 3-state enum — nothing downstream branches on finer granularity, it's
+  informational/display-only per §8, so a 4th `degraded` value would be unused complexity),
+  derived from which tier answered the last `nowUtc()` call: tier 1 → `fresh`; tier 2 (any
+  confidence, including a low-but-non-null `TrustedTimeEstimate`) → `stale`; tier 3 →
+  `neverSynced`, regardless of what the device's own clock claims, since `trusted_time`
+  could not vouch for it.
+- **Boot safety, verified against the actual source, not assumed**: `TrustedTime.initialize()`
+  calls `_bootstrap()` → `_performSync()` → `_syncEngine.sync()` on a fresh install (no
+  persisted anchor), which **throws `TrustedTimeSyncException`** if it can't reach quorum —
+  i.e. a device with zero connectivity on first cold launch makes `initialize()` throw, not
+  just return with `isTrusted: false`. Since the entire point of this feature is supporting
+  offline field use, an uncaught throw here would crash app startup for exactly the
+  scenario the feature exists for. `TimeSyncService.initializeAtStartup()` must wrap the
+  call in try/catch (and a defensive timeout, since the exact worst-case duration across
+  `_syncEngine`'s retry/backoff logic wasn't fully traced) so a failed/slow first sync
+  never blocks or crashes app boot — `nowUtc()`'s tier 3 fallback covers this state
+  correctly regardless.
+- `trusted_time` persists its own trust anchor state (`TrustedTimeConfig.persistState`,
+  `true` by default) — no separate `ConfigDao`/`ConfigDataController` key is needed for
+  the sync data itself. `TimeSyncService` remains the app's only call site for
+  `nowUtc()`/`ensureFreshSync()` so the rest of the app never imports `trusted_time`
+  directly, keeping the dependency swappable later.
+- `TrustedTime.initialize()` must be awaited once at app startup (`main.dart`, before
+  `runApp`) — it restores the persisted anchor and kicks off the initial sync. Default
+  `TrustedTimeConfig` sources are all public internet endpoints (NTP/HTTPS/NTS), so a
+  device restricted to only this app's own backend (no general internet reachability)
+  would never establish trust under the default config — not expected to matter for a
+  normal cellular/Wi-Fi field device, but worth confirming against the actual network
+  policy on issued devices; `additionalSources`/a custom `TimeSource` could plug in this
+  app's own `/utc` endpoint as one more source later if needed.
+
+`captured_at` is therefore anchored to `trusted_time`'s monotonic-clock-backed estimate
+whenever available (tier 1 or 2), with the raw-device-clock fallback (tier 3) as the
+explicitly accepted gap for now (design §12 item 18). `trusted_time`'s maintenance status
+was checked (§12 item 19): actively maintained but low adoption and an unverified pub.dev
+publisher — a real supply-chain-trust caveat, decided to accept for now.
 
 ## 4. Offline eligibility: automatic by default, with a manual force-offline override
 
@@ -157,8 +300,8 @@ involvement), lives as the same persistent quick-toggle icon in the capture scre
 bar next to the connectivity indicator, and is off by default.
 
 - State is stored locally through `ConfigDao`/`ConfigDataController` (the same mechanism
-  used for `TimeSyncService`'s synced offset), as a boolean config key — same storage
-  shape as the switch it replaces, `offlineCaptureForced` in place of the old
+  used elsewhere for simple app settings), as a boolean config key — same storage shape as
+  the switch it replaces, `offlineCaptureForced` in place of the old
   `offlineCaptureAllowed`.
 - With the toggle on, a capture always takes the local-persist-then-queue path (§6),
   regardless of what §5's check reports — this is a deliberate override (e.g. a crew that
@@ -171,7 +314,7 @@ bar next to the connectivity indicator, and is off by default.
   on-chain. See "Recording the override" below.
 
 **Recording the override.** `is_forced_offline` is added alongside `is_online` to
-`PhotoAttestedV2`/`FileAttestedV2` (§1) and `attest_photo_v2`/`attest_file_v2`, and to the
+`PhotoAttested`/`FileAttested` (§1) and `attest_photo`/`attest_file`, and to the
 `photo_captures`/`uploaded_files` tables (§8) so it survives to resubmission the same way
 `captured_at`/`is_online` do. It records the toggle's literal on/off state at capture
 time — not a derived "did the override actually change anything" flag — so a verifier can
@@ -183,6 +326,112 @@ read both fields together and distinguish all four cases without any hidden logi
 | `true`      | `true`              | Connectivity was fine; the crew chose to defer/queue it anyway. |
 | `false`     | `false`             | Automatic offline — §5 found no usable connectivity.            |
 | `false`     | `true`              | Toggle was on, but moot — offline was required either way.      |
+
+§4b's mandatory reason requirement applies whenever `is_online` is `false`, **or** whenever
+`is_forced_offline` is `true` — i.e. every row except the first: a reason is needed not
+only when connectivity was genuinely absent, but also when the crew overrode a working
+connection, so that override is justified on the record too. The crew must supply a
+reason before the shutter proceeds, hashed into `internet_null_reason_hash`; the only case
+requiring an empty hash is `is_online: true, is_forced_offline: false`.
+
+## 4a. GPS eligibility: the same treatment, as an independent axis
+
+GPS is optional on exactly the same terms as connectivity (§4), and independently of it —
+a capture can be missing internet, missing GPS, both, or neither, each recorded on its
+own. This is a separate axis, not a sub-case of "offline mode": a crew with a perfectly
+good connection but standing somewhere GPS can't get a fix (indoors, urban canyon, a
+site that deliberately shields location) should not have to also go through the
+offline/queued submission path just to skip GPS.
+
+- **Fix available, toggle off:** capture proceeds with `has_gps: true`, `gps`/`altitude`
+  populated as today — no change from current behavior.
+- **No fix available** (GPS disabled, no signal, fix timeout): capture is still allowed
+  automatically, with no prior toggle needed — `has_gps: false`, `gps`/`altitude` recorded
+  as empty `vector<u8>`.
+- **Fix available, toggle on:** see below — `has_gps: true` (ground truth), but
+  `gps`/`altitude` are recorded empty because the toggle withholds them.
+
+**"Force No GPS" toggle** mirrors §4's "Force Offline Mode": an independent, app-only,
+off-by-default override, living as its own persistent quick-toggle icon in the capture
+screen's app bar (alongside, not combined with, the connectivity toggle — a crew may want
+to force one without the other). `has_gps` records ground truth — was a real fix actually
+obtained — exactly the way `is_online` records ground-truth connectivity regardless of
+`is_forced_offline` (§4); the toggle does not change `has_gps`'s meaning. What the toggle
+does change is `gps`/`altitude`: they are recorded as empty `vector<u8>` whenever the
+toggle is on, even if `has_gps` is `true`, because the point of forcing "no GPS" is to
+withhold the location data itself, not to misreport whether a fix existed. So a capture
+can have `has_gps: true` with empty `gps`/`altitude` (fix available, withheld by choice) —
+this is exactly the `true`/`true` row below, and is the reason this is a 4-state table
+rather than 3: it lets a verifier distinguish "GPS genuinely unavailable" from "available
+but deliberately withheld," the same distinction §4's table already draws for connectivity.
+
+**This does not touch mock-location detection.** `_detectMockLocation`/
+`_isMockLocationDetected` (`capture_screen.dart`) still hard-blocks the shutter exactly as
+today — a _detected fake_ fix is a fraud signal, not an optionality question, and is
+orthogonal to whether a fix is _missing_. Only "no fix obtained" becomes optional; "a fix
+was obtained but it's flagged as mocked" is unaffected by this design.
+
+**Recording the override.** `is_gps_forced_null` is added alongside `has_gps` to
+`PhotoAttested` (§1) and `attest_photo`, and to the `photo_captures` table (§8), following
+the exact same shape as `is_forced_offline`/`is_online`:
+
+| `has_gps` | `is_gps_forced_null` | Meaning                                                    |
+| --------- | -------------------- | ---------------------------------------------------------- |
+| `true`    | `false`              | Normal capture with a GPS fix.                             |
+| `true`    | `true`               | A fix was available; the crew chose to omit it anyway.     |
+| `false`   | `false`              | Automatic — no fix could be obtained.                      |
+| `false`   | `true`               | Toggle was on, but moot — no fix was available either way. |
+
+§4b's mandatory reason requirement applies whenever `has_gps` is `false`, **or** whenever
+`is_gps_forced_null` is `true` — i.e. every row except the first, mirroring §4's internet
+axis exactly: a reason is needed not only when no fix could be obtained, but also when the
+crew withheld an available one, so that override is justified on the record too. The crew
+must supply a reason before the shutter proceeds, hashed into `gps_null_reason_hash`; the
+only case requiring an empty hash is `has_gps: true, is_gps_forced_null: false`.
+
+## 4b. Mandatory null reason + hashing
+
+Neither axis (§4, §4a) is allowed to go null, nor have a working state overridden,
+silently. The instant the capture flow determines that internet, GPS, or both will be
+null **or force-overridden** for this capture — automatically, or via one of the force
+toggles even when the underlying field is still `true` — the crew is required to enter a
+non-empty, free-text reason before the shutter is allowed to proceed. This is enforced per
+axis independently: a capture missing both internet and GPS (or overriding both) requires
+two separate reasons, one for each. Concretely, a reason is required in every state
+_except_ the single unambiguous one per axis — `is_online: true` with
+`is_forced_offline: false`, and `has_gps: true` with `is_gps_forced_null: false` — per the
+§4/§4a truth tables.
+
+- **UI:** a mandatory text-entry prompt (blocking — the shutter stays disabled until
+  satisfied) appears in `capture_screen.dart` the moment §5/§4a's checks, or the
+  corresponding force toggle, put either axis into a state requiring a reason. Distinct
+  prompts for the internet reason and the GPS reason when both apply.
+- **Hashing happens at capture time, mirroring `photo_hash`.** The instant a reason is
+  entered, its hash is computed right there — same moment `photo_hash` is computed, same
+  algorithm and encoding (so `internet_null_reason_hash`/`gps_null_reason_hash` are 32-byte
+  hashes, decoded the same way verification already decodes `photo_hash` — see §2) — and
+  folded into the same signed metadata bundle as `photo_hash`, `gpsLabel`, etc. This is not
+  optional or deferrable: what gets submitted on-chain must be provably the value that was
+  signed at capture, not a value recomputed later from mutable local text.
+- **Local storage:** both the plaintext reason _and_ its hash are persisted (§8) in
+  dedicated `*_null_reason`/`*_null_reason_hash` columns — never discarded. The plaintext
+  is kept so the reason can be disclosed later (to a verifier, an auditor, or displayed
+  back to the crew); the hash is kept so submission never has to recompute it from
+  (potentially edited) local text. Only the hash goes on-chain; the reason text itself
+  never does.
+- **When not applicable:** only in the one no-reason-needed state per axis (field present,
+  toggle off) is the reason not collected and the corresponding `*_null_reason_hash` an
+  empty `vector<u8>` on-chain.
+- **Enforced on-chain, not just client-side (§1).** `attest_photo`/`attest_file` assert
+  `internet_null_reason_hash.is_empty() == (is_online && !is_forced_offline)`, and
+  `attest_photo` additionally asserts
+  `gps_null_reason_hash.is_empty() == (has_gps && !is_gps_forced_null)` — a transaction
+  that gets this wrong reverts (`E_INTERNET_NULL_REASON_MISMATCH`/
+  `E_GPS_NULL_REASON_MISMATCH`) rather than only being caught later by verification.
+- **Verification:** given a disclosed reason (typically the persisted plaintext read back
+  from local storage), verification (§2) recomputes its hash and compares against the
+  on-chain `*_null_reason_hash`; a mismatch is surfaced the same way a `capturedAtMatches`
+  mismatch is (§2, §12 open item on hard-failure vs. informational).
 
 ## 5. Connectivity detection: two checks, not one probe
 
@@ -198,8 +447,18 @@ with two explicit checks, run by a new `ConnectivityHeuristicService`, whose com
 result is what §4 uses to decide whether offline capture is offered.
 
 **`ConnectivityHeuristicService`** (new file:
-`app/lib/core/services/connectivity_heuristic_service.dart`), used in place of the direct
-`AppUtils.hasBackendConnectivity` call in `_refreshBackendStatus`:
+`app/lib/core/services/connectivity_heuristic_service.dart`) — **implemented and wired
+into `capture_screen.dart`**: `_hasNetworkConnectivity` now returns
+`_connectivityService.isOnlineCapable` directly, `_startClock()`'s `Timer` reschedules
+itself off `_connectivityService.pollInterval` (replacing the old flat 30s interval),
+and `_refreshBackendStatus()` reads `.isOnlineCapable`/`.label`/`.classification` off the
+service rather than a single-probe boolean. The wiring described as deferred below, when
+this section was originally written, has since landed. The service itself is also
+unit-tested in isolation
+(`app/test/core/services/connectivity_heuristic_service_test.dart`, 14 tests) via a
+synthetic-outcome seam (`recordSyntheticOutcomeForTesting`, `@visibleForTesting`) that
+drives the ring-buffer/threshold/hysteresis logic directly, without needing a real
+platform channel or HTTP call.
 
 **Step 1 — is a radio on at all.** Add `connectivity_plus` as a new dependency and check
 the OS-reported interface state first. No active interface (airplane mode, no SIM and no
@@ -218,15 +477,21 @@ it as a lightweight reachability + quality check rather than only a pass/fail:
   constraint; a dedicated large-payload speed test was considered and rejected because it
   would burn a field crew's data budget precisely in the marginal-connectivity conditions
   being tested, for a number that doesn't predict submission success as well as latency
-  does. Instead, throughput is estimated for free from the probe already happening
-  (response bytes ÷ elapsed time), and on Android, `NetworkCapabilities`'
-  `getLinkDownstreamBandwidthKbps()` is read via a small platform channel as an
-  instant, zero-cost secondary signal (a driver-reported estimate, not a measurement — iOS
-  has no equivalent, so the probe-derived figure is primary there).
-- "Good enough" (`minimumSufficientBandwidthKbps` in `app_constants.dart`, a conservative
-  default such as 50 Kbps) is really a floor beneath which requests reliably stall or
-  time out, not a real bandwidth budget — this is a "not painfully slow" filter more than
-  a speed test.
+  does.
+- **Bandwidth/throughput estimation is deferred, not implemented in the current
+  `ConnectivityHeuristicService`** — classification is reachability + latency only for
+  now. The originally-planned "estimate throughput for free from the probe" (response
+  bytes ÷ elapsed time) turns out unreliable at the `/utc` endpoint's actual payload size:
+  a few dozen bytes divided by round-trip time is dominated by TCP/TLS handshake overhead,
+  not real throughput, so it wasn't implemented as a signal. The other planned source,
+  Android's `NetworkCapabilities.getLinkDownstreamBandwidthKbps()` via a small native
+  platform channel (mirroring the existing biometric-gate channel in `MainActivity.kt`),
+  is real native Kotlin work that's still outstanding — `minimumSufficientBandwidthKbps`
+  is intentionally not yet defined in `app_constants.dart`, with a comment there explaining
+  why, ready to be added back once that channel lands.
+- "Good enough" (`minimumSufficientBandwidthKbps`, once added) is meant as a floor beneath
+  which requests reliably stall or time out, not a real bandwidth budget — a "not
+  painfully slow" filter more than a speed test.
 - Latency matters independently of throughput: a probe that succeeds but exceeds a p50
   latency threshold (e.g. 2s) counts as `degraded`, since a connection that's technically
   up but slow to respond will make a crew wait through the exact submission delay offline
@@ -235,54 +500,95 @@ it as a lightweight reachability + quality check rather than only a pass/fail:
   interface present is `degraded`/`offline` depending on persistence (below) — an
   interface that can't complete a request is functionally no better than no interface.
 
-**Rolling classification, not a single shot.** Keep a small ring buffer (last 5 probe
-outcomes + latencies) and classify into `online` / `degraded` / `offline`: `offline` after
-2 consecutive failures or no OS interface (step 1); `degraded` when probes succeed but
-intermittently, fall short of `minimumSufficientBandwidthKbps`, or exceed the latency
-threshold; `online` otherwise. `online` is the only state where §4 treats the device as
-online-capable; `degraded` and `offline` both make offline capture available
-automatically.
+**Rolling classification, not a single shot. Implemented as designed**, via a `Queue` ring
+buffer capped at 5 `_ProbeOutcome`s (`hasInterface`, `success`, `latency`): `offline`
+immediately (no 2-consecutive requirement) when the latest outcome has no OS interface —
+this is a per-tick check, not a streak; `offline` after 2 consecutive probe _failures_
+with an interface present; `degraded` when the latest probe succeeds but the recent window
+still shows a failure ("succeeds but intermittently"), or exceeds the latency threshold, or
+a single probe fails without yet reaching 2 consecutive; `online` otherwise. The
+`minimumSufficientBandwidthKbps` clause is pending the bandwidth-signal deferral noted
+above. `online` is the only state §4 treats as online-capable; `degraded` and `offline`
+both make offline capture available automatically.
 
-- **Hysteresis on the user-facing label.** `_networkStatusLabel` flips only after 2
-  consecutive same-direction classifications, not on every tick — this is what stops a
-  marginal-signal area from bouncing `Connected`/`Offline` every 30 seconds, which today
-  would also bounce the recorded `is_online` value and the §4 eligibility decision itself.
-- **Adaptive poll cadence**, replacing the flat 30s timer: poll every 10s while `degraded`
-  or immediately after a state-changing failure (to confirm and recover quickly), back off
-  to 60-90s once solidly `offline` for a few consecutive polls (polling a dead zone every
-  30s only burns battery/data until the crew physically moves), and return to 30s once
-  `online`. The existing reconnect trigger (§7: app foreground/resume) still fires an
-  immediate out-of-cycle check, so backing off the steady poll doesn't delay recovery.
-- **One unified network-error classifier.** `sui_graphql_service.dart`'s
-  `_isTransientNetworkError` (type-based: `SocketException` / `TimeoutException` /
-  `http.ClientException`) and `granite_lake_controller.dart`'s
-  `_shouldRetryChainVerification` (string-matching on the failure reason) currently
-  disagree on what counts as a network problem. Both should classify against the same
-  predicate — the type-based one is strictly more precise — so a probe failure, a GraphQL
-  request failure, and a chain-verification failure all feed the same understanding of
-  "is this the network's fault," including into `ConnectivityHeuristicService`'s own
-  classification.
+- **Hysteresis on the user-facing label — implemented, with a real bug caught by writing
+  the tests, not assumed correct.** The label (`ConnectivityHeuristicService.label`, read
+  by `is_online`/§4 eligibility — never the raw `classification`) flips only after 2
+  _consecutive identical_ raw classifications that disagree with the current label. The
+  first implementation instead counted any two ticks that merely disagreed with the
+  current label, even if they disagreed with _each other_ too (e.g. `online` then
+  `degraded` in a row) — which would have flipped the label after two different,
+  non-matching classifications, not two matching ones. Caught by a failing unit test
+  (`connectivity_heuristic_service_test.dart`) before this shipped; fixed by tracking a
+  separate "pending direction + streak" pair, reset whenever the new classification
+  doesn't match the pending one, distinct from the current label. This is what stops a
+  marginal-signal area from bouncing `Connected`/`Offline` every tick, which today would
+  also bounce the recorded `is_online` value and the §4 eligibility decision itself.
+- **Adaptive poll cadence — `pollInterval` getter implemented and wired** (10s degraded /
+  75s offline / 30s online, `app_constants.dart`), reading off the debounced `label`, not
+  the raw `classification`, matching the same "don't act on a single tick" principle as
+  the label itself. `capture_screen.dart`'s `_startClock()` reschedules each tick off
+  `_connectivityService.pollInterval` rather than a flat 30s `Timer.periodic`. The
+  existing reconnect trigger (§7: app foreground/resume) still fires an immediate
+  out-of-cycle check, so backing off the steady poll doesn't delay recovery.
+- **One unified network-error classifier — done (Phase 0 item 1 of the implementation
+  plan), with an important nuance found while doing it.** Both classifiers now live in
+  one file, `app/lib/core/utils/network_error_classifier.dart`: `isTransientNetworkError`
+  (type-based, moved verbatim from `sui_graphql_service.dart`'s old
+  `_isTransientNetworkError`) and `looksLikeTransientNetworkFailure` (string-based, moved
+  verbatim from `granite_lake_controller.dart`'s old `_shouldRetryChainVerification`
+  body). **The plan for this originally assumed the type-based one could simply replace
+  the string-based one wherever a real error object is available** ("strictly more
+  precise"), but reading the actual call sites first caught a case where that's wrong:
+  `granite_lake_controller.dart`'s verification-retry catch block (around line 1284)
+  catches a plain `StateError` thrown by `sui_graphql_service.dart`'s `getTransaction()`
+  on indexer lag ("...may not be indexed yet") — not a
+  `SocketException`/`TimeoutException`/`http.ClientException` by type, so only the
+  string-keyword check catches it. That call site was kept on
+  `looksLikeTransientNetworkFailure`; `sui_graphql_service.dart`'s `_withNetworkRetry`
+  uses `isTransientNetworkError` (unchanged, it already had the real exception object and
+  never needed indexer-lag messages). `ConnectivityHeuristicService`'s own probe-failure
+  classification doesn't consume this classifier directly — see §5 above.
 
-**`is_online` at capture time** is read from `ConnectivityHeuristicService`'s current
-smoothed state (`online` → `true`, `degraded`/`offline` → `false`) at the moment of
-capture, rather than the raw success/failure of one live timestamp fetch (§3). Same field
-semantics as originally designed — still "did this device have live connectivity at
-capture time" — just sourced from the debounced two-step classifier instead of a single
-point-in-time call that could land on one unlucky retry. `is_forced_offline` (§4) is
-recorded alongside it from the toggle's raw state, independently of this classification.
+**`is_online` at capture time** is read from `ConnectivityHeuristicService.isOnlineCapable`
+(`label == online`) at the moment of capture, rather than the raw success/failure of one
+live timestamp fetch (§3). Same field semantics as originally designed — still "did
+this device have live connectivity at capture time" — just sourced from the debounced
+two-step classifier instead of a single point-in-time call that could land on one unlucky
+retry. `is_forced_offline` (§4) is recorded alongside it from the toggle's raw state,
+independently of this classification.
 
 ## 6. Capture flow changes
 
 `app/lib/features/capture/screens/capture_screen.dart`:
 
 - The shutter is available without connectivity whenever §5's classifier is not `online`,
-  or the §4 "Force Offline Mode" toggle is on regardless of what §5 reports; GPS-fix and
-  mock-location checks remain as they are today in both cases.
+  or the §4 "Force Offline Mode" toggle is on regardless of what §5 reports. Independently,
+  the shutter is available without a GPS fix whenever no fix was obtained, or the §4a
+  "Force No GPS" toggle is on. Mock-location detection remains a hard block in all cases
+  (§4a) — it is not an optionality question.
+- Whenever the pending capture will have `is_online: false`, `is_forced_offline: true`,
+  `has_gps: false`, or `is_gps_forced_null: true`, §4b's mandatory reason prompt(s) must
+  be completed before the shutter proceeds — the shutter stays disabled, not just warned,
+  until each required reason is non-empty. The only axis states needing no prompt are
+  `is_online: true, is_forced_offline: false` and `has_gps: true, is_gps_forced_null:
+false`.
 - `capturedAtUtc`/`submittedAtUtc` are sourced by preferring a live timestamp fetch (as
   today, when connectivity is available) and falling back to `TimeSyncService.nowUtc()`
-  otherwise. `is_online` passed to `attest_photo_v2`/`attest_file_v2` (§2) is read from
+  otherwise. `is_online` passed to `attest_photo`/`attest_file` (§2) is read from
   `ConnectivityHeuristicService`'s current state (§5) rather than that one fetch's
   success/failure; `is_forced_offline` is read from the toggle's current state (§4).
+  `has_gps`/`is_gps_forced_null` are read from the GPS-fix check and the §4a toggle the
+  same way. `internetNullReason`/`gpsNullReason` (plaintext, §4b's prompt input) are
+  hashed right here, at the same moment `photo_hash` is computed (see §8's version-11
+  note), and both the plaintext and the hash are persisted together — the hash is folded
+  into the signed metadata bundle alongside `photo_hash`, so what eventually gets
+  submitted on-chain is provably the value that was signed at capture, not something
+  recomputed later from local text that could have drifted. What must be right at capture
+  time is both which axis states get a reason at all (empty only in the two no-prompt
+  states above) and that the hash is computed before signing — getting either wrong means
+  the persisted hash won't match what `attest_photo`/`attest_file` expects, and the
+  transaction reverts on-chain (§1).
 
 `app/lib/core/state/granite_lake_controller.dart`:
 
@@ -306,8 +612,10 @@ independently of the chain-submission step.
   as it is today.
 - `GraniteLakeController` gains `retryPendingAttestations()`, which sweeps
   `PENDING_SUBMISSION` rows oldest-first, sequentially, resubmitting via
-  `attest_photo_v2`/`attest_file_v2` with the original `captured_at` preserved (a fresh
-  `attested_at` is supplied by the chain wherever the submission lands).
+  `attest_photo`/`attest_file` with the original `captured_at`/`is_online`/
+  `is_forced_offline`/`has_gps`/`is_gps_forced_null`/`internet_null_reason_hash`/
+  `gps_null_reason_hash` preserved (a fresh `attested_at` is supplied by the chain
+  wherever the submission lands).
 - The sweep runs on two triggers: `ConnectivityHeuristicService` (§5) transitioning to
   `online`, and app foreground/resume via a `WidgetsBindingObserver` registered at the app
   root (`app/lib/app.dart`), so it runs even when the capture screen isn't mounted.
@@ -439,14 +747,38 @@ encrypt-now/decrypt-with-biometrics scheme, chosen specifically so capture (§6)
 blocks on a biometric prompt while resubmission (§7) always does:
 
 - **Keystore keypair.** On first use, an RSA-2048 keypair is generated in the Android
-  Keystore (alias `granite_lake_capture_wrap_key`, `PURPOSE_ENCRYPT | PURPOSE_DECRYPT`,
-  OAEP padding) via a small native `MethodChannel`, the same pattern already used for the
-  existing biometric gate (`granite_lake_secure_state_service.dart:579-593`). Only the
-  private (decrypt/unwrap) half is created with `setUserAuthenticationRequired(true)`
-  and, deliberately, no `setUserAuthenticationValidityDurationSeconds` — every use of the
-  private key demands its own fresh `BiometricPrompt`/`CryptoObject` authentication, with
-  no caching window. The public (encrypt/wrap) half needs no authentication, which is
-  what keeps capture instant.
+  Keystore (alias `granite_lake_capture_wrap_key_v2`, `PURPOSE_ENCRYPT | PURPOSE_DECRYPT`,
+  OAEP padding: SHA-256 main digest, SHA-1 MGF1 — the only combination Keystore actually
+  supports across both the software-path wrap and the Keystore-enforced unwrap, a
+  KeyMint restriction confirmed on-device, not assumed) via a small native
+  `MethodChannel`, the same pattern already used for the existing biometric gate
+  (`granite_lake_secure_state_service.dart:579-593`). Implemented, with one deviation
+  from the plan below.
+  - **Deviation: a short validity window, not true per-operation auth.**
+    `setUserAuthenticationRequired(true)` with **no** validity duration (Keystore's
+    default) turned out to require a fresh `Cipher.init()` _and_ a fresh
+    `doFinal()`-completing authentication for every single operation — confirmed
+    on-device as `KEY_USER_NOT_AUTHENTICATED` on a second row's `doFinal()` even when
+    reusing an already-authenticated `Cipher`/`CryptoObject`, because a Keystore2
+    operation closes the moment `doFinal()` returns. That's incompatible with "one
+    prompt unlocks a whole batch" (below) — a device reconnecting with several queued
+    rows would otherwise need one prompt _per row_. The shipped key instead sets a
+    **300-second validity window** (`captureWrapKeyValidityDurationSeconds`,
+    `setUserAuthenticationValidityDurationSeconds` pre-API-30 /
+    `setUserAuthenticationParameters` on API 30+) — every item still gets its own fresh
+    `Cipher.init()`/`doFinal()`, but any of them succeed without a new prompt as long as
+    they land within 5 minutes of the last successful check. This keeps the point of
+    this section intact (a queued row's decrypt key is never cached anywhere near as
+    long as the 30-minute signing session, and still can't be unwrapped on a stale
+    session alone), just with "fresh" meaning "within the last 5 minutes," not
+    "this exact operation." `setInvalidatedByBiometricEnrollment(true)` is also set (see
+    §12 item 10 — decided, not left to the platform default).
+  - The alias carries a `_v2` suffix because Keystore keys are immutable — the `v1` key
+    was generated with the original (broken-for-batches) no-validity-window
+    configuration; any row wrapped under `v1` before this fix cannot be recovered under
+    `v2` and needs to be recaptured. The public (encrypt/wrap) half needs no
+    authentication either way, which is what keeps capture instant regardless of this
+    change.
 - **Encrypt at persist time, not later.** `persistCaptureWithMetadata`/
   `persistFileWithMetadata` (§6), for a row taking the offline/queued path only (§4:
   auto-offline or forced-offline — a row that submits immediately while online doesn't
@@ -470,18 +802,24 @@ blocks on a biometric prompt while resubmission (§7) always does:
   app foreground/resume) now always land on one of two outcomes, never a silent
   resubmission:
 
-  | Time since last unlock                  | Signing key (§7.1)                    | Decrypt key (this section)          | What happens on reconnect                                                                                                                                        |
-  | --------------------------------------- | ------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | < 30 min, session still live            | Cached — no prompt needed for signing | Never cached — always needs a check | A biometric prompt is still raised, for the decrypt/unwrap step alone; the cached signing key is then reused to sign once decryption succeeds.                   |
-  | ≥ 30 min elapsed, or app was relaunched | Cleared — needs `startSession()`      | Also needs a fresh check            | `pendingAttestationsNeedUnlock` (§7.1) surfaces the CTA; tapping it raises one combined prompt that both re-derives the signing key and unwraps the decrypt key. |
+  | Time since last decrypt check                                        | Signing key (§7.1)                    | Decrypt key (this section, 300s window — see deviation above) | What happens on reconnect                                                                                                                                        |
+  | -------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | < 5 min, signing session also still live (< 30 min)                  | Cached — no prompt needed for signing | Within window — no prompt needed                              | Both keys usable with no prompt; decrypt-then-sign proceeds silently — bounded far tighter than the 30-min signing cache, never as loose as "fully cached."      |
+  | ≥ 5 min since a decrypt check, signing session still live (< 30 min) | Cached — no prompt needed for signing | Window lapsed — needs a fresh check                           | A biometric prompt is still raised, for the decrypt/unwrap step alone; the cached signing key is then reused to sign once decryption succeeds.                   |
+  | ≥ 30 min elapsed, or app was relaunched                              | Cleared — needs `startSession()`      | Window lapsed (or never established) — needs a fresh check    | `pendingAttestationsNeedUnlock` (§7.1) surfaces the CTA; tapping it raises one combined prompt that both re-derives the signing key and unwraps the decrypt key. |
 
-  Before this section, the left column alone decided whether a reconnect was silent; now
-  the right column means it never is, for a queued row, regardless of session state. This
-  is a real behavior change from the original design's framing of resubmission as
-  happening automatically "unchanged" once connectivity is available (top-level doc §2) —
-  that's still true for a capture that submits immediately while online (never queued,
-  never encrypted), but no longer true for anything that spent time in
-  `PENDING_SUBMISSION`.
+  Before this section, the signing-key column alone decided whether a reconnect was
+  silent, on a 30-minute cache. Now the decrypt-key column gates it too — but, per the
+  300s-validity deviation above, not by demanding a prompt on literally every reconnect;
+  a reconnect can still be silent, just only within a much narrower window (≤5 min since
+  the last successful decrypt check) than the 30-minute signing cache ever allowed alone.
+  Past that window it always prompts, regardless of whether the signing session is still
+  live. This is a real behavior change from the original design's framing of
+  resubmission as happening automatically "unchanged" once connectivity is available
+  (top-level doc §2) — that's still true for a capture that submits immediately while
+  online (never queued, never encrypted), but for anything that spent time in
+  `PENDING_SUBMISSION`, "automatic" now means "silent for up to 5 minutes after a real
+  check, a fresh prompt otherwise," not "always silent."
 
 - **This is also why §7.2's background task stays check-and-notify, for a second,
   independent reason.** §7.2 already keeps the `workmanager` isolate from signing because
@@ -508,64 +846,136 @@ blocks on a biometric prompt while resubmission (§7) always does:
   company-managed-device threat model §3 already assumes, but worth surfacing to crews: a
   queued-but-not-yet-submitted capture isn't safe against an uninstall.
 
-## 8. Local persistence: `is_online`, `is_forced_offline`, and timestamp provenance
+## 8. Local persistence: `is_online`/`is_forced_offline`/`has_gps`/`is_gps_forced_null`, null reasons, and timestamp provenance
 
-**New columns.** Unlike `captured_at`, neither `is_online` nor `is_forced_offline` had a
-persistence path in the original design — both need one, for the same reason
-`captured_at` does: `retryPendingAttestations()` (§7) must resubmit with the _original_
-values, not values recomputed at resubmission time (connectivity may well have changed by
-then). Current schema is at `databaseVersion = 9` (`app/lib/core/database/migrations.dart`,
-`granite_lake_database_service.dart`); this design adds a version-10 migration:
+**Implemented, on `databaseVersion = 13`** (`app/lib/core/database/migrations.dart`,
+`granite_lake_database_service.dart`; was `9` before this feature — versions 10-13 below
+are all part of it). Both the two-part treatment this section originally called for (the
+versioned `ALTER TABLE` migration, and matching columns added to
+`_createPhotoCapturesTable`/`_createUploadedFilesTable` so a fresh install gets them via
+`onCreate` too, not just an upgrade) were applied at every version.
+
+**New columns (connectivity + GPS booleans), version 10.** Unlike `captured_at`, none of
+`is_online`/`is_forced_offline`/`has_gps`/`is_gps_forced_null` had a persistence path in
+the original design — all four need one, for the same reason `captured_at` does:
+`retryPendingAttestations()` (§7) must resubmit with the _original_ values, not values
+recomputed at resubmission time (connectivity and GPS availability may well have changed
+by then).
 
 ```sql
 ALTER TABLE photo_captures ADD COLUMN is_online INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE photo_captures ADD COLUMN is_forced_offline INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE photo_captures ADD COLUMN has_gps INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE photo_captures ADD COLUMN is_gps_forced_null INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE uploaded_files ADD COLUMN is_online INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE uploaded_files ADD COLUMN is_forced_offline INTEGER NOT NULL DEFAULT 0;
+-- uploaded_files has no GPS columns: file attestation never carried location data (§1, §4a).
 ```
 
 following the existing `ALTER TABLE ... ADD COLUMN` pattern used for every prior migration
 (e.g. `sui_submission_status` at version 3, `submitted_at` at version 6) and the
 existing INTEGER-as-boolean idiom already used for `is_placeholder` on `employeesTable`.
-Both are written once at persist time (`persistCaptureWithMetadata`/
+All four are written once at persist time (`persistCaptureWithMetadata`/
 `persistFileWithMetadata`, §6) and read back unchanged on every resubmission attempt.
 
-**Version-11 migration (§7.3): encrypted queued payload.**
+**Version 11: null reasons — plaintext and hash, both persisted, hashed at capture
+time.** A `TEXT`/`TEXT` pair per axis: the plaintext reason, and its hash (hex-encoded
+text, matching this schema's existing convention — there are no BLOB columns anywhere;
+`signature_base64` etc. are all TEXT-encoded too). The hash is computed once, at capture
+time — the same moment `photo_hash` is computed — and folded into the same signed
+metadata bundle (§6). It is persisted here rather than recomputed later specifically so
+what gets submitted on-chain is provably the value that was signed at capture, not a
+value derived after the fact from local text that could have been edited in the interim.
+The plaintext is kept alongside it, never discarded, so it can still be disclosed to a
+verifier later (§4b) — the two columns serve different purposes and neither substitutes
+for the other.
 
 ```sql
-ALTER TABLE photo_captures ADD COLUMN encrypted_payload BLOB;
-ALTER TABLE photo_captures ADD COLUMN payload_iv BLOB;
-ALTER TABLE photo_captures ADD COLUMN wrapped_data_key BLOB;
-ALTER TABLE uploaded_files ADD COLUMN encrypted_payload BLOB;
-ALTER TABLE uploaded_files ADD COLUMN payload_iv BLOB;
-ALTER TABLE uploaded_files ADD COLUMN wrapped_data_key BLOB;
+ALTER TABLE photo_captures ADD COLUMN internet_null_reason TEXT;
+ALTER TABLE photo_captures ADD COLUMN internet_null_reason_hash TEXT;
+ALTER TABLE photo_captures ADD COLUMN gps_null_reason TEXT;
+ALTER TABLE photo_captures ADD COLUMN gps_null_reason_hash TEXT;
+ALTER TABLE uploaded_files ADD COLUMN internet_null_reason TEXT;
+ALTER TABLE uploaded_files ADD COLUMN internet_null_reason_hash TEXT;
+-- uploaded_files has no gps_null_reason/gps_null_reason_hash columns, for the same
+-- reason as above.
 ```
 
-For a row taking the offline/queued path (§4/§7.3), `photo_hash`/`gps`/`altitude`/
-`captured_at`/`is_online`/`is_forced_offline` are no longer also written in plaintext —
-`encrypted_payload` (AES-GCM ciphertext plus tag), `payload_iv`, and `wrapped_data_key`
-are the only copies on disk, and the plaintext columns are read back only after a
-successful biometric-gated decrypt at resubmission time (§7.3). Rows that submit
-immediately while online, and existing pre-migration rows, keep using the plaintext
-columns directly, so this is additive rather than a hard schema cutover — reads branch on
-whether `encrypted_payload` is `NULL`.
+Nullable — `NULL` exactly when the corresponding field was present and not overridden
+(§4/§4a's one no-reason-needed state per axis). The hash column is what
+`retryPendingAttestations()` (§7) submits on-chain unchanged on every resubmission
+attempt, the same treatment as `captured_at`; the plaintext column is what §4b's
+verification flow discloses to a third party checking a reason. The reason text itself is
+never transmitted on-chain, only the hash.
+
+**Version 12: resubmission-attempt tracking (app-local only, not in the original plan
+above).** Added during implementation, not anticipated by this section as originally
+written: `submission_attempt_count` and `last_attempt_at`, so a crew can see _why_ a row
+is still queued (how many real submission attempts have actually been made, and when the
+last one happened) instead of it silently sitting there. Never submitted on-chain.
+
+```sql
+ALTER TABLE photo_captures ADD COLUMN submission_attempt_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE photo_captures ADD COLUMN last_attempt_at TEXT;
+ALTER TABLE uploaded_files ADD COLUMN submission_attempt_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE uploaded_files ADD COLUMN last_attempt_at TEXT;
+```
+
+Incremented only for a genuine attempt — an initial online submission or a §7 queue
+retry — never for a capture that was persisted while offline/forced-offline and skipped
+the network call entirely (§6's initial-attempt skip).
+
+**Version 13 (§7.3): encrypted queued payload — implemented, one encoding change from
+the plan above.** `BLOB` was the originally planned type; the shipped migration uses
+`TEXT` (base64-encoded) for all three columns instead, matching this schema's
+already-established no-BLOB convention (every other binary-shaped value here —
+`signature_base64`, the null-reason hashes — is TEXT-encoded too, not a schema
+oversight to fix later).
+
+```sql
+ALTER TABLE photo_captures ADD COLUMN encrypted_payload TEXT;
+ALTER TABLE photo_captures ADD COLUMN payload_iv TEXT;
+ALTER TABLE photo_captures ADD COLUMN wrapped_data_key TEXT;
+ALTER TABLE uploaded_files ADD COLUMN encrypted_payload TEXT;
+ALTER TABLE uploaded_files ADD COLUMN payload_iv TEXT;
+ALTER TABLE uploaded_files ADD COLUMN wrapped_data_key TEXT;
+```
+
+For a row taking the offline/queued path (§4/§4a/§7.3), `photo_hash`/`gps`/`altitude`/
+`captured_at`/`is_online`/`is_forced_offline`/`has_gps`/`is_gps_forced_null`/
+`internet_null_reason`/`gps_null_reason` are no longer also written in plaintext —
+`encrypted_payload` (base64 AES-GCM ciphertext plus tag), `payload_iv`, and
+`wrapped_data_key` (all base64) are the only copies on disk, and the plaintext columns
+are read back only after a successful biometric-gated decrypt at resubmission time
+(§7.3). Since there's no longer a separate `*_null_reason_hash` column for an encrypted
+row (see version 11 above), the earlier question of "should the hash stay unencrypted
+for readability" no longer applies — the reason text itself gets the same protection as
+`captured_at`/`photo_hash`, full stop, and the hash needed at resubmission is simply
+recomputed after decrypt. Rows that submit immediately while online, and existing
+pre-migration rows, keep using the plaintext columns directly, so this is additive
+rather than a hard schema cutover — reads branch on whether `encrypted_payload` is
+`NULL`.
 
 **Narrative provenance.** Alongside the on-chain `captured_at`/`attested_at`, the app also
 records locally how the device's own claimed `captured_at` was derived (a fresh live
-fetch, a synced offset, or an unsynced device clock) and why the capture went through the
-offline path (`auto_offline` vs. `forced_offline` vs. not applicable), folded into the
-existing signed `proof_payload_json` blob used by
+fetch, `trusted_time`'s network-synced monotonic-clock estimate, or the raw-device-clock
+fallback per §3's `TimeProvenance`) and why the capture went through the offline path
+(`auto_offline` vs. `forced_offline` vs. not applicable, independently for
+connectivity and GPS), folded into the existing signed `proof_payload_json` blob used by
 `granite_lake_capture_workflow_service.dart` — the same mechanism that already carries
-`gpsLabel`/`altitudeLabel` — so this part needs no new column, only the two raw booleans
-above.
+`gpsLabel`/`altitudeLabel` — so this part needs no new column beyond the raw booleans and
+reason text/hash columns above.
 
 ## 9. UI
 
-- Capture screen's app bar carries the "Force Offline Mode" toggle (§4) next to the
-  connectivity indicator; connectivity state (now `Connected`/`Degraded`/`Offline`, per
-  §5) is shown as an informational banner. When §5 is not `online`, the banner explains
-  offline capture is active automatically; when the toggle is on while §5 _is_ `online`,
-  it explains the crew is overriding a working connection.
+- Capture screen's app bar carries the "Force Offline Mode" toggle (§4) and the
+  independent "Force No GPS" toggle (§4a), next to the connectivity and GPS indicators;
+  connectivity state (now `Connected`/`Degraded`/`Offline`, per §5) and GPS state (`Fix
+acquired`/`No fix`) are each shown as their own informational banner. When either is
+  not in its normal state, the banner explains whether that's automatic or an override.
+- §4b's mandatory reason prompt appears inline in the capture flow the moment a field is
+  determined to be null — one prompt per null field, blocking the shutter until each is
+  filled in.
 - History screen shows a pending-sync count, from a new `pendingAttestationCount` getter
   on `GraniteLakeController`. When `pendingAttestationsNeedUnlock` (§7.1) is also true, the
   count becomes an explicit "N ready to submit — unlock to continue" action that calls
@@ -574,8 +984,9 @@ above.
   locally stored data itself failed its integrity check, not that the chain rejected
   anything or that a human hasn't unlocked yet.
 - Capture-detail screen shows the on-chain `captured_at`/`attested_at`/`is_online`/
-  `is_forced_offline` alongside the local provenance label, next to the existing
-  submission-status detail.
+  `is_forced_offline`/`has_gps`/`is_gps_forced_null` alongside the local provenance label
+  and the disclosed null reasons (with a visible hash-match indicator once verified),
+  next to the existing submission-status detail.
 
 ## 10. Files touched
 
@@ -595,37 +1006,57 @@ and a shared `isTransientNetworkError` helper extracted from `sui_graphql_servic
 reused by `granite_lake_controller.dart`'s verification-retry classifier (§5).
 
 **Modified app files:** `photo_attestation_service.dart`, `capture_screen.dart`
-(force-offline toggle UI + shutter/timestamp changes + connectivity-service wiring),
-`file_attestation_screen.dart`, `granite_lake_controller.dart` (`retryPendingAttestations()`,
+(force-offline toggle + force-no-GPS toggle UI, §4a; mandatory reason prompts, §4b;
+shutter/timestamp changes + connectivity-service wiring), `file_attestation_screen.dart`,
+`granite_lake_controller.dart` (`retryPendingAttestations()`,
 `pendingAttestationsNeedUnlock`, §7.1; registers/cancels the §7.2 background task as the
 pending queue changes; §7.3's decrypt-and-verify step and `TAMPER_DETECTED` handling),
 `granite_lake_capture_workflow_service.dart` (encrypt-on-write call for the offline/queued
 path, §7.3), `granite_lake_secure_state_service.dart` (Keystore-backed
 `capture_encryption_service.dart` reuses the existing native biometric-gate
 `MethodChannel`, §7.3), `config_data_controller.dart` (new config keys:
-`offlineCaptureForced` replacing the old `offlineCaptureAllowed`, and the §7.2
-last-notified pending count), `migrations.dart` + `granite_lake_database_service.dart`
-(version-10 migration: `is_online`/`is_forced_offline` columns, §8; version-11 migration:
-`encrypted_payload`/`payload_iv`/`wrapped_data_key` columns, §7.3/§8), `app.dart`
+`offlineCaptureForced` and `gpsCaptureForcedNull` replacing the old
+`offlineCaptureAllowed`, and the §7.2 last-notified pending count), `migrations.dart` +
+`granite_lake_database_service.dart` (version-10 migration, done: `is_online`/
+`is_forced_offline`/`has_gps`/`is_gps_forced_null` columns, §8; version-11 migration,
+done: `internet_null_reason`/`internet_null_reason_hash`/`gps_null_reason`/
+`gps_null_reason_hash` columns, §4b/§8 — plaintext and hash both persisted, hash computed
+at capture time; version-12 migration, done: `submission_attempt_count`/`last_attempt_at`
+columns, §8 (app-local resubmission tracking, not in the original plan); version-13
+migration, done: `encrypted_payload`/`payload_iv`/`wrapped_data_key` columns (TEXT/base64,
+not the originally planned BLOB), §7.3/§8), `app.dart`
 (lifecycle observer), `capture_tab_screen.dart` (retry-on-unlock wiring, §7.1, combined
 with the §7.3 decrypt-key unlock), `history_screen.dart` (unlock-to-submit CTA, §9;
 `TAMPER_DETECTED` state, §7.3/§9), `capture_detail_screen.dart`, `app_constants.dart`
 (connectivity thresholds/cadences), `AndroidManifest.xml` (`POST_NOTIFICATIONS`
-permission, §7.2), `pubspec.yaml` (new `connectivity_plus`, `workmanager`,
+permission, §7.2), `pubspec.yaml` (new `trusted_time`, `connectivity_plus`, `workmanager`,
 `flutter_local_notifications` dependencies).
 
 ## 11. Verification / testing
 
-- `sui move test` in `contracts/` for the new entry functions/events.
+- `sui move test` in `contracts/` for the entry functions/events.
 - `flutter analyze app`; `npm run lint:verification_api` / `npm run lint:verification_portal`.
-- After a testnet package upgrade: confirm a historical (V1) attestation and a new V2
-  attestation both verify correctly through `verification_api`/`verification_portal`.
+- After a testnet deployment: confirm an attestation verifies correctly through
+  `verification_api`/`verification_portal`, including a reason-hash check: disclose a
+  plaintext reason for a null field and confirm it's reported as matching, then confirm a
+  deliberately wrong reason is reported as a mismatch.
 - Manual airplane-mode pass: with airplane mode on (toggle off, so offline is purely
   automatic) and an active biometric session, capture succeeds offline and records
-  `is_online: false`, `is_forced_offline: false`; the row appears as
-  `PENDING_SUBMISSION`; reconnecting (via timer and via app foreground) triggers
-  submission with the original `captured_at` and a fresh `attested_at`; the detail screen
-  and `verification_portal` show matching values. Repeat for the file-upload path.
+  `is_online: false`, `is_forced_offline: false`, plus a mandatory internet-null reason;
+  the row appears as `PENDING_SUBMISSION`; reconnecting (via timer and via app
+  foreground) triggers submission with the original `captured_at` and a fresh
+  `attested_at`; the detail screen and `verification_portal` show matching values. Repeat
+  for the file-upload path.
+- Manual no-GPS pass (§4a/§4b): with GPS disabled at the OS level (not mock-location —
+  actually off) and an active biometric session, capture succeeds and records
+  `has_gps: false`, `is_gps_forced_null: false`, plus a mandatory GPS-null reason;
+  confirm this is independent of connectivity state (test with connectivity both good and
+  bad). Manual force-no-GPS pass: with GPS available and the toggle on, confirm
+  `has_gps: false`, `is_gps_forced_null: true` and a reason is still required. Manual
+  combined pass: both internet and GPS null in the same capture, confirm both reasons are
+  required and both hashes round-trip independently.
+- Manual mock-location-still-blocks pass: confirm a detected mock location still hard-blocks
+  the shutter even with both force toggles on — this design does not relax that check.
 - Manual expired-session pass (§7.1): capture offline, then let the 30-minute session
   expire (or kill and relaunch the app) before reconnecting. Confirm reconnecting does
   _not_ attempt a submission, does _not_ mark the row `FAILED_SUBMISSION`, and that
@@ -671,16 +1102,19 @@ permission, §7.2), `pubspec.yaml` (new `connectivity_plus`, `workmanager`,
 
 ## 12. Open items
 
-1. Confirm the `on_chain` package's constructor for pure `u64`/`bool` transaction
-   arguments.
-2. Decide whether a `capturedAtMatches` mismatch is surfaced as a hard verification
-   failure or an informational note in `verification_portal`.
-3. Decide how history UI should present V1 attestations (no `captured_at`/`attested_at`/
-   `is_online`/`is_forced_offline`) alongside V2 ones — likely keep the existing time
-   display for V1 and show the new fields only where available.
-4. Decide the exact icon/state treatment for the app-bar force-offline toggle (e.g.
-   distinct icon states for "online, toggle off", "online, toggle on (override)",
-   "offline, toggle off (automatic)", "offline, toggle on").
+1. ~~Confirm the `on_chain` package's constructor for pure `u64`/`bool` transaction
+   arguments.~~ Resolved: `SuiCallArgPure.u64(BigInt)` and `SuiCallArgPure.boolean(bool)`
+   factory constructors are both present in the locked `on_chain 8.1.0` dependency
+   (`app/pubspec.lock`), alongside the `.bytes()` constructor already in use.
+2. Decide whether a `capturedAtMatches` mismatch (or a null-reason hash mismatch, §4b) is
+   surfaced as a hard verification failure or an informational note in
+   `verification_portal`.
+3. No longer applicable — the event is modified in place with no versioning, so there is
+   only ever one shape of `PhotoAttested`/`FileAttested` to display.
+4. Decide the exact icon/state treatment for the app-bar force-offline and force-no-GPS
+   toggles (e.g. distinct icon states for "online, toggle off", "online, toggle on
+   (override)", "offline, toggle off (automatic)", "offline, toggle on" — doubled for the
+   GPS toggle, and however the two are shown together when both apply).
 5. Tune the §5 thresholds (consecutive-failure count for `offline`,
    `minimumSufficientBandwidthKbps`, latency threshold for `degraded`, poll cadences)
    against real field data rather than guessing up front — ship with conservative
@@ -701,24 +1135,66 @@ permission, §7.2), `pubspec.yaml` (new `connectivity_plus`, `workmanager`,
 9. Decide the exact timing/copy for the `POST_NOTIFICATIONS` permission request (§7.2) —
    at first offline capture, as designed, or bundled into the biometric-binding onboarding
    flow (`biometric_setup_screen.dart`) where the crew is already granting permissions.
-10. Decide `setInvalidatedByBiometricEnrollment` for the §7.3 Keystore keypair. Android's
-    default (`true`) invalidates the private key the moment any new fingerprint/face is
-    enrolled on the device, which is desirable against an attacker enrolling their own
-    biometric to gain access to queued data, but also means a legitimate crew member
-    re-enrolling their own print (lost finger access, new phone policy, etc.) permanently
-    loses any not-yet-submitted queue. This needs an explicit decision, not the platform
-    default by accident.
-11. Decide whether the §7.3 Keystore keypair should require `setIsStrongBoxBacked(true)`
+10. ~~Decide `setInvalidatedByBiometricEnrollment` for the §7.3 Keystore keypair.~~
+    Resolved: set to `true` (`generateCaptureWrapKeyPair`, `MainActivity.kt`) — the
+    platform default, kept deliberately rather than by accident, accepting that a
+    legitimate crew member re-enrolling their own print loses any not-yet-submitted
+    queue, in exchange for closing the attacker-enrolls-their-own-biometric path.
+11. **Still open, current default noted.** Decide whether the §7.3 Keystore keypair
+    should require `setIsStrongBoxBacked(true)`
     (dedicated secure-element storage) where the device supports it, versus falling back
     to TEE-only storage silently — depends on the hardware profile of the devices crews
-    are actually issued.
+    are actually issued. **Current implementation:** `setIsStrongBoxBacked` is not called
+    at all, i.e. TEE-only by the platform default — this was never a deliberate choice,
+    so it remains genuinely open, not a documentation gap.
 12. Decide the exact `TAMPER_DETECTED` (§7.3/§9) UX: block that row from resubmission
     permanently pending admin/support review, or let the crew discard it and re-capture in
     place. Also decide whether a `TAMPER_DETECTED` row should be reported anywhere beyond
     the device itself (e.g. a local-only audit note), given the whole point is that it
     can no longer be trusted enough to submit on-chain.
-13. Decide whether the narrative-provenance fields folded into `proof_payload_json` (§8) —
+13. ~~Confirm the hash algorithm/encoding for `internet_null_reason_hash`/
+    `gps_null_reason_hash`~~ Resolved: SHA-256, confirmed as this codebase's existing
+    convention (`verification_api/src/routes/verifyAttestation.ts` already hashes
+    uploads with `createHash("sha256")`; `verification_portal/src/lib/fileHash.ts` with
+    `crypto.subtle.digest("SHA-256", ...)`) and reused directly rather than introducing a
+    second hashing scheme, in both `hashNullReason` implementations (§2).
+14. Decide input constraints on the mandatory reason text (§4b): minimum/maximum length,
+    whether free text is sufficient or a short preset-reason list (e.g. "no signal",
+    "GPS disabled", "indoors", "privacy-sensitive site") should be offered with an
+    "other" free-text fallback — a preset list would also make the disclosed-reason
+    verification flow (§2) more predictable to review at scale.
+15. **Currently implemented as self-service, unauthenticated** — `POST
+/verify-null-reason` has no auth, and `verification_portal`'s inline `NullReasonCheck`
+    control is visible to anyone viewing a result. Still open whether that's the right
+    final call, or whether disclosure should be gated to specific roles (e.g. only a
+    domain admin can pull the plaintext reason from the device/backup and disclose it) —
+    revisit before this ships broadly, since the current default was an implementation
+    default, not a deliberate product decision.
+16. Decide whether a `TAMPER_DETECTED` classification (§7.3) should also apply if only a
+    `*_null_reason`/`*_null_reason_hash` column is altered post-capture, independent of
+    whether `photo_hash`/`captured_at` are also altered — i.e. whether the null-reason
+    fields are load-bearing enough for the tamper check on their own, not just as part of
+    the same encrypted blob.
+17. Decide whether the narrative-provenance fields folded into `proof_payload_json` (§8) —
     display text like the capture-timestamp-source label — need the same §7.3 at-rest
     protection as the raw `is_online`/`is_forced_offline`/`captured_at` values, or whether
     being informational-only (not read back into the on-chain submission) is enough to
     leave them out of the encrypted payload for now.
+18. **Accepted gap, revisit later:** `TimeSyncService`'s raw-device-clock fallback (§3) —
+    used only when `trusted_time` itself can't return a valid reading, i.e. a reboot
+    happened while offline before a resync could occur — reintroduces the
+    clock-tampering exposure `trusted_time` otherwise closes, for that one case. Decided
+    to accept this for now rather than block on it; revisit if field data shows
+    offline-reboot-then-capture is common enough to matter (a possible future mitigation:
+    refuse capture entirely in this specific state rather than silently falling back,
+    forcing a reconnect-and-resync first — a stricter trade-off not adopted here).
+19. **Checked at design time**: `trusted_time` v2.2.0 (published 43 days prior), pub
+    points ~150, but only 16 likes / ~99 weekly downloads and an **unverified uploader**
+    (not a verified pub.dev publisher). Technical fit is exactly right (network sync
+    anchored to `SystemClock.elapsedRealtime()`, offline-safe via
+    `TrustedTimeNotReadyException`/`isTrusted`/`nowEstimated()`, automatic reboot
+    detection and resync) and it's actively maintained, but the low-adoption/unverified-
+    publisher combination is a real supply-chain-trust caveat for a security-sensitive
+    attestation feature. Decided to proceed on this research alone for now; a source-level
+    skim (not just the package description) is still worth doing before this ships to
+    production.

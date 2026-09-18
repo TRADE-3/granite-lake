@@ -6,7 +6,7 @@ import 'migrations.dart';
 
 class GraniteLakeDatabaseService {
   static const String databaseName = 'granite_lake.db';
-  static const int databaseVersion = 9;
+  static const int databaseVersion = 13;
 
   static const String employeesTable = 'employees';
   static const String projectsTable = 'projects';
@@ -20,6 +20,8 @@ class GraniteLakeDatabaseService {
       'photo_attestation_contract_config';
   static const String photoAttestationClaimConfigKey =
       'photo_attestation_claim';
+  static const String offlineCaptureForcedConfigKey = 'offline_capture_forced';
+  static const String gpsCaptureForcedNullConfigKey = 'gps_capture_forced_null';
 
   static Database? _database;
 

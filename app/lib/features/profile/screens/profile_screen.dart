@@ -238,37 +238,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
           ),
           const SizedBox(height: 28),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _isDeletingAccount
-                  ? null
-                  : () => _confirmDeleteAccount(controller),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFFFFB7AE),
-                side: const BorderSide(color: Color(0x66FF8C7A)),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 18,
-                  vertical: 18,
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-              icon: _isDeletingAccount
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.delete_forever_outlined),
-              label: Text(
-                _isDeletingAccount ? 'DELETING ACCOUNT' : 'DELETE ACCOUNT',
-                style: AppTextStyles.buttonText.copyWith(
-                  color: const Color(0xFFFFB7AE),
-                ),
-              ),
-            ),
+          _DangerZoneCard(
+            isDeleting: _isDeletingAccount,
+            pendingCount: controller.pendingAttestationCount,
+            onDelete: () => _confirmDeleteAccount(controller),
           ),
           const SizedBox(height: 14),
           Center(
@@ -286,12 +259,33 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _confirmDeleteAccount(GraniteLakeController controller) async {
+    // Defensive re-check: the button itself is disabled while any
+    // submission is pending (see _DangerZoneCard), but this guards the
+    // actual deletion regardless of how it's triggered - resetApplicationState
+    // wipes local capture history unconditionally, and a pending row is
+    // evidence that was captured but never actually anchored on-chain yet,
+    // so it must never be silently discarded.
+    if (controller.pendingAttestationCount > 0) {
+      return;
+    }
+
     final shouldDelete = await showDialog<bool>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
           backgroundColor: AppColors.surfaceElevated,
-          title: Text('Delete account?', style: AppTextStyles.headlineMedium),
+          title: Row(
+            children: [
+              Icon(Icons.warning_rounded, color: AppColors.statusError),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Delete account?',
+                  style: AppTextStyles.headlineMedium,
+                ),
+              ),
+            ],
+          ),
           content: Text(
             'This removes registration, identity keys, biometric binding, secure session state, projects, and local capture history from this device.',
             style: AppTextStyles.bodyMedium.copyWith(
@@ -334,6 +328,156 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
     setState(() => _isDeletingAccount = false);
     GoRouter.of(context).go(AppRoutes.welcome);
+  }
+}
+
+/// A "danger zone" treatment for account deletion - set apart from the rest
+/// of the profile with its own tinted card, warning header, and filled
+/// (rather than plain outlined) button, so the destructive action reads with
+/// appropriate visual weight instead of blending in as just another row.
+/// Also the one place that enforces "no pending submissions" - blocking the
+/// button and explaining why, rather than letting the crew tap it and get an
+/// unexplained rejection.
+class _DangerZoneCard extends StatelessWidget {
+  const _DangerZoneCard({
+    required this.isDeleting,
+    required this.pendingCount,
+    required this.onDelete,
+  });
+
+  final bool isDeleting;
+  final int pendingCount;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final isBlocked = pendingCount > 0;
+    final contentColor = (isDeleting || isBlocked)
+        ? AppColors.textMuted
+        : AppColors.actionText;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.statusError.withAlpha(16),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.statusError.withAlpha(70)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppColors.statusError.withAlpha(28),
+                ),
+                child: Icon(
+                  Icons.warning_rounded,
+                  size: 18,
+                  color: AppColors.statusError,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                'DANGER ZONE',
+                style: AppTextStyles.labelMedium.copyWith(
+                  color: AppColors.statusError,
+                  letterSpacing: 1.4,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Deleting your account permanently removes your identity keys, biometric binding, and local capture history from this device. This cannot be undone.',
+            style: AppTextStyles.bodySmall.copyWith(
+              color: AppColors.textSecondary,
+              height: 1.5,
+            ),
+          ),
+          if (isBlocked) ...[
+            const SizedBox(height: 14),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceElevated,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.borderActive),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.hourglass_top_rounded,
+                    size: 16,
+                    color: AppColors.textWarning,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      pendingCount == 1
+                          ? '1 capture is still pending submission. Submit or resolve it before deleting your account, so it isn\'t lost.'
+                          : '$pendingCount captures are still pending submission. Submit or resolve them before deleting your account, so they aren\'t lost.',
+                      style: AppTextStyles.bodySmall.copyWith(
+                        color: AppColors.textWarning,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: (isDeleting || isBlocked) ? null : onDelete,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.statusError,
+                disabledBackgroundColor: AppColors.statusError.withAlpha(40),
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                elevation: 0,
+              ),
+              icon: isDeleting
+                  ? SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: contentColor,
+                      ),
+                    )
+                  : Icon(
+                      isBlocked
+                          ? Icons.lock_outline_rounded
+                          : Icons.delete_forever_rounded,
+                      color: contentColor,
+                    ),
+              label: Text(
+                isDeleting
+                    ? 'DELETING ACCOUNT'
+                    : isBlocked
+                    ? 'RESOLVE PENDING SUBMISSIONS FIRST'
+                    : 'DELETE ACCOUNT',
+                style: AppTextStyles.buttonText.copyWith(color: contentColor),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -398,7 +542,7 @@ class _ProfileHeaderCard extends StatelessWidget {
                 const SizedBox(width: 14),
                 Expanded(
                   child: Text(
-                    'GRANITE RIDGE',
+                    'TRADE3',
                     style: AppTextStyles.labelLarge.copyWith(
                       color: AppColors.textPrimary,
                       letterSpacing: 1.5,
@@ -966,5 +1110,5 @@ String _employeeId(IdentityRecord? identity) {
 const String _operatorName = 'John Doe';
 const String _operatorRole = 'Senior Inspector';
 const String _tenantName = 'Global Audit Corp';
-const String _buildLabel = 'SECURE ENDPOINT v1.0.4-STABLE // BUILD 0922';
+const String _buildLabel = 'TRADE3';
 const String _operatorInitials = 'JD';

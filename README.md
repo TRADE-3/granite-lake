@@ -235,6 +235,17 @@ See:
 - `verification_portal/README.md` for the client-side (in-browser) DNS TXT consensus lookup
 - `verification_api/README.md` for DNS TXT consensus lookup and DNSSEC validation details
 
+## Notes
+
+- **GPS location data is intentionally removed from a photo's own file before it's
+  hashed and attested.** This is deliberate, not a bug or an omission: the photo's GPS
+  coordinates are still captured and included in the signed attestation record itself —
+  removing them from the image file only stops Android from silently altering that file
+  (and its hash) later, outside the app's control, when it's saved, shared, or opened
+  elsewhere. See [`app/README.md` → "GPS Data Is Removed From The Photo File
+  Itself"](./app/README.md#gps-data-is-removed-from-the-photo-file-itself) for the full
+  technical explanation.
+
 ## License
 
 Granite Lake is licensed under the [Apache License, Version 2.0](LICENSE).

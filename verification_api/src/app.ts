@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import { registerVerifyPhotoRoute } from "./routes/verifyAttestation.js";
+import { registerVerifyNullReasonRoute } from "./routes/verifyNullReason.js";
 import { registerWalletAttestationsRoute } from "./routes/walletAttestations.js";
 
 export async function buildApp() {
@@ -23,6 +24,7 @@ export async function buildApp() {
 
   await registerVerifyPhotoRoute(app);
   await registerWalletAttestationsRoute(app);
+  await registerVerifyNullReasonRoute(app);
 
   return app;
 }

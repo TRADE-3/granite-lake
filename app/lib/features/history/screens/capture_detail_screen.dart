@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -31,7 +32,6 @@ class CaptureDetailScreen extends StatefulWidget {
 }
 
 class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
-  bool _isSavingImage = false;
   bool _isSavingFile = false;
   bool _verificationRequested = false;
 
@@ -105,13 +105,37 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
       return;
     }
 
-    if (record.isFile) {
-      setState(() => _isSavingFile = true);
-      try {
+    setState(() => _isSavingFile = true);
+    try {
+      final bytes = await assetFile.readAsBytes();
+
+      // Sanity check before handing bytes off to either export path: catches
+      // a corrupted/tampered internal copy before it's exported, regardless
+      // of which path below actually writes it.
+      if (!record.isEncryptedAtRest && record.contentSha256.isNotEmpty) {
+        final digest = await Sha256().hash(bytes);
+        if (_hex(digest.bytes) != record.contentSha256) {
+          if (!mounted) {
+            return;
+          }
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'Stored asset failed integrity check — save aborted',
+                ),
+              ),
+            );
+          return;
+        }
+      }
+
+      if (record.isFile) {
         final savedPath = await FilePicker.platform.saveFile(
           dialogTitle: 'Save attested file',
           fileName: record.assetName,
-          bytes: await assetFile.readAsBytes(),
+          bytes: bytes,
           type: FileType.any,
         );
         if (!mounted) {
@@ -128,23 +152,14 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()
           ..showSnackBar(const SnackBar(content: Text('File saved')));
-      } catch (_) {
-        if (!mounted) {
-          return;
-        }
-        ScaffoldMessenger.of(context)
-          ..hideCurrentSnackBar()
-          ..showSnackBar(const SnackBar(content: Text('Failed to save file')));
-      } finally {
-        if (mounted) {
-          setState(() => _isSavingFile = false);
-        }
+        return;
       }
-      return;
-    }
 
-    setState(() => _isSavingImage = true);
-    try {
+      // Images go to the gallery via Gal.putImage rather than SAF. GPS EXIF
+      // is now stripped at capture time (granite_lake_capture_workflow_
+      // service.dart), which was the confirmed source of gallery-save hash
+      // drift (Android's MediaStore location redaction) - with that gone,
+      // there's nothing left in the file for the OS to rewrite on insert.
       await Gal.putImage(assetFile.path, album: AppConstants.appTitle);
       if (!mounted) {
         return;
@@ -158,12 +173,20 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
       }
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('Failed to save image')));
+        ..showSnackBar(const SnackBar(content: Text('Failed to save asset')));
     } finally {
       if (mounted) {
-        setState(() => _isSavingImage = false);
+        setState(() => _isSavingFile = false);
       }
     }
+  }
+
+  String _hex(List<int> bytes) {
+    final buffer = StringBuffer();
+    for (final byte in bytes) {
+      buffer.write(byte.toRadixString(16).padLeft(2, '0'));
+    }
+    return buffer.toString();
   }
 
   @override
@@ -357,7 +380,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                           SizedBox(
                             width: double.infinity,
                             child: OutlinedButton.icon(
-                              onPressed: (_isSavingImage || _isSavingFile)
+                              onPressed: _isSavingFile
                                   ? null
                                   : () => _handleAssetAction(record),
                               style: OutlinedButton.styleFrom(
@@ -370,7 +393,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                   borderRadius: BorderRadius.circular(6),
                                 ),
                               ),
-                              icon: (_isSavingImage || _isSavingFile)
+                              icon: _isSavingFile
                                   ? const SizedBox(
                                       width: 16,
                                       height: 16,
@@ -387,7 +410,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                     ? _isSavingFile
                                           ? 'SAVING FILE'
                                           : 'SAVE TO FILES'
-                                    : _isSavingImage
+                                    : _isSavingFile
                                     ? 'SAVING IMAGE'
                                     : 'DOWNLOAD CAPTURED IMAGE',
                                 style: AppTextStyles.buttonText.copyWith(
@@ -435,10 +458,100 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                       '${record.capturedAt.millisecondsSinceEpoch / 1000} // ${record.capturedAt.toIso8601String()}',
                                 ),
                                 _DetailCell(
-                                  label: 'SUBMITTED_AT',
+                                  label: 'LOCAL_QUEUED_AT',
                                   value:
                                       '${record.effectiveSubmittedAt.millisecondsSinceEpoch / 1000} // ${record.effectiveSubmittedAt.toIso8601String()}',
+                                  accent: 'DEVICE_CLOCK_NOT_ON_CHAIN',
                                 ),
+                                _DetailCell(
+                                  label: 'CHAIN_ATTESTED_AT',
+                                  value: verification?.chainTimestamp != null
+                                      ? '${verification!.chainTimestamp!.millisecondsSinceEpoch / 1000} // ${verification.chainTimestamp!.toIso8601String()}'
+                                      : 'Not yet confirmed on-chain.',
+                                ),
+                                _DetailCell(
+                                  label: 'IS_ONLINE',
+                                  value: record.isEncryptedAtRest
+                                      ? 'Hidden until submission (encrypted at rest)'
+                                      : (record.isOnline ? 'TRUE' : 'FALSE'),
+                                  accent: record.isEncryptedAtRest
+                                      ? 'PENDING_DECRYPTION'
+                                      : null,
+                                ),
+                                _DetailCell(
+                                  label: 'IS_FORCED_OFFLINE',
+                                  value: record.isEncryptedAtRest
+                                      ? 'Hidden until submission (encrypted at rest)'
+                                      : (record.isForcedOffline
+                                            ? 'TRUE'
+                                            : 'FALSE'),
+                                  accent: record.isEncryptedAtRest
+                                      ? 'PENDING_DECRYPTION'
+                                      : null,
+                                ),
+                                if (record.internetNullReason
+                                        ?.trim()
+                                        .isNotEmpty ==
+                                    true)
+                                  _DetailCell(
+                                    label: 'INTERNET_NULL_REASON',
+                                    value: record.internetNullReason!.trim(),
+                                    canCopy: true,
+                                    copyValue: record.internetNullReason!
+                                        .trim(),
+                                  ),
+                                if (record.internetNullReasonHash
+                                        ?.trim()
+                                        .isNotEmpty ==
+                                    true)
+                                  _DetailCell(
+                                    label: 'INTERNET_NULL_REASON_HASH',
+                                    value: record.internetNullReasonHash!,
+                                    canCopy: true,
+                                    copyValue: record.internetNullReasonHash!,
+                                  ),
+                                if (record.isPhoto)
+                                  _DetailCell(
+                                    label: 'HAS_GPS',
+                                    value: record.isEncryptedAtRest
+                                        ? 'Hidden until submission (encrypted at rest)'
+                                        : (record.hasGps ? 'TRUE' : 'FALSE'),
+                                    accent: record.isEncryptedAtRest
+                                        ? 'PENDING_DECRYPTION'
+                                        : null,
+                                  ),
+                                if (record.isPhoto)
+                                  _DetailCell(
+                                    label: 'IS_GPS_FORCED_NULL',
+                                    value: record.isEncryptedAtRest
+                                        ? 'Hidden until submission (encrypted at rest)'
+                                        : (record.isGpsForcedNull
+                                              ? 'TRUE'
+                                              : 'FALSE'),
+                                    accent: record.isEncryptedAtRest
+                                        ? 'PENDING_DECRYPTION'
+                                        : null,
+                                  ),
+                                if (record.isPhoto &&
+                                    record.gpsNullReason?.trim().isNotEmpty ==
+                                        true)
+                                  _DetailCell(
+                                    label: 'GPS_NULL_REASON',
+                                    value: record.gpsNullReason!.trim(),
+                                    canCopy: true,
+                                    copyValue: record.gpsNullReason!.trim(),
+                                  ),
+                                if (record.isPhoto &&
+                                    record.gpsNullReasonHash
+                                            ?.trim()
+                                            .isNotEmpty ==
+                                        true)
+                                  _DetailCell(
+                                    label: 'GPS_NULL_REASON_HASH',
+                                    value: record.gpsNullReasonHash!,
+                                    canCopy: true,
+                                    copyValue: record.gpsNullReasonHash!,
+                                  ),
                                 _DetailCell(
                                   label: 'SHA256_CONTENT_HASH',
                                   value: record.contentSha256,
@@ -502,6 +615,16 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                   value: record.suiSubmissionStatus,
                                   canCopy: true,
                                   copyValue: record.suiSubmissionStatus,
+                                ),
+                                _DetailCell(
+                                  label: 'RETRY_COUNT',
+                                  value: '${record.submissionAttemptCount}',
+                                ),
+                                _DetailCell(
+                                  label: 'LAST_ATTEMPTED_AT',
+                                  value: record.lastAttemptAt != null
+                                      ? '${record.lastAttemptAt!.millisecondsSinceEpoch / 1000} // ${record.lastAttemptAt!.toIso8601String()}'
+                                      : 'No submission attempt yet.',
                                 ),
                                 if (record.attestationErrorLabel != null)
                                   _DetailCell(
@@ -660,24 +783,36 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
     AttestationRecord record,
     AttestationChainVerificationRecord? verification,
   ) {
-    if (verification?.isVerified == true) {
-      return ('ANCHORED', AppColors.statusActive);
-    }
-    if (verification != null &&
-        !verification.isVerified &&
-        !verification.isPending) {
-      return ('FAILED', AppColors.statusError);
-    }
-    if (verification?.isPending == true) {
-      return ('PENDING', AppColors.primary);
-    }
+    // The transaction's own on-chain success is ground truth - it must take
+    // priority over the local verification placeholder, which starts every
+    // anchored record at a "pending" state until a live check confirms it
+    // (see GraniteLakeController._localVerification). Without connectivity,
+    // that check can never complete, which previously left an already-
+    // anchored capture displaying PENDING indefinitely. Only a verification
+    // that actually resolved to a genuine mismatch/failure should downgrade
+    // an anchored capture - never the mere absence of a completed check.
     if (record.isAttestationAnchored) {
+      if (verification != null &&
+          !verification.isVerified &&
+          !verification.isPending) {
+        // Landed on-chain fine - this is a mismatch found by a later,
+        // separate check, not a submission problem.
+        return ('VERIFY MISMATCH', AppColors.statusError);
+      }
       return ('ANCHORED', AppColors.statusActive);
     }
     if (record.isAttestationPending) {
       return ('PENDING', AppColors.primary);
     }
-    return ('FAILED', AppColors.statusError);
+    // Offline-queue at-rest encryption (§7.3): distinct from a submission
+    // failure - the chain was never involved, this row's own locally
+    // stored data failed its integrity check on decrypt.
+    if (record.isTamperDetected) {
+      return ('TAMPER DETECTED', AppColors.statusError);
+    }
+    // Not anchored and not pending: the transaction itself never made it
+    // on-chain (FAILED_SUBMISSION/FAILED_NOT_CONFIGURED).
+    return ('SUBMIT FAILED', AppColors.statusError);
   }
 
   String _verificationValue(bool? value) {

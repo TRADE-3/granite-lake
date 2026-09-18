@@ -44,6 +44,23 @@ class PhotoCaptureDao {
         'note': photoCapture['note'],
         'preview_kind': photoCapture['previewKind'] ?? 'image',
         'storage_mode': photoCapture['storageMode'] ?? 'LOCAL_ONLY',
+        'is_online': (photoCapture['isOnline'] as bool? ?? true) ? 1 : 0,
+        'is_forced_offline': (photoCapture['isForcedOffline'] as bool? ?? false)
+            ? 1
+            : 0,
+        'has_gps': (photoCapture['hasGps'] as bool? ?? true) ? 1 : 0,
+        'is_gps_forced_null':
+            (photoCapture['isGpsForcedNull'] as bool? ?? false) ? 1 : 0,
+        'internet_null_reason': photoCapture['internetNullReason'],
+        'internet_null_reason_hash': photoCapture['internetNullReasonHash'],
+        'gps_null_reason': photoCapture['gpsNullReason'],
+        'gps_null_reason_hash': photoCapture['gpsNullReasonHash'],
+        'submission_attempt_count':
+            photoCapture['submissionAttemptCount'] as int? ?? 0,
+        'last_attempt_at': photoCapture['lastAttemptAt'],
+        'encrypted_payload': photoCapture['encryptedPayload'],
+        'payload_iv': photoCapture['payloadIv'],
+        'wrapped_data_key': photoCapture['wrappedDataKey'],
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
@@ -52,5 +69,17 @@ class PhotoCaptureDao {
   Future<void> deleteAll() async {
     final database = await _databaseService.database;
     await database.delete(GraniteLakeDatabaseService.photoCapturesTable);
+  }
+
+  /// Read-only count of rows still awaiting on-chain submission. Safe to
+  /// call from a background isolate (reconnect_notification_service.dart) -
+  /// touches no signing state, just a status column.
+  Future<int> countPendingSubmissions() async {
+    final database = await _databaseService.database;
+    final result = await database.rawQuery(
+      'SELECT COUNT(*) AS count FROM ${GraniteLakeDatabaseService.photoCapturesTable} '
+      "WHERE sui_submission_status IN ('PENDING_SUBMISSION', 'PENDING', 'SUBMITTING')",
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
   }
 }

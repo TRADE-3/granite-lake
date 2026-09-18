@@ -41,6 +41,18 @@ class Migrations {
         case 9:
           await _upgradeToVersionNine(db);
           break;
+        case 10:
+          await _upgradeToVersionTen(db);
+          break;
+        case 11:
+          await _upgradeToVersionEleven(db);
+          break;
+        case 12:
+          await _upgradeToVersionTwelve(db);
+          break;
+        case 13:
+          await _upgradeToVersionThirteen(db);
+          break;
         default:
           throw UnsupportedError(
             'No migration registered for database version $version.',
@@ -273,6 +285,130 @@ class Migrations {
     );
   }
 
+  // Offline-capture design doc §8: is_online/is_forced_offline record
+  // ground-truth connectivity and whether the crew overrode it, per capture,
+  // independently of has_gps/is_gps_forced_null (photo_captures only - file
+  // attestation never carried location data). Defaults assume prior rows
+  // were captured online, not forced, with a GPS fix, matching today's
+  // pre-offline-capture behavior.
+  static Future<void> _upgradeToVersionTen(Database db) async {
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN is_online INTEGER NOT NULL DEFAULT 1',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN is_forced_offline INTEGER NOT NULL DEFAULT 0',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN has_gps INTEGER NOT NULL DEFAULT 1',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN is_gps_forced_null INTEGER NOT NULL DEFAULT 0',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.uploadedFilesTable} ADD COLUMN is_online INTEGER NOT NULL DEFAULT 1',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.uploadedFilesTable} ADD COLUMN is_forced_offline INTEGER NOT NULL DEFAULT 0',
+    );
+  }
+
+  // Offline-capture design doc §4b/§8: mandatory null-reason text and its
+  // hash, required exactly when the corresponding field above is null or
+  // its force toggle overrode a present one (contract-enforced on-chain,
+  // see granite_lake.move). Nullable - NULL exactly when no reason was
+  // needed (the field was present, not overridden). gps_null_reason* only
+  // on photo_captures, same reasoning as has_gps/is_gps_forced_null above.
+  //
+  // The hash is computed once, at capture time, from the plaintext - the
+  // same moment photo_hash is computed - and folded into the signed proof
+  // bundle alongside it (see granite_lake_capture_workflow_service.dart),
+  // so a later edit to the plaintext is detectable against the originally
+  // signed hash. It is persisted here (not recomputed on the spot at
+  // submission time) specifically so what gets submitted on-chain is
+  // provably the value that was signed at capture, not a value derived
+  // from whatever the reason column happens to contain by then. The
+  // plaintext itself stays local for disclosure; it's never transmitted
+  // on-chain, only this hash is.
+  static Future<void> _upgradeToVersionEleven(Database db) async {
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN internet_null_reason TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN internet_null_reason_hash TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN gps_null_reason TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN gps_null_reason_hash TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.uploadedFilesTable} ADD COLUMN internet_null_reason TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.uploadedFilesTable} ADD COLUMN internet_null_reason_hash TEXT',
+    );
+  }
+
+  // App-local only - never submitted on-chain. Tracks how many times a
+  // genuine submission attempt has actually been made for this row
+  // (whether the very first, online, attempt, or a later queue retry), and
+  // when the most recent one happened, so the crew can see why something
+  // is still queued instead of it just silently sitting there. Not
+  // incremented for a capture that was persisted while offline/forced
+  // offline and skipped the network call entirely (see
+  // GraniteLakeController.persistCaptureWithMetadata's initial-attempt
+  // skip) - only real attempts count.
+  static Future<void> _upgradeToVersionTwelve(Database db) async {
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN submission_attempt_count INTEGER NOT NULL DEFAULT 0',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN last_attempt_at TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.uploadedFilesTable} ADD COLUMN submission_attempt_count INTEGER NOT NULL DEFAULT 0',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.uploadedFilesTable} ADD COLUMN last_attempt_at TEXT',
+    );
+  }
+
+  // Offline-queue at-rest encryption (offline-capture design doc §7.3). For
+  // a row taking the offline/forced-offline path, the submission-relevant
+  // fields that would otherwise sit in plaintext (image_sha256,
+  // signature_base64, proof_payload_json, is_online/is_forced_offline/
+  // has_gps/is_gps_forced_null, the null-reason text/hashes) are folded
+  // into encrypted_payload instead, encrypted per-row with AES-256-GCM at
+  // persist time; those plaintext columns are written as empty strings for
+  // that row rather than left populated. payload_iv is the row's random
+  // 12-byte GCM nonce; wrapped_data_key is that row's random AES key,
+  // wrapped by the device's RSA capture-wrap keypair
+  // (capture_encryption_service.dart). All three TEXT/base64, matching
+  // this schema's existing no-BLOB convention. NULL for a row that
+  // submitted immediately while online, or any pre-migration row - reads
+  // branch on encrypted_payload IS NOT NULL.
+  static Future<void> _upgradeToVersionThirteen(Database db) async {
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN encrypted_payload TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN payload_iv TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.photoCapturesTable} ADD COLUMN wrapped_data_key TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.uploadedFilesTable} ADD COLUMN encrypted_payload TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.uploadedFilesTable} ADD COLUMN payload_iv TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE ${GraniteLakeDatabaseService.uploadedFilesTable} ADD COLUMN wrapped_data_key TEXT',
+    );
+  }
+
   static Future<void> _createPhotoCapturesTable(Database db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS ${GraniteLakeDatabaseService.photoCapturesTable} (
@@ -294,6 +430,19 @@ class Migrations {
         note TEXT,
         preview_kind TEXT NOT NULL DEFAULT 'image',
         storage_mode TEXT NOT NULL DEFAULT 'LOCAL_ONLY',
+        is_online INTEGER NOT NULL DEFAULT 1,
+        is_forced_offline INTEGER NOT NULL DEFAULT 0,
+        has_gps INTEGER NOT NULL DEFAULT 1,
+        is_gps_forced_null INTEGER NOT NULL DEFAULT 0,
+        internet_null_reason TEXT,
+        internet_null_reason_hash TEXT,
+        gps_null_reason TEXT,
+        gps_null_reason_hash TEXT,
+        submission_attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at TEXT,
+        encrypted_payload TEXT,
+        payload_iv TEXT,
+        wrapped_data_key TEXT,
         FOREIGN KEY (project_id) REFERENCES ${GraniteLakeDatabaseService.projectsTable}(project_id)
           ON DELETE SET NULL
       )
@@ -325,6 +474,15 @@ class Migrations {
         file_extension TEXT,
         preview_kind TEXT NOT NULL DEFAULT 'document',
         storage_mode TEXT NOT NULL DEFAULT 'LOCAL_ONLY',
+        is_online INTEGER NOT NULL DEFAULT 1,
+        is_forced_offline INTEGER NOT NULL DEFAULT 0,
+        internet_null_reason TEXT,
+        internet_null_reason_hash TEXT,
+        submission_attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at TEXT,
+        encrypted_payload TEXT,
+        payload_iv TEXT,
+        wrapped_data_key TEXT,
         FOREIGN KEY (project_id) REFERENCES ${GraniteLakeDatabaseService.projectsTable}(project_id)
           ON DELETE SET NULL
       )

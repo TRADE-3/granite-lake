@@ -112,6 +112,34 @@ class ConfigDataController {
         current.moduleName != expected.moduleName;
   }
 
+  Future<bool> loadOfflineCaptureForced() async {
+    final raw = await _configDao.readValue(
+      GraniteLakeDatabaseService.offlineCaptureForcedConfigKey,
+    );
+    return raw == 'true';
+  }
+
+  Future<void> saveOfflineCaptureForced(bool value) {
+    return _configDao.writeValue(
+      GraniteLakeDatabaseService.offlineCaptureForcedConfigKey,
+      value ? 'true' : 'false',
+    );
+  }
+
+  Future<bool> loadGpsCaptureForcedNull() async {
+    final raw = await _configDao.readValue(
+      GraniteLakeDatabaseService.gpsCaptureForcedNullConfigKey,
+    );
+    return raw == 'true';
+  }
+
+  Future<void> saveGpsCaptureForcedNull(bool value) {
+    return _configDao.writeValue(
+      GraniteLakeDatabaseService.gpsCaptureForcedNullConfigKey,
+      value ? 'true' : 'false',
+    );
+  }
+
   Future<void> clear() {
     return _configDao.deleteAll();
   }
