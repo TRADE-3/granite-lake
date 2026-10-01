@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -1173,6 +1174,11 @@ class PhotoAttestationService {
       }
     }
 
+    debugPrint(
+      '[GAS] prepare owner=${tx.gasData.owner.address} '
+      'price=${tx.gasData.price} initialBudget=${tx.gasData.budget} '
+      'availableBalance=$availableBalance',
+    );
     final dryRunReady = await _dryRun(graphqlUrl, tx);
     return _fillGasPayment(graphqlUrl, dryRunReady);
   }
@@ -1185,6 +1191,9 @@ class PhotoAttestationService {
       graphqlUrl,
       transactionDataBcs: tx.toVariantBcsBase64(),
     );
+    debugPrint(
+      '[GAS] dryRun status=${response.status} error=${response.error}',
+    );
     if (response.status != 'SUCCESS') {
       throw StateError(response.error ?? 'Dry run failed for Sui transaction.');
     }
@@ -1195,11 +1204,15 @@ class PhotoAttestationService {
 
     final safeOverhead = BigInt.from(1000) * tx.gasData.price;
     final baseOverhead = gasSummary.computationCost + safeOverhead;
-    var gasBudget =
-        baseOverhead + gasSummary.storageCost - gasSummary.storageRebate;
-    if (gasBudget < baseOverhead) {
-      gasBudget = baseOverhead;
-    }
+    // Sui validates the budget against computation + gross storage cost; the
+    // rebate is only refunded after execution, so it must not be subtracted.
+    final gasBudget = baseOverhead + gasSummary.storageCost;
+    debugPrint(
+      '[GAS] dryRun computation=${gasSummary.computationCost} '
+      'storageCost=${gasSummary.storageCost} '
+      'storageRebate=${gasSummary.storageRebate} '
+      'overhead=$safeOverhead -> budget=$gasBudget',
+    );
 
     return tx.copyWith(gasData: tx.gasData.copyWith(budget: gasBudget));
   }
@@ -1237,27 +1250,41 @@ class PhotoAttestationService {
         .where((coin) => !usedObjectIds.contains(coin.object.objectId))
         .toList(growable: false);
 
-    if (gasCoins.isEmpty) {
-      throw StateError('No SUI gas coins are available for this wallet.');
-    }
-
-    // Use totalBalance as the ceiling since some coins might be locked/pending.
-    final confirmedBalance = _sumCoinBalances(gasCoins);
-    final availableForGas = totalBalance < confirmedBalance
-        ? totalBalance
-        : confirmedBalance;
-
-    if (availableForGas < tx.gasData.budget) {
-      // If we have total balance that would cover it (just pending), proceed anyway.
-      // The actual execution will use whatever is available at that time.
-      if (totalBalance >= tx.gasData.budget) {
-        // Proceed with confirmed coins - some are pending but should be available soon
-      } else {
-        throw StateError(
-          'Insufficient SUI balance to pay gas. Required '
-          '${tx.gasData.budget} MIST but only found $confirmedBalance MIST.',
-        );
+    debugPrint(
+      '[GAS] coins owned=${ownedCoins.length} usable=${gasCoins.length} '
+      'excludedAsTxInputs=${ownedCoins.length - gasCoins.length} '
+      'totalBalance=$totalBalance budget=${tx.gasData.budget} '
+      'balances=${gasCoins.map((c) => c.balance).toList()}',
+    );
+    // SUI can sit in coin objects, in the address balance (e.g. the Sui
+    // faucet deposits there), or split across both. Prefer coin objects when
+    // they alone cover the budget; otherwise pay from the address balance via
+    // an empty payment (_execute attaches the required ValidDuring expiration).
+    final coinTotal = _sumCoinBalances(gasCoins);
+    final budget = tx.gasData.budget;
+    if (coinTotal < budget) {
+      final reported = await _graphQlService.getSuiAddressBalance(
+        graphqlUrl,
+        ownerAddress: tx.gasData.owner.address,
+      );
+      final addressBalance =
+          reported ??
+          (totalBalance > coinTotal ? totalBalance - coinTotal : BigInt.zero);
+      debugPrint(
+        '[GAS] coins=$coinTotal addressBalance=$addressBalance '
+        '(${reported == null ? 'estimated' : 'reported'}) budget=$budget',
+      );
+      if (addressBalance >= budget) {
+        debugPrint('[GAS] paying gas from address balance');
+        return tx.copyWith(gasData: tx.gasData.copyWith(payment: const []));
       }
+      if (gasCoins.isEmpty && totalBalance < budget) {
+        throw StateError('No SUI gas coins are available for this wallet.');
+      }
+      throw StateError(
+        'Insufficient SUI balance to pay gas. Required $budget MIST but only '
+        'found $totalBalance MIST.',
+      );
     }
 
     // Collect coins to cover the budget, preferring larger coins first.
@@ -1268,11 +1295,12 @@ class PhotoAttestationService {
     for (final coin in gasCoins) {
       payment.add(coin.object.toObjectRef());
       total += coin.balance;
-      if (total >= tx.gasData.budget) {
+      if (total >= budget) {
         break;
       }
     }
 
+    debugPrint('[GAS] payment coins=${payment.length} coinTotal=$total');
     return tx.copyWith(gasData: tx.gasData.copyWith(payment: payment));
   }
 
@@ -1304,9 +1332,11 @@ class PhotoAttestationService {
         // _execute is ever reached - both steps must be inside the retry,
         // not just the final execute call, or a version mismatch caught at
         // dry-run time would skip the retry entirely and fail on attempt 1.
+        debugPrint('[GAS] attempt $attempt/$maxAttempts');
         final prepared = await _prepareTransaction(graphqlUrl, tx);
         return await _execute(graphqlUrl, prepared, signingKey);
       } catch (error) {
+        debugPrint('[GAS] attempt $attempt/$maxAttempts failed: $error');
         if (attempt == maxAttempts || !_isObjectVersionRaceError(error)) {
           rethrow;
         }
@@ -1319,17 +1349,68 @@ class PhotoAttestationService {
   bool _isObjectVersionRaceError(Object error) =>
       looksLikeObjectVersionRaceFailure('$error');
 
+  /// BCS of [tx] with its expiration replaced by `ValidDuring`.
+  ///
+  /// `on_chain` only models `None`/`Epoch` expirations, but expiration is the
+  /// last field of TransactionData, so serialize with `None` (one 0x00 byte)
+  /// and swap that tail for the ValidDuring variant, laid out as: variant
+  /// index 2, then min_epoch and max_epoch as `Option(u64)`, min/max
+  /// timestamp as empty options, the chain digest (length-prefixed, 32 bytes),
+  /// and a u32 nonce.
+  Future<List<int>> _bcsWithValidDuringExpiration(
+    String graphqlUrl,
+    SuiTransactionDataV1 tx,
+  ) async {
+    final info = await _graphQlService.getChainInfo(graphqlUrl);
+    final chain = SuiObjectDigest.fromBase58(info.chainDigest).digest;
+    final base = tx
+        .copyWith(expiration: const SuiTransactionExpirationNone())
+        .toVariantBcs();
+    final nonce = Random.secure().nextInt(1 << 32);
+    final out = <int>[...base.sublist(0, base.length - 1)];
+    void u64(BigInt v) {
+      for (var i = 0; i < 8; i++) {
+        out.add(((v >> (8 * i)) & BigInt.from(0xff)).toInt());
+      }
+    }
+
+    out.add(2);
+    out.add(1);
+    u64(info.epoch);
+    out.add(1);
+    u64(info.epoch + BigInt.one);
+    out.add(0);
+    out.add(0);
+    out.add(chain.length); // digests are BCS byte vectors: ULEB length
+    out.addAll(chain);
+    for (var i = 0; i < 4; i++) {
+      out.add((nonce >> (8 * i)) & 0xff);
+    }
+    debugPrint(
+      '[GAS] ValidDuring epoch=${info.epoch}..${info.epoch + BigInt.one} '
+      'chain=${info.chainDigest}',
+    );
+    return out;
+  }
+
   Future<SuiGraphQlTransactionResult> _execute(
     String graphqlUrl,
     SuiTransactionDataV1 tx,
     SuiED25519PrivateKey privateKey,
   ) async {
     final account = SuiEd25519Account(privateKey);
-    final signature = account.signTransaction(tx.serializeSign());
+    // Empty payment == gas from address balance, which requires ValidDuring.
+    final txBytes = tx.gasData.payment.isEmpty
+        ? await _bcsWithValidDuringExpiration(graphqlUrl, tx)
+        : tx.toVariantBcs();
+    final signature = account.signTransaction([0, 0, 0, ...txBytes]);
     final response = await _graphQlService.executeTransaction(
       graphqlUrl,
-      transactionDataBcs: tx.toVariantBcsBase64(),
+      transactionDataBcs: base64Encode(txBytes),
       signatures: [signature.toVariantBcsBase64()],
+    );
+    debugPrint(
+      '[GAS] execute status=${response.status} error=${response.error}',
     );
     if (response.status != 'SUCCESS') {
       throw StateError(response.error ?? 'Sui transaction failed.');
