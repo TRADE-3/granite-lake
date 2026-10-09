@@ -47,7 +47,7 @@ case "$ENV" in
     server)
         APP_NAME="granite-server"
         CAPROVER_APP_TOKEN="$CAPROVER_APP_TOKEN_GRANITE_SERVER"
-        REQUIRED_BRANCH="trade3"
+        REQUIRED_BRANCH="test"
         ;;
     *)
         error "Invalid environment. Use 'server'."
