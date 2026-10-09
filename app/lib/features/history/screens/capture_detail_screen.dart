@@ -12,6 +12,7 @@ import '../../../core/constants/app_constants.dart';
 import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/utils/verified_email.dart';
 
 Color get _detailActionFill => AppColors.actionFill;
 Color get _detailActionText => AppColors.actionText;
@@ -69,17 +70,17 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
       if (record.tags.isNotEmpty) 'Tags: ${record.tags.join(', ')}',
       if (record.note?.trim().isNotEmpty == true)
         'Note: ${record.note!.trim()}',
-      'SHA-256: ${record.contentSha256}',
+      'File Hash: ${record.contentSha256}',
       'Local Path: ${record.localAssetPath}',
       if (proofPayload.readString('sessionStartedAt') != null)
         'Session Started: ${proofPayload.readString('sessionStartedAt')}',
       if (proofPayload.readString('sessionExpiresAt') != null)
         'Session Expires: ${proofPayload.readString('sessionExpiresAt')}',
-      'Wallet: ${record.walletAddress}',
-      'Sui Transaction Digest: ${record.suiTxDigest}',
-      'Sui Submission Status: ${record.suiSubmissionStatus}',
+      'Secure ID: ${record.walletAddress}',
+      'Submission ID: ${record.suiTxDigest}',
+      'Submission Status: ${record.suiSubmissionStatus}',
       if (record.attestationErrorLabel != null)
-        'Sui Attestation Error: ${record.attestationErrorLabel}',
+        'Verification Error: ${record.attestationErrorLabel}',
     ].join('\n');
 
     await Clipboard.setData(ClipboardData(text: payload));
@@ -88,7 +89,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
     }
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('Proof bundle copied')));
+      ..showSnackBar(const SnackBar(content: Text('Capture details copied')));
   }
 
   Future<void> _handleAssetAction(AttestationRecord record) async {
@@ -133,7 +134,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
 
       if (record.isFile) {
         final savedPath = await FilePicker.platform.saveFile(
-          dialogTitle: 'Save attested file',
+          dialogTitle: 'Save file',
           fileName: record.assetName,
           bytes: bytes,
           type: FileType.any,
@@ -180,6 +181,12 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
       }
     }
   }
+
+  Future<void> _composeEmail(AttestationRecord record) => composeVerifiedEmail(
+    context,
+    record,
+    location: record.isPhoto ? _geospatialValue(record.proofPayload) : null,
+  );
 
   String _hex(List<int> bytes) {
     final buffer = StringBuffer();
@@ -420,6 +427,36 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                               ),
                             ),
                           ),
+                          if (record.isAttestationAnchored) ...[
+                            const SizedBox(height: 14),
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                onPressed: () => _composeEmail(record),
+                                style: OutlinedButton.styleFrom(
+                                  side: BorderSide(color: _detailPanelBorder),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 18,
+                                    vertical: 16,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                ),
+                                icon: const Icon(
+                                  Icons.mail_outline_rounded,
+                                  size: 18,
+                                ),
+                                label: Text(
+                                  'EMAIL VERIFIED ${record.isFile ? 'FILE' : 'PHOTO'}',
+                                  style: AppTextStyles.buttonText.copyWith(
+                                    color: AppColors.textPrimary,
+                                    letterSpacing: 1.1,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                           const SizedBox(height: 20),
                           Container(height: 1, color: _detailHeaderBorder),
                           const SizedBox(height: 18),
@@ -461,32 +498,32 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                   label: 'LOCAL_QUEUED_AT',
                                   value:
                                       '${record.effectiveSubmittedAt.millisecondsSinceEpoch / 1000} // ${record.effectiveSubmittedAt.toIso8601String()}',
-                                  accent: 'DEVICE_CLOCK_NOT_ON_CHAIN',
+                                  accent: 'DEVICE_CLOCK_ONLY',
                                 ),
                                 _DetailCell(
-                                  label: 'CHAIN_ATTESTED_AT',
+                                  label: 'VERIFIED_AT',
                                   value: verification?.chainTimestamp != null
                                       ? '${verification!.chainTimestamp!.millisecondsSinceEpoch / 1000} // ${verification.chainTimestamp!.toIso8601String()}'
-                                      : 'Not yet confirmed on-chain.',
+                                      : 'Not yet confirmed.',
                                 ),
                                 _DetailCell(
                                   label: 'IS_ONLINE',
                                   value: record.isEncryptedAtRest
-                                      ? 'Hidden until submission (encrypted at rest)'
+                                      ? 'Hidden until submitted'
                                       : (record.isOnline ? 'TRUE' : 'FALSE'),
                                   accent: record.isEncryptedAtRest
-                                      ? 'PENDING_DECRYPTION'
+                                      ? 'PENDING'
                                       : null,
                                 ),
                                 _DetailCell(
                                   label: 'IS_FORCED_OFFLINE',
                                   value: record.isEncryptedAtRest
-                                      ? 'Hidden until submission (encrypted at rest)'
+                                      ? 'Hidden until submitted'
                                       : (record.isForcedOffline
                                             ? 'TRUE'
                                             : 'FALSE'),
                                   accent: record.isEncryptedAtRest
-                                      ? 'PENDING_DECRYPTION'
+                                      ? 'PENDING'
                                       : null,
                                 ),
                                 if (record.internetNullReason
@@ -514,22 +551,22 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                   _DetailCell(
                                     label: 'HAS_GPS',
                                     value: record.isEncryptedAtRest
-                                        ? 'Hidden until submission (encrypted at rest)'
+                                        ? 'Hidden until submitted'
                                         : (record.hasGps ? 'TRUE' : 'FALSE'),
                                     accent: record.isEncryptedAtRest
-                                        ? 'PENDING_DECRYPTION'
+                                        ? 'PENDING'
                                         : null,
                                   ),
                                 if (record.isPhoto)
                                   _DetailCell(
                                     label: 'IS_GPS_FORCED_NULL',
                                     value: record.isEncryptedAtRest
-                                        ? 'Hidden until submission (encrypted at rest)'
+                                        ? 'Hidden until submitted'
                                         : (record.isGpsForcedNull
                                               ? 'TRUE'
                                               : 'FALSE'),
                                     accent: record.isEncryptedAtRest
-                                        ? 'PENDING_DECRYPTION'
+                                        ? 'PENDING'
                                         : null,
                                   ),
                                 if (record.isPhoto &&
@@ -582,15 +619,14 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                 if (!record.isPhoto)
                                   _DetailCell(
                                     label: 'GEOSPATIAL_COORDINATES',
-                                    value:
-                                        'Not captured for file attestations.',
+                                    value: 'Not captured for uploaded files.',
                                     accent: 'NOT_APPLICABLE',
                                   ),
                                 _DetailCell(
                                   label: 'INVESTIGATOR_FIELD_NOTES',
                                   value: record.note?.trim().isNotEmpty == true
                                       ? record.note!.trim()
-                                      : 'No investigator notes were provided for this attestation.',
+                                      : 'No investigator notes were provided.',
                                 ),
                                 _DetailCell(
                                   label: 'TAGS',
@@ -599,19 +635,19 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                       : 'No tags recorded',
                                 ),
                                 _DetailCell(
-                                  label: 'WALLET_ADDRESS',
+                                  label: 'SECURE_ID',
                                   value: record.walletAddress,
                                   canCopy: true,
                                   copyValue: record.walletAddress,
                                 ),
                                 _DetailCell(
-                                  label: 'SUI_TX_DIGEST',
+                                  label: 'SUBMISSION_ID',
                                   value: record.suiTxDigest,
                                   canCopy: true,
                                   copyValue: record.suiTxDigest,
                                 ),
                                 _DetailCell(
-                                  label: 'SUI_SUBMISSION_STATUS',
+                                  label: 'SUBMISSION_STATUS',
                                   value: record.suiSubmissionStatus,
                                   canCopy: true,
                                   copyValue: record.suiSubmissionStatus,
@@ -628,7 +664,7 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                 ),
                                 if (record.attestationErrorLabel != null)
                                   _DetailCell(
-                                    label: 'SUI_ATTESTATION_ERROR',
+                                    label: 'VERIFICATION_ERROR',
                                     value: record.attestationErrorLabel!,
                                     canCopy: true,
                                     copyValue: record.attestationErrorLabel!,
@@ -692,59 +728,59 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                             child: Column(
                               children: [
                                 _DetailCell(
-                                  label: 'CHAIN_CONTENT_HASH_MATCH',
+                                  label: 'FILE HASH MATCH',
                                   value: _verificationValue(
                                     verification?.contentHashMatches,
                                   ),
                                 ),
                                 _DetailCell(
-                                  label: 'CHAIN_SENDER_MATCH',
+                                  label: 'SENDER MATCH',
                                   value: _verificationValue(
                                     verification?.senderMatches,
                                   ),
                                 ),
                                 if (record.isPhoto)
                                   _DetailCell(
-                                    label: 'CHAIN_GPS_MATCH',
+                                    label: 'GPS MATCH',
                                     value: _verificationValue(
                                       verification?.gpsMatches,
                                     ),
                                   ),
                                 if (record.isPhoto)
                                   _DetailCell(
-                                    label: 'CHAIN_ALTITUDE_MATCH',
+                                    label: 'ALTITUDE MATCH',
                                     value: _verificationValue(
                                       verification?.altitudeMatches,
                                     ),
                                   ),
                                 if (record.isFile)
                                   _DetailCell(
-                                    label: 'CHAIN_FILE_ID_MATCH',
+                                    label: 'FILE ID MATCH',
                                     value: _verificationValue(
                                       verification?.fileIdMatches,
                                     ),
                                   ),
                                 _DetailCell(
-                                  label: 'CHAIN_PROJECT_ID_MATCH',
+                                  label: 'PROJECT MATCH',
                                   value: _verificationValue(
                                     verification?.projectIdMatches,
                                   ),
                                 ),
                                 _DetailCell(
-                                  label: 'CHAIN_SUBMITTED_TIME_MATCH',
+                                  label: 'SUBMISSION TIME MATCH',
                                   value: _verificationValue(
                                     verification?.timestampWithinTolerance,
                                   ),
                                 ),
                                 _DetailCell(
-                                  label: 'CHAIN_TIMESTAMP',
+                                  label: 'VERIFIED AT',
                                   value:
                                       verification?.chainTimestamp
                                           ?.toIso8601String() ??
-                                      'Chain timestamp unavailable',
+                                      'Verification time unavailable',
                                 ),
                                 _DetailCell(
-                                  label: 'CHAIN_VERIFICATION_RESULT',
+                                  label: 'VERIFICATION RESULT',
                                   value:
                                       verification?.failureReason ??
                                       verification?.transactionStatus ??
@@ -797,9 +833,9 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
           !verification.isPending) {
         // Landed on-chain fine - this is a mismatch found by a later,
         // separate check, not a submission problem.
-        return ('VERIFY MISMATCH', AppColors.statusError);
+        return ('MISMATCH', AppColors.statusError);
       }
-      return ('ANCHORED', AppColors.statusActive);
+      return ('CONFIRMED', AppColors.statusActive);
     }
     if (record.isAttestationPending) {
       return ('PENDING', AppColors.primary);

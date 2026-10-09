@@ -72,9 +72,9 @@ class CaptureMethodScreen extends StatelessWidget {
                         accent: AppColors.primary,
                         accentSecondary: AppColors.statusEncrypt,
                         title: 'TAKE_PHOTO',
-                        badge: 'Instant Signed Attestation',
+                        badge: 'Instant Verified Capture',
                         description:
-                            'Secure capture with embedded hash provenance and signed field metadata.',
+                            'Secure capture with built-in proof of when and where it was taken.',
                         onTap: () => context.push(AppRoutes.capturePhoto),
                       ),
                       const SizedBox(height: 16),
@@ -85,7 +85,7 @@ class CaptureMethodScreen extends StatelessWidget {
                         title: 'UPLOAD_FILE',
                         badge: 'PDF, JPG, DOCX (Max 50MB)',
                         description:
-                            'Ingest an existing document or image, hash it locally, and anchor the file attestation on Sui.',
+                            'Add an existing document or image and store it as a verified record.',
                         onTap: () => context.push(AppRoutes.captureFile),
                       ),
                       SizedBox(height: isCompact ? 14 : 22),
@@ -100,7 +100,7 @@ class CaptureMethodScreen extends StatelessWidget {
                             color: AppColors.textSecondary,
                           ),
                           label: Text(
-                            'BACK_TO_AUTH',
+                            'BACK',
                             style: AppTextStyles.labelLarge.copyWith(
                               color: AppColors.textSecondary,
                             ),

@@ -502,7 +502,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   static String _verificationLabel(_VerificationFilter filter) {
     return switch (filter) {
       _VerificationFilter.any => 'Any',
-      _VerificationFilter.anchored => 'Anchored',
+      _VerificationFilter.anchored => 'Confirmed',
       _VerificationFilter.pending => 'Pending',
       _VerificationFilter.submissionFailed => 'Submission Failed',
       _VerificationFilter.verificationFailed => 'Verification Failed',
@@ -704,7 +704,7 @@ class _EmptyHistoryState extends StatelessWidget {
             Text(
               hasFilters
                   ? 'Try adjusting search, project, verification, or period filters.'
-                  : 'Start a secure session and attest a photo or file to build your on-device ledger.',
+                  : 'Start a secure session and capture a photo or file to build your on-device records.',
               textAlign: TextAlign.center,
               style: AppTextStyles.bodySmall.copyWith(
                 color: AppColors.textMuted,
@@ -780,7 +780,7 @@ class _HistoryRow extends StatelessWidget {
                   Text(
                     capture.isFile
                         ? capture.assetName
-                        : 'SHA256: ${capture.shortHash}',
+                        : 'File Hash: ${capture.shortHash}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: AppTextStyles.bodyMedium.copyWith(
@@ -790,7 +790,7 @@ class _HistoryRow extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     capture.isFile
-                        ? 'SHA256: ${capture.shortHash}'
+                        ? 'File Hash: ${capture.shortHash}'
                         : capture.assetTypeLabel,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -863,7 +863,7 @@ class _VerificationBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final (label, background, border, foreground) = switch (status) {
       _VerificationStatus.anchored => (
-        'ANCHORED',
+        'CONFIRMED',
         AppColors.statusActive.withAlpha(18),
         AppColors.statusActive.withAlpha(70),
         AppColors.statusActive,
@@ -881,7 +881,7 @@ class _VerificationBadge extends StatelessWidget {
         AppColors.statusError,
       ),
       _VerificationStatus.verificationFailed => (
-        'VERIFY MISMATCH',
+        'MISMATCH',
         AppColors.statusError.withAlpha(18),
         AppColors.statusError.withAlpha(70),
         AppColors.statusError,

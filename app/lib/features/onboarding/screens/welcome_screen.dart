@@ -9,7 +9,7 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../../core/widgets/brand_logo.dart';
 import '../../../core/widgets/theme_toggle_button.dart';
 import '../widgets/hud_overlay.dart';
-import '../widgets/scan_line_overlay.dart';
+import '../widgets/photo_proof_mark.dart';
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
@@ -30,7 +30,6 @@ class WelcomeScreen extends StatelessWidget {
       ),
       body: Stack(
         children: [
-          const Positioned.fill(child: ScanLineOverlay()),
           SafeArea(
             child: LayoutBuilder(
               builder: (context, constraints) {
@@ -54,41 +53,44 @@ class WelcomeScreen extends StatelessWidget {
                           children: [
                             // ── Top HUD ──────────────────────────────────────────────────
                             TopHudOverlay(
-                              flowId: AppConstants.welcomeFlowId,
-                              status: AppConstants.welcomeStatus,
-                              encryptAlgo: AppConstants.welcomeEncryptMode,
-                              trailing: const ShieldBadge(size: 64),
+                              title: AppConstants.onboardingHeaderLabel,
                             ),
 
-                            const SizedBox(height: 28),
+                            const SizedBox(height: 20),
 
-                            // ── Text block — centered ────────────────────────────────────
+                            // ── Hero: light logo + shield on brand gradient ──────────────
+                            const Spacer(),
+                            const Center(child: PhotoProofMark(size: 200)),
+                            const SizedBox(height: 28),
+                            const Center(child: BrandLogo(height: 76)),
+                            const SizedBox(height: 14),
                             Center(
-                              child: Column(
-                                children: [
-                                  Text(
-                                    AppConstants.welcomeDisplayId,
-                                    style: AppTextStyles.labelMedium.copyWith(
-                                      color: AppColors.textMuted,
-                                      letterSpacing: 1.2,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 12),
-                                  const BrandLogo(height: 56),
-                                  const SizedBox(height: 16),
-                                  Text(
-                                    'Cryptographically attested photos\nfor field operations.',
-                                    textAlign: TextAlign.center,
-                                    style: AppTextStyles.bodyMedium.copyWith(
-                                      color: AppColors.textSecondary,
-                                      height: 1.6,
-                                    ),
-                                  ),
-                                ],
+                              child: Text(
+                                'Verified photo records\nfor field operations.',
+                                textAlign: TextAlign.center,
+                                style: AppTextStyles.bodyLarge.copyWith(
+                                  color: AppColors.textSecondary,
+                                  height: 1.6,
+                                ),
                               ),
                             ),
-
-                            const SizedBox(height: 36),
+                            const SizedBox(height: 32),
+                            const FeatureRow(
+                              icon: Icons.photo_camera_outlined,
+                              text: 'Capture photos on site',
+                            ),
+                            const SizedBox(height: 14),
+                            const FeatureRow(
+                              icon: Icons.verified_outlined,
+                              text: 'Each photo is verified on your device',
+                            ),
+                            const SizedBox(height: 14),
+                            const FeatureRow(
+                              icon: Icons.history_rounded,
+                              text: 'Keep a trusted record of your work',
+                            ),
+                            const Spacer(),
+                            const SizedBox(height: 28),
 
                             if (resetNotice != null) ...[
                               Container(
@@ -121,7 +123,7 @@ class WelcomeScreen extends StatelessWidget {
                                 context.go(AppRoutes.identitySetup);
                               },
                               child: Text(
-                                'CREATE SUI IDENTITY',
+                                'GET STARTED',
                                 style: AppTextStyles.buttonText,
                               ),
                             ),

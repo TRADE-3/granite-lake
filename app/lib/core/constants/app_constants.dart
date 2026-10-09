@@ -74,28 +74,17 @@ abstract final class AppConstants {
   static const String captureDirectoryName = 'captures';
 
   // ── Onboarding ─────────────────────────────────────────────────────────────
-  static const String welcomeFlowId = 'ONBOARDING_FLOW_V1.0';
-  static const String welcomeStatus = 'READY';
-  static const String welcomeEncryptMode = 'DEVICE_TRUST';
-  static const String welcomeDisplayId = 'FIELD_CAPTURE_INIT';
+  // Header labels are deliberately plain-language: field crews are not
+  // crypto users, so no flow IDs, key, or chain terminology in the UI.
+  static const String onboardingHeaderLabel = 'SECURE FIELD CAPTURE';
+  static const String onboardingStepIdentity = 'STEP 1 OF 3 · SECURE ID';
+  static const String onboardingStepBiometric = 'STEP 2 OF 3 · PROTECTION';
+  static const String onboardingStepRegistration = 'STEP 3 OF 3 · ACCOUNT';
 
-  static const String registrationFlowId = 'ACCESS_CONTROL_V1.0';
-  static const String registrationStatus = 'SUI_CLAIM';
-  static const String registrationEncryptMode = 'PHOTO_ATTESTATION';
-  static const String registrationDisplayId = 'USER_CAP_CLAIM';
-
-  static const String identityFlowId = 'IDENTITY_BINDING_V1.0';
-  static const String identityStatus = 'KEYPAIR_SETUP';
-  static const String identityEncryptMode = 'SUI_KEYPAIR';
-
-  static const String biometricFlowId = 'IDENTITY_BINDING_V1.0';
-  static const String biometricStatus = 'BIOMETRIC_STEP';
-  static const String biometricEncryptMode = 'SECURE_ENCLAVE';
+  static const String topUpUrl = 'https://faucet.sui.io';
 
   static const String defaultSuiRpcUrl =
       'https://graphql.testnet.sui.io/graphql';
-  static const String suiTestnetFaucetUrl =
-      'https://faucet.sui.io/?network=testnet';
 
   // OTP / UTC backend configuration.
   //
