@@ -2,20 +2,12 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 
-/// Top HUD overlay row: enrollment flow ID + status + encrypt on left,
-/// optional trailing widget (e.g. icon badge) on right.
+/// Top HUD overlay row: plain-language onboarding step label on the left,
+/// optional trailing widget (e.g. icon badge) on the right.
 class TopHudOverlay extends StatelessWidget {
-  const TopHudOverlay({
-    super.key,
-    required this.flowId,
-    this.status = 'ACTIVE',
-    this.encryptAlgo = 'AES-256',
-    this.trailing,
-  });
+  const TopHudOverlay({super.key, required this.title, this.trailing});
 
-  final String flowId;
-  final String status;
-  final String encryptAlgo;
+  final String title;
   final Widget? trailing;
 
   @override
@@ -27,58 +19,17 @@ class TopHudOverlay extends StatelessWidget {
         children: [
           Align(
             alignment: Alignment.topLeft,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  flowId,
-                  style: AppTextStyles.hudLabel.copyWith(
-                    color: AppColors.textMuted,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                _HudTagRow(
-                  label: 'STATUS',
-                  value: status,
-                  valueColor: AppColors.statusActive,
-                ),
-                const SizedBox(height: 2),
-                _HudTagRow(
-                  label: 'ENCRYPT',
-                  value: encryptAlgo,
-                  valueColor: AppColors.textSecondary,
-                ),
-              ],
+            child: Text(
+              title,
+              style: AppTextStyles.hudLabel.copyWith(
+                color: AppColors.textMuted,
+              ),
             ),
           ),
           if (trailing != null)
             Align(alignment: Alignment.topCenter, child: trailing!),
         ],
       ),
-    );
-  }
-}
-
-class _HudTagRow extends StatelessWidget {
-  const _HudTagRow({
-    required this.label,
-    required this.value,
-    required this.valueColor,
-  });
-
-  final String label;
-  final String value;
-  final Color valueColor;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text('$label: ', style: AppTextStyles.hudLabel),
-        Text(value, style: AppTextStyles.hudLabel.copyWith(color: valueColor)),
-      ],
     );
   }
 }

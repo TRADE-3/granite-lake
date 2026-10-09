@@ -217,7 +217,7 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'This file will be attested without internet. Explain why before continuing - this is stored with the attestation and hashed on-chain.',
+                    'This file will be verified without internet. Explain why before continuing - your note is stored with the file as part of its verified record.',
                     style: AppTextStyles.bodySmall.copyWith(
                       color: AppColors.textSecondary,
                     ),
@@ -297,7 +297,7 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
     if (projectId == null || projectId.trim().isEmpty) {
       setState(() {
         _errorMessage =
-            'Select a project before uploading a file for attestation.';
+            'Select a project before uploading a file for verification.';
       });
       return;
     }
@@ -385,7 +385,7 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
       }
       setState(() {
         _flow = _FileFlow.review;
-        _errorMessage = result.message ?? 'File attestation failed.';
+        _errorMessage = result.message ?? 'File verification failed.';
       });
       return;
     }
@@ -594,13 +594,13 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                   child: Column(
                     children: [
                       _SubmissionStep(
-                        title: 'Hashing And Signing Evidence',
+                        title: 'Securing File',
                         value: _submissionStageValue(
                           AttestationSubmissionStage.signing,
                           activeLabel:
-                              'Hashing the file and signing the proof bundle',
-                          completeLabel: 'Proof bundle signed for this session',
-                          failedLabel: 'Signing the local proof bundle failed',
+                              'Creating a tamper-proof record of this file',
+                          completeLabel: 'File secured',
+                          failedLabel: 'Securing the file failed',
                         ),
                         state:
                             _stageStates[AttestationSubmissionStage.signing]!,
@@ -609,8 +609,7 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                         title: 'Saving Local Record',
                         value: _submissionStageValue(
                           AttestationSubmissionStage.savingLocalRecord,
-                          activeLabel:
-                              'Writing file metadata and manifest to this device',
+                          activeLabel: 'Saving the file details to this device',
                           completeLabel: 'Local file record saved on-device',
                           failedLabel: 'Saving the local file record failed',
                         ),
@@ -619,14 +618,13 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                                 .savingLocalRecord]!,
                       ),
                       _SubmissionStep(
-                        title: 'Submitting To Sui Testnet',
+                        title: 'Submitting For Verification',
                         value: _submissionStageValue(
                           AttestationSubmissionStage.submittingToChain,
                           activeLabel:
-                              'Calling `attest_file` with UserCap, Registry, hash, file id, and project id',
-                          completeLabel:
-                              'Sui attestation transaction submitted',
-                          failedLabel: 'Sui attestation transaction failed',
+                              'Submitting the verification record with file details',
+                          completeLabel: 'Verification record submitted',
+                          failedLabel: 'Verification submission failed',
                         ),
                         state:
                             _stageStates[AttestationSubmissionStage
@@ -636,11 +634,10 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                         title: 'Refreshing Device History',
                         value: _submissionStageValue(
                           AttestationSubmissionStage.refreshingHistory,
-                          activeLabel: 'Refreshing the local file ledger',
+                          activeLabel: 'Refreshing your file history',
                           completeLabel:
-                              'File ledger updated with the latest status',
-                          failedLabel:
-                              'Refreshing the local file ledger failed',
+                              'File history updated with the latest status',
+                          failedLabel: 'Refreshing file history failed',
                         ),
                         state:
                             _stageStates[AttestationSubmissionStage
@@ -670,7 +667,8 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
         else ...[
           _SectionLabel(
             title: 'Selected File',
-            subtitle: 'Review what will be stored locally and sent on-chain.',
+            subtitle:
+                'Review what will be saved on this device and submitted for verification.',
           ),
           const SizedBox(height: 10),
           _FileIdentityCard(
@@ -690,28 +688,28 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
               final isWide = constraints.maxWidth >= 760;
               final children = [
                 _SummaryCard(
-                  title: 'LOCAL_RECORD',
+                  title: 'SAVED ON DEVICE',
                   icon: Icons.storage_rounded,
                   accent: AppColors.statusActive,
                   rows: [
-                    ('uploaded_file_id', _projectedFileId(selectedFile)),
-                    ('file_name', selectedFile.name),
-                    ('file_sha256', selectedFile.shortHash),
-                    ('file_path', selectedFile.path),
-                    ('mime_type', selectedFile.mimeType),
-                    ('file_size_bytes', '${selectedFile.sizeBytes}'),
-                    ('storage_mode', 'LOCAL_ONLY'),
+                    ('File ID', _projectedFileId(selectedFile)),
+                    ('File Name', selectedFile.name),
+                    ('File Hash', selectedFile.shortHash),
+                    ('Saved To', selectedFile.path),
+                    ('Type', selectedFile.mimeType),
+                    ('Size', '${selectedFile.sizeBytes} bytes'),
+                    ('Storage', 'THIS DEVICE ONLY'),
                   ],
                 ),
                 _SummaryCard(
-                  title: 'ON_CHAIN_EVENT',
+                  title: 'SUBMITTED FOR VERIFICATION',
                   icon: Icons.verified_rounded,
                   accent: AppColors.primary,
                   rows: [
-                    ('file_hash', selectedFile.shortHash),
-                    ('user_wallet', walletTag),
-                    ('file_id', _projectedFileId(selectedFile)),
-                    ('project_id', projectId),
+                    ('File Hash', selectedFile.shortHash),
+                    ('Secure ID', walletTag),
+                    ('File ID', _projectedFileId(selectedFile)),
+                    ('Project', projectId),
                   ],
                   footer: _submissionMessage,
                 ),
@@ -740,8 +738,7 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
           const SizedBox(height: 16),
           _NotesCard(
             controller: _noteController,
-            helperText:
-                'Saved with this upload on the device. Not included in the on-chain FileAttested event.',
+            helperText: 'Saved with this upload on this device only.',
           ),
           const SizedBox(height: 16),
           _SummaryCard(
@@ -858,7 +855,7 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                 ),
                 const SizedBox(height: 18),
                 Text(
-                  'File Attested',
+                  'File Verified',
                   style: AppTextStyles.headlineLarge.copyWith(
                     fontWeight: FontWeight.w800,
                     color: AppColors.statusActive,
@@ -867,7 +864,7 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Data integrity verified and sequenced',
+                  'File details verified and stored',
                   style: AppTextStyles.labelMedium.copyWith(
                     color: AppColors.textSecondary,
                   ),
@@ -875,22 +872,22 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                 ),
                 const SizedBox(height: 24),
                 _MetadataCard(
-                  title: 'HASH_FINGERPRINT',
+                  title: 'FILE_REFERENCE',
                   icon: Icons.fingerprint_rounded,
                   rows: [
-                    ('SHA256', record.contentSha256),
+                    ('File Hash', record.contentSha256),
                     ('File', record.assetName),
-                    ('file_id', record.fileId),
+                    ('File ID', record.fileId),
                   ],
                 ),
                 const SizedBox(height: 12),
                 _MetadataCard(
-                  title: 'CHAIN_REFERENCE',
+                  title: 'SUBMISSION_REFERENCE',
                   icon: Icons.receipt_long_rounded,
                   rows: [
                     ('Project', record.displayProject),
                     (
-                      'Transaction',
+                      'Submission ID',
                       record.suiTxDigest.isEmpty
                           ? 'Pending'
                           : record.suiTxDigest,
@@ -989,10 +986,10 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
     }
     return switch (_activeSubmissionStage) {
       AttestationSubmissionStage.signing || null => 'Preparing File Evidence',
-      AttestationSubmissionStage.savingLocalRecord => 'Saving Local Proof',
+      AttestationSubmissionStage.savingLocalRecord => 'Saving Local Record',
       AttestationSubmissionStage.submittingToChain =>
-        'Writing Attestation To Chain',
-      AttestationSubmissionStage.refreshingHistory => 'Updating File Ledger',
+        'Submitting For Verification',
+      AttestationSubmissionStage.refreshingHistory => 'Updating File History',
     };
   }
 
@@ -1299,7 +1296,7 @@ class _EmptyPickerCard extends StatelessWidget {
           Icon(Icons.upload_file_rounded, size: 42, color: AppColors.primary),
           const SizedBox(height: 16),
           Text(
-            'Select a file to hash and attest',
+            'Select a file to verify',
             style: AppTextStyles.headlineMedium,
             textAlign: TextAlign.center,
           ),

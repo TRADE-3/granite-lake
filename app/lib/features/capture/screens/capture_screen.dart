@@ -149,7 +149,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
   // unchanged.
   bool _isQueuedOfflineSubmission = false;
   String _submissionProgressMessage =
-      'Preparing secure capture and attestation steps.';
+      'Preparing secure capture and verification steps.';
   final Map<AttestationSubmissionStage, AttestationSubmissionStageState>
   _submissionStageStates = {
     for (final stage in AttestationSubmissionStage.values)
@@ -208,7 +208,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
     _submissionStep = 0;
     _activeSubmissionStage = null;
     _submissionProgressMessage =
-        'Preparing secure capture and attestation steps.';
+        'Preparing secure capture and verification steps.';
     for (final stage in AttestationSubmissionStage.values) {
       _submissionStageStates[stage] = AttestationSubmissionStageState.pending;
     }
@@ -1029,12 +1029,12 @@ class _CaptureScreenState extends State<CaptureScreen> {
       'Network: ${metadata.networkLabel}',
       'Camera: ${metadata.cameraLabel}',
       'Camera Details: ${metadata.cameraDetailsLabel}',
-      'SHA-256: ${record.imageSha256}',
-      'UserCap ID: ${record.suiObjectId}',
-      'Sui Transaction Digest: ${record.suiTxDigest}',
-      'Sui Submission Status: ${record.suiSubmissionStatus}',
+      'File Hash: ${record.imageSha256}',
+      'Record ID: ${record.suiObjectId}',
+      'Submission ID: ${record.suiTxDigest}',
+      'Submission Status: ${record.suiSubmissionStatus}',
       if (record.attestationErrorLabel != null)
-        'Sui Attestation Error: ${record.attestationErrorLabel}',
+        'Verification Error: ${record.attestationErrorLabel}',
       if (record.proofPayload.readString('sessionStartedAt') != null)
         'Session Started: ${record.proofPayload.readString('sessionStartedAt')}',
       if (record.proofPayload.readString('sessionExpiresAt') != null)
@@ -1048,7 +1048,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('Proof bundle copied')));
+      ..showSnackBar(const SnackBar(content: Text('Capture details copied')));
   }
 
   Future<void> _deleteStagedImageIfNeeded() async {
@@ -1614,7 +1614,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                                 ),
                                 const SizedBox(height: 8),
                                 Text(
-                                  'This capture was recorded without internet and/or GPS. Explain why before saving - this is stored with the capture and hashed on-chain.',
+                                  'This capture was recorded without internet and/or GPS. Explain why before saving - your note is stored with the capture as part of its verified record.',
                                   style: AppTextStyles.bodySmall.copyWith(
                                     color: AppColors.textSecondary,
                                   ),
@@ -1834,12 +1834,12 @@ class _CaptureScreenState extends State<CaptureScreen> {
           child: Column(
             children: [
               _SubmissionStep(
-                title: 'Hashing And Signing Evidence',
+                title: 'Securing Capture',
                 value: _submissionStageValue(
                   AttestationSubmissionStage.signing,
-                  activeLabel: 'Hashing the image and signing the proof bundle',
-                  completeLabel: 'Proof bundle signed for this session',
-                  failedLabel: 'Signing the local proof bundle failed',
+                  activeLabel: 'Creating a tamper-proof record of this capture',
+                  completeLabel: 'Capture secured',
+                  failedLabel: 'Securing the capture failed',
                 ),
                 state:
                     _submissionStageStates[AttestationSubmissionStage.signing]!,
@@ -1848,8 +1848,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                 title: 'Saving Local Record',
                 value: _submissionStageValue(
                   AttestationSubmissionStage.savingLocalRecord,
-                  activeLabel:
-                      'Writing image metadata and manifest to this device',
+                  activeLabel: 'Saving the capture details to this device',
                   completeLabel: 'Local capture record saved on-device',
                   failedLabel: 'Saving the local capture record failed',
                 ),
@@ -1860,7 +1859,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
               _SubmissionStep(
                 title: _isQueuedOfflineSubmission
                     ? 'Queuing For Submission'
-                    : 'Submitting To Sui Testnet',
+                    : 'Submitting For Verification',
                 value: _isQueuedOfflineSubmission
                     ? _submissionStageValue(
                         AttestationSubmissionStage.submittingToChain,
@@ -1873,9 +1872,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
                     : _submissionStageValue(
                         AttestationSubmissionStage.submittingToChain,
                         activeLabel:
-                            'Calling `attest_photo` with UserCap, Registry, hash, GPS, altitude, and project id',
-                        completeLabel: 'Sui attestation transaction submitted',
-                        failedLabel: 'Sui attestation transaction failed',
+                            'Submitting the verification record with capture details',
+                        completeLabel: 'Verification record submitted',
+                        failedLabel: 'Verification submission failed',
                       ),
                 state:
                     _submissionStageStates[AttestationSubmissionStage
@@ -1885,10 +1884,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
                 title: 'Refreshing Device History',
                 value: _submissionStageValue(
                   AttestationSubmissionStage.refreshingHistory,
-                  activeLabel: 'Refreshing the local capture ledger',
+                  activeLabel: 'Refreshing your capture history',
                   completeLabel:
-                      'Capture ledger updated with the latest status',
-                  failedLabel: 'Refreshing the local capture ledger failed',
+                      'Capture history updated with the latest status',
+                  failedLabel: 'Refreshing capture history failed',
                 ),
                 state:
                     _submissionStageStates[AttestationSubmissionStage
@@ -1951,7 +1950,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                   Text(
                     hasSubmissionFailure
                         ? 'Capture Saved Locally'
-                        : 'Image Attested',
+                        : 'Capture Verified',
                     style: AppTextStyles.headlineLarge.copyWith(
                       fontWeight: FontWeight.w800,
                       color: hasSubmissionFailure
@@ -1963,8 +1962,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
                   const SizedBox(height: 8),
                   Text(
                     hasSubmissionFailure
-                        ? 'On-chain attestation needs attention'
-                        : 'Data integrity verified and sequenced',
+                        ? 'Verification needs attention'
+                        : 'Capture details verified and stored',
                     style: AppTextStyles.labelMedium.copyWith(
                       color: AppColors.textSecondary,
                     ),
@@ -2056,7 +2055,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                       onPressed: _copyProofBundle,
                       icon: const Icon(Icons.download_rounded, size: 18),
                       label: Text(
-                        'COPY PROOF BUNDLE',
+                        'COPY CAPTURE DETAILS',
                         style: AppTextStyles.buttonText,
                       ),
                     ),
@@ -2435,12 +2434,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
     }
     return switch (_activeSubmissionStage) {
       AttestationSubmissionStage.signing || null => 'Preparing Secure Evidence',
-      AttestationSubmissionStage.savingLocalRecord => 'Saving Local Proof',
+      AttestationSubmissionStage.savingLocalRecord => 'Saving Local Record',
       AttestationSubmissionStage.submittingToChain =>
         _isQueuedOfflineSubmission
             ? 'Queuing For Later Submission'
-            : 'Writing Attestation To Chain',
-      AttestationSubmissionStage.refreshingHistory => 'Updating Capture Ledger',
+            : 'Submitting For Verification',
+      AttestationSubmissionStage.refreshingHistory =>
+        'Updating Capture History',
     };
   }
 
@@ -2451,10 +2451,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
   String _submissionStatusMessage(AttestationRecord record) {
     return switch (record.normalizedSuiSubmissionStatus) {
       'FAILED_NOT_CONFIGURED' =>
-        'This capture was saved, but the app does not have valid Sui contract settings for attestation.',
+        'This capture was saved, but verification is not set up for this app yet.',
       'FAILED_SUBMISSION' =>
         record.attestationErrorLabel ??
-            'This capture was saved, but the Sui attestation transaction did not complete. Check wallet gas and network connectivity, then try again later.',
+            'This capture was saved, but its verification did not complete. Check your connection and account balance, then try again later.',
       // Offline-queue at-rest encryption (offline-capture design doc
       // §7.3): distinct from FAILED_SUBMISSION - the chain never rejected
       // anything, this row's own locally-stored data failed its integrity
@@ -2463,7 +2463,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
         "This capture's locally stored data failed its integrity check and cannot be resubmitted. It may have been altered since it was captured.",
       _ =>
         record.attestationErrorLabel ??
-            'This capture was saved, but the on-chain attestation status requires attention.',
+            'This capture was saved, but its verification status needs attention.',
     };
   }
 

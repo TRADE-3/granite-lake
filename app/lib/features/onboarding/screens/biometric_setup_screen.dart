@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app.dart';
-import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
@@ -46,9 +45,7 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             TopHudOverlay(
-                              flowId: AppConstants.biometricFlowId,
-                              status: AppConstants.biometricStatus,
-                              encryptAlgo: AppConstants.biometricEncryptMode,
+                              title: AppConstants.onboardingStepBiometric,
                               trailing: const ShieldBadge(size: 48),
                             ),
 
@@ -79,7 +76,7 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                             const SizedBox(height: 8),
 
                             Text(
-                              'Protect Your Wallet',
+                              'Protect Your Secure ID',
                               style: AppTextStyles.displayMedium.copyWith(
                                 fontSize: 24,
                                 fontWeight: FontWeight.w800,
@@ -91,8 +88,8 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
 
                             Text(
                               binding == null
-                                  ? 'Use your fingerprint or face unlock to protect your wallet on this device.'
-                                  : 'Biometric protection is turned on. You will use it whenever the app needs to unlock your wallet.',
+                                  ? 'Use your fingerprint or face unlock to protect your secure ID on this device.'
+                                  : 'Biometric protection is on. The app will ask for it whenever it needs to unlock your secure ID.',
                               style: AppTextStyles.bodyMedium.copyWith(
                                 color: AppColors.textSecondary,
                                 height: 1.6,
@@ -104,7 +101,6 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                             _BiometricPanel(
                               isBinding: _isBinding,
                               isBound: binding != null,
-                              binding: binding,
                             ),
 
                             const SizedBox(height: 18),
@@ -190,7 +186,7 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                                   const SizedBox(width: 10),
                                   Expanded(
                                     child: Text(
-                                      'Your fingerprint or face data stays on your device. This app only uses it to help protect your wallet.',
+                                      'Your fingerprint or face data stays on your device. This app only uses it to help protect your secure ID.',
                                       style: AppTextStyles.bodySmall.copyWith(
                                         color: AppColors.textSecondary,
                                         height: 1.5,
@@ -202,31 +198,6 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                             ),
 
                             const Spacer(),
-
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: _FooterMetric(
-                                    label: 'AUTH LEVEL',
-                                    value: binding == null
-                                        ? 'NOT READY'
-                                        : 'READY',
-                                    valueColor: AppColors.textPrimary,
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: _FooterMetric(
-                                    label: 'COMPLIANCE',
-                                    value: binding == null
-                                        ? 'DEVICE ONLY'
-                                        : 'BIOMETRIC LOCK',
-                                    valueColor: AppColors.secondary,
-                                    alignEnd: true,
-                                  ),
-                                ),
-                              ],
-                            ),
                           ],
                         ),
                       ),
@@ -243,23 +214,18 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
 }
 
 class _BiometricPanel extends StatelessWidget {
-  const _BiometricPanel({
-    required this.isBinding,
-    required this.isBound,
-    required this.binding,
-  });
+  const _BiometricPanel({required this.isBinding, required this.isBound});
 
   final bool isBinding;
   final bool isBound;
-  final BiometricBindingRecord? binding;
 
   @override
   Widget build(BuildContext context) {
     final statusLabel = isBound
-        ? 'HARDWARE GATE ACTIVE'
+        ? 'PROTECTION ACTIVE'
         : isBinding
-        ? 'VERIFYING ENROLLMENT'
-        : 'READY FOR ENROLLMENT';
+        ? 'SETTING UP'
+        : 'READY TO SET UP';
 
     return Container(
       width: double.infinity,
@@ -271,20 +237,6 @@ class _BiometricPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(width: 16, height: 1, color: AppColors.borderActive),
-              const Spacer(),
-              Text(
-                'ENCRYPTED_PATH: ACTIVE',
-                style: AppTextStyles.labelSmall.copyWith(
-                  color: AppColors.secondary,
-                  letterSpacing: 0.8,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
           Center(
             child: _FingerprintScannerBox(
               isBinding: isBinding,
@@ -327,32 +279,6 @@ class _BiometricPanel extends StatelessWidget {
                 ),
               ),
             ),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Text(
-                'HW_ID: 0x8F92',
-                style: AppTextStyles.labelSmall.copyWith(
-                  color: AppColors.textMuted,
-                ),
-              ),
-              const Spacer(),
-              Container(width: 16, height: 1, color: AppColors.primary),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            isBound
-                ? 'KEYSTORE_ALIAS: ${binding?.gateAlias.isNotEmpty == true ? binding!.gateAlias : 'REGISTERED'}'
-                : isBinding
-                ? 'LATENCY: 08ms'
-                : 'LATENCY: 12ms',
-            style: AppTextStyles.labelSmall.copyWith(
-              color: isBound ? AppColors.textSecondary : AppColors.textMuted,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
@@ -501,39 +427,6 @@ class _FingerprintScannerBoxState extends State<_FingerprintScannerBox>
                   size: widget.resolvedIsBound ? 58 : 68,
                 ),
               ),
-              Positioned(
-                left: 10,
-                bottom: 10,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'HW_ID: 0x8F92',
-                      style: AppTextStyles.labelSmall.copyWith(
-                        color: AppColors.textMuted.withAlpha(150),
-                      ),
-                    ),
-                    Text(
-                      widget.resolvedIsBinding
-                          ? 'SCAN: ACTIVE'
-                          : 'SCAN: STANDBY',
-                      style: AppTextStyles.labelSmall.copyWith(
-                        color: AppColors.textMuted.withAlpha(150),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Positioned(
-                top: 10,
-                right: 10,
-                child: Text(
-                  widget.resolvedIsBound
-                      ? 'ENCRYPTED_PATH: BOUND'
-                      : 'ENCRYPTED_PATH: ACTIVE',
-                  style: AppTextStyles.labelSmall.copyWith(color: glowColor),
-                ),
-              ),
             ],
           );
         },
@@ -557,44 +450,4 @@ class _ScannerGridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-class _FooterMetric extends StatelessWidget {
-  const _FooterMetric({
-    required this.label,
-    required this.value,
-    required this.valueColor,
-    this.alignEnd = false,
-  });
-
-  final String label;
-  final String value;
-  final Color valueColor;
-  final bool alignEnd;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: alignEnd
-          ? CrossAxisAlignment.end
-          : CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: AppTextStyles.labelSmall.copyWith(
-            color: AppColors.textMuted,
-            letterSpacing: 0.8,
-          ),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          value,
-          style: AppTextStyles.labelLarge.copyWith(
-            color: valueColor,
-            letterSpacing: 0.8,
-          ),
-        ),
-      ],
-    );
-  }
 }

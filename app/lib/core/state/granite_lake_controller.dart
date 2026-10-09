@@ -329,7 +329,7 @@ class GraniteLakeController extends ChangeNotifier {
     final config = _photoAttestationConfig;
     if (identity == null) {
       return const ActionResult.failure(
-        'Create the local Sui identity before claiming your user record.',
+        'Create your secure ID before registering your account.',
       );
     }
     if (config == null || !config.isComplete) {
@@ -347,7 +347,7 @@ class GraniteLakeController extends ChangeNotifier {
         normalizedOtp.isEmpty ||
         normalizedWalletNonce.isEmpty) {
       return const ActionResult.failure(
-        'Company domain, OTP session id, OTP, and wallet nonce are all required.',
+        'Company domain and one-time code are required.',
       );
     }
 
@@ -556,7 +556,7 @@ class GraniteLakeController extends ChangeNotifier {
       if ((_walletSuiBalanceMist ?? BigInt.zero) <
           BigInt.from(AppConstants.minimumAttestationMistBalance)) {
         final insufficientBalanceMessage =
-            'Your wallet needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} SUI before submitting an attestation. Add test SUI and try again.';
+            'Your balance needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} before submitting for verification. Add funds and try again.';
         for (final record in pending) {
           await _updateAttestationRecord(
             record,
@@ -1193,7 +1193,7 @@ class GraniteLakeController extends ChangeNotifier {
         (_walletSuiBalanceMist ?? BigInt.zero) <
             BigInt.from(AppConstants.minimumAttestationMistBalance)) {
       return AttestationActionResult.failure(
-        'Your wallet needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} SUI before submitting an attestation. Add test SUI and try again.',
+        'Your balance needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} before submitting for verification. Add funds and try again.',
       );
     }
 
@@ -1230,7 +1230,7 @@ class GraniteLakeController extends ChangeNotifier {
         stage: AttestationSubmissionStage.submittingToChain,
         state: AttestationSubmissionStageState.active,
         message: (isOnline && !isForcedOffline)
-            ? 'Submitting the attestation transaction to Sui testnet.'
+            ? 'Submitting your capture for verification.'
             : 'Queuing the capture for submission once connectivity returns.',
       ),
     );
@@ -1272,14 +1272,14 @@ class GraniteLakeController extends ChangeNotifier {
             ? _attestationSubmissionFailureMessage(record)
             : submissionQueued
             ? 'Queued locally - will submit automatically once connectivity returns.'
-            : 'Attestation transaction accepted by Sui.',
+            : 'Verification record accepted.',
       ),
     );
     onProgress?.call(
       const AttestationSubmissionProgress(
         stage: AttestationSubmissionStage.refreshingHistory,
         state: AttestationSubmissionStageState.active,
-        message: 'Refreshing the on-device attestation ledger.',
+        message: 'Updating your records.',
       ),
     );
     final photoRecord = PhotoCaptureRecord.fromAttestationRecord(record);
@@ -1305,7 +1305,7 @@ class GraniteLakeController extends ChangeNotifier {
       const AttestationSubmissionProgress(
         stage: AttestationSubmissionStage.refreshingHistory,
         state: AttestationSubmissionStageState.completed,
-        message: 'Local attestation history updated.',
+        message: 'Local history updated.',
       ),
     );
     return AttestationActionResult.success(record);
@@ -1350,7 +1350,7 @@ class GraniteLakeController extends ChangeNotifier {
     }
     if (claim == null) {
       return const AttestationActionResult.failure(
-        'Claim your on-chain user record before uploading a file for attestation.',
+        'Register your account before uploading a file for verification.',
       );
     }
 
@@ -1365,7 +1365,7 @@ class GraniteLakeController extends ChangeNotifier {
     ];
     if (missingFields.isNotEmpty) {
       return AttestationActionResult.failure(
-        'File attestation failed. Missing required fields: ${missingFields.join(', ')}.',
+        'File verification failed. Missing required fields: ${missingFields.join(', ')}.',
       );
     }
 
@@ -1377,7 +1377,7 @@ class GraniteLakeController extends ChangeNotifier {
         (_walletSuiBalanceMist ?? BigInt.zero) <
             BigInt.from(AppConstants.minimumAttestationMistBalance)) {
       return AttestationActionResult.failure(
-        'Your wallet needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} SUI before submitting an attestation. Add test SUI and try again.',
+        'Your balance needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} before submitting for verification. Add funds and try again.',
       );
     }
 
@@ -1411,7 +1411,7 @@ class GraniteLakeController extends ChangeNotifier {
         stage: AttestationSubmissionStage.submittingToChain,
         state: AttestationSubmissionStageState.active,
         message: (isOnline && !isForcedOffline)
-            ? 'Submitting the file attestation transaction to Sui testnet.'
+            ? 'Submitting your file for verification.'
             : 'Queuing the file for submission once connectivity returns.',
       ),
     );
@@ -1445,14 +1445,14 @@ class GraniteLakeController extends ChangeNotifier {
             ? _attestationSubmissionFailureMessage(record)
             : submissionQueued
             ? 'Queued locally - will submit automatically once connectivity returns.'
-            : 'File attestation transaction accepted by Sui.',
+            : 'File verification record accepted.',
       ),
     );
     onProgress?.call(
       const AttestationSubmissionProgress(
         stage: AttestationSubmissionStage.refreshingHistory,
         state: AttestationSubmissionStageState.active,
-        message: 'Refreshing the on-device attestation ledger.',
+        message: 'Updating your records.',
       ),
     );
     final uploadedFile = UploadedFileRecord.fromAttestationRecord(record);
@@ -1478,7 +1478,7 @@ class GraniteLakeController extends ChangeNotifier {
       const AttestationSubmissionProgress(
         stage: AttestationSubmissionStage.refreshingHistory,
         state: AttestationSubmissionStageState.completed,
-        message: 'Local attestation history updated.',
+        message: 'Local history updated.',
       ),
     );
     return AttestationActionResult.success(record);
@@ -1603,7 +1603,7 @@ class GraniteLakeController extends ChangeNotifier {
         record,
         suiSubmissionStatus: 'FAILED_NOT_CONFIGURED',
         suiErrorMessage:
-            'Sui contract configuration is missing, so on-chain attestation could not be submitted.',
+            'Verification is not configured for this app, so the record could not be submitted.',
         decryptedRecord: decryptedRecord,
       );
     }
@@ -1685,7 +1685,7 @@ class GraniteLakeController extends ChangeNotifier {
         suiSubmissionStatus: _isNetworkClassFailure(error)
             ? 'PENDING_SUBMISSION'
             : 'FAILED_SUBMISSION',
-        suiErrorMessage: 'The attestation transaction failed: $error',
+        suiErrorMessage: 'The verification submission failed: $error',
         incrementAttempt: true,
         decryptedRecord: decryptedRecord,
       );
@@ -1752,7 +1752,7 @@ class GraniteLakeController extends ChangeNotifier {
         record,
         suiSubmissionStatus: 'FAILED_NOT_CONFIGURED',
         suiErrorMessage:
-            'Sui contract configuration is missing, so on-chain attestation could not be submitted.',
+            'Verification is not configured for this app, so the record could not be submitted.',
         decryptedRecord: decryptedRecord,
       );
     }
@@ -1822,7 +1822,7 @@ class GraniteLakeController extends ChangeNotifier {
         suiSubmissionStatus: _isNetworkClassFailure(error)
             ? 'PENDING_SUBMISSION'
             : 'FAILED_SUBMISSION',
-        suiErrorMessage: 'The attestation transaction failed: $error',
+        suiErrorMessage: 'The verification submission failed: $error',
         incrementAttempt: true,
         decryptedRecord: decryptedRecord,
       );
@@ -1832,13 +1832,13 @@ class GraniteLakeController extends ChangeNotifier {
   String _attestationSubmissionFailureMessage(AttestationRecord record) {
     return switch (record.normalizedSuiSubmissionStatus) {
       'FAILED_NOT_CONFIGURED' =>
-        'Sui contract configuration is missing, so on-chain attestation could not be submitted.',
+        'Verification is not configured for this app, so the record could not be submitted.',
       'FAILED_SUBMISSION' =>
         record.attestationErrorLabel ??
-            'The Sui attestation transaction failed. Check network access and wallet gas, then try again later.',
+            'The verification submission failed. Check your connection and account balance, then try again later.',
       _ =>
         record.attestationErrorLabel ??
-            'The on-chain attestation did not complete successfully.',
+            'The verification submission did not complete.',
     };
   }
 
@@ -2006,7 +2006,7 @@ class GraniteLakeController extends ChangeNotifier {
           transactionDigest: capture.suiTxDigest,
           transactionStatus: capture.suiSubmissionStatus,
           failureReason:
-              'Could not reach the network to verify this attestation. '
+              'Could not reach the network to verify this record. '
               'It will be re-checked automatically once a connection is '
               'available. ($error)',
         ),

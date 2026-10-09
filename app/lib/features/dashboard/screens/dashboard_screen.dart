@@ -99,10 +99,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 title: 'IDENTITY',
                 primaryValue: identity?.walletTag ?? 'NOT_PROVISIONED',
                 secondaryValue: identity == null
-                    ? 'Sui wallet not provisioned'
+                    ? 'Secure ID not set up'
                     : binding == null
-                    ? 'Sui wallet ready • biometric binding pending'
-                    : 'Sui wallet bound • ${binding.modalitiesLabel}',
+                    ? 'Secure ID ready • protection setup pending'
+                    : 'Secure ID protected • ${binding.modalitiesLabel}',
                 isActive: identity != null && binding != null,
                 trailing: identity == null
                     ? null
@@ -114,14 +114,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ScaffoldMessenger.of(context)
                             ..hideCurrentSnackBar()
                             ..showSnackBar(
-                              const SnackBar(
-                                content: Text('Sui wallet address copied'),
-                              ),
+                              const SnackBar(content: Text('Secure ID copied')),
                             );
                         },
                         icon: const Icon(Icons.copy_rounded, size: 18),
                         color: AppColors.textPrimary,
-                        tooltip: 'Copy Sui wallet address',
+                        tooltip: 'Copy Secure ID',
                         visualDensity: VisualDensity.compact,
                       ),
               ),

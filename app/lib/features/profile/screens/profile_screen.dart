@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../app.dart';
 import '../../../core/constants/app_constants.dart';
@@ -92,13 +93,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
             operatorName: operatorName,
             operatorRole: operatorRole,
             tenantName: tenantName,
-            walletAddress: identity?.walletAddress ?? 'Wallet not provisioned',
+            walletAddress: identity?.walletAddress ?? 'Secure ID not ready',
             createdAt: createdAt,
             biometricLabel:
-                binding?.modalitiesLabel ?? 'Awaiting biometric bind',
+                binding?.modalitiesLabel ?? 'Awaiting protection setup',
           ),
           const SizedBox(height: 22),
-          const _SectionLabel('Wallet Balance'),
+          const _SectionLabel('Account Balance'),
           const SizedBox(height: 10),
           _Panel(
             child: _WalletBalanceTile(
@@ -106,6 +107,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               isRefreshing: controller.isRefreshingWalletSuiBalance,
               hasEnoughForAttestation: controller.hasEnoughSuiForAttestation,
               hasWallet: identity != null,
+              walletAddress: identity?.walletAddress ?? '',
               onRefresh: () => controller.refreshWalletSuiBalance(force: true),
             ),
           ),
@@ -149,7 +151,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
           ),
           const SizedBox(height: 22),
-          const _SectionLabel('Hardware Attestation'),
+          const _SectionLabel('Device Security'),
           const SizedBox(height: 10),
           _Panel(
             child: Column(
@@ -192,7 +194,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                     ),
                     _StatusPill(
-                      label: binding != null ? 'BOUND' : 'PENDING',
+                      label: binding != null ? 'PROTECTED' : 'PENDING',
                       color: binding != null
                           ? AppColors.statusActive
                           : AppColors.textSecondary,
@@ -202,15 +204,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 const SizedBox(height: 16),
                 Divider(height: 1, color: AppColors.border),
                 const SizedBox(height: 16),
-                _DataBlock(
-                  label: 'Public Key Fingerprint',
-                  value:
-                      identity?.publicKeyHex.toUpperCase() ??
-                      'Public key unavailable until identity is created.',
-                  canCopy: identity != null,
-                  copyValue: identity?.publicKeyHex,
-                ),
-                const SizedBox(height: 12),
                 _KeyValueGrid(
                   items: [
                     _KeyValueItem(label: 'Identity Created', value: createdAt),
@@ -579,7 +572,7 @@ class _ProfileHeaderCard extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'AUTH LEVEL: ALPHA',
+                            'OPERATOR',
                             style: AppTextStyles.labelSmall.copyWith(
                               color: AppColors.textSecondary,
                               letterSpacing: 0.8,
@@ -615,15 +608,15 @@ class _ProfileHeaderCard extends StatelessWidget {
                     _KeyValueItem(label: 'Employee ID', value: employeeId),
                     _KeyValueItem(label: 'Tenant', value: tenantName),
                     _KeyValueItem(label: 'Identity Created', value: createdAt),
-                    _KeyValueItem(label: 'Binding Mode', value: biometricLabel),
+                    _KeyValueItem(label: 'Protection', value: biometricLabel),
                   ],
                 ),
                 const SizedBox(height: 14),
                 _DataBlock(
-                  label: 'Wallet Address',
+                  label: 'Secure ID',
                   value: walletAddress,
-                  canCopy: walletAddress != 'Wallet not provisioned',
-                  copyValue: walletAddress != 'Wallet not provisioned'
+                  canCopy: walletAddress != 'Secure ID not ready',
+                  copyValue: walletAddress != 'Secure ID not ready'
                       ? walletAddress
                       : null,
                 ),
@@ -684,9 +677,11 @@ class _WalletBalanceTile extends StatelessWidget {
     required this.isRefreshing,
     required this.hasEnoughForAttestation,
     required this.hasWallet,
+    required this.walletAddress,
     required this.onRefresh,
   });
 
+  final String walletAddress;
   final double? suiBalance;
   final bool isRefreshing;
   final bool hasEnoughForAttestation;
@@ -721,14 +716,14 @@ class _WalletBalanceTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'SUI Balance',
+                    'Balance',
                     style: AppTextStyles.headlineMedium.copyWith(fontSize: 18),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     hasWallet
                         ? _formatSuiBalance(suiBalance)
-                        : 'Wallet not provisioned',
+                        : 'Secure ID not ready',
                     style: AppTextStyles.labelLarge.copyWith(
                       color: AppColors.textSecondary,
                     ),
@@ -752,6 +747,55 @@ class _WalletBalanceTile extends StatelessWidget {
               ),
           ],
         ),
+        if (hasWallet) ...[
+          const SizedBox(height: 14),
+          Divider(height: 1, color: AppColors.border),
+          const SizedBox(height: 14),
+          Text(
+            'HOW TO TOP UP',
+            style: AppTextStyles.labelSmall.copyWith(
+              color: AppColors.textMuted,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(height: 10),
+          const _TopUpStep(
+            number: '1',
+            text: 'Copy your secure ID using the button below.',
+          ),
+          const _TopUpStep(
+            number: '2',
+            text: 'Open the top-up page and paste your secure ID.',
+          ),
+          const _TopUpStep(
+            number: '3',
+            text: 'Come back here and tap refresh to see your new balance.',
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () =>
+                      _copyValue(context, 'Secure ID', walletAddress),
+                  icon: const Icon(Icons.copy_rounded, size: 16),
+                  label: const Text('Copy secure ID'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () => launchUrl(
+                    Uri.parse(AppConstants.topUpUrl),
+                    mode: LaunchMode.externalApplication,
+                  ),
+                  icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                  label: const Text('Top-up account'),
+                ),
+              ),
+            ],
+          ),
+        ],
         if (showLowBalanceWarning) ...[
           const SizedBox(height: 16),
           Divider(height: 1, color: AppColors.border),
@@ -766,7 +810,7 @@ class _WalletBalanceTile extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Balance is too low to cover attestation gas fees.',
+                  'Balance is too low to submit new captures for verification.',
                   style: AppTextStyles.labelLarge.copyWith(
                     color: const Color(0xFFFFB347),
                   ),
@@ -776,6 +820,51 @@ class _WalletBalanceTile extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+class _TopUpStep extends StatelessWidget {
+  const _TopUpStep({required this.number, required this.text});
+
+  final String number;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 20,
+            height: 20,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: AppColors.primary.withAlpha(24),
+              shape: BoxShape.circle,
+            ),
+            child: Text(
+              number,
+              style: AppTextStyles.labelSmall.copyWith(
+                color: AppColors.primary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: AppTextStyles.bodySmall.copyWith(
+                color: AppColors.textSecondary,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1095,7 +1184,7 @@ String _formatSuiBalance(double? sui) {
   if (sui == null) {
     return 'Fetching balance…';
   }
-  return '${sui.toStringAsFixed(4)} SUI';
+  return sui.toStringAsFixed(4);
 }
 
 String _employeeId(IdentityRecord? identity) {
