@@ -14,6 +14,7 @@ import '../../../core/services/time_sync_service.dart';
 import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/utils/verified_email.dart';
 import '../../../core/utils/utils.dart';
 
 enum _FileFlow { selecting, review, submitting, success }
@@ -904,6 +905,26 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                   ),
                 ],
                 const SizedBox(height: 20),
+                if (record.isAttestationAnchored) ...[
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () => composeVerifiedEmail(context, record),
+                      style: OutlinedButton.styleFrom(
+                        side: BorderSide(color: AppColors.borderActive),
+                        padding: const EdgeInsets.symmetric(vertical: 18),
+                      ),
+                      icon: const Icon(Icons.mail_outline_rounded),
+                      label: Text(
+                        'EMAIL_VERIFIED_FILE',
+                        style: AppTextStyles.buttonText.copyWith(
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(

@@ -12,6 +12,7 @@ import '../../../core/constants/app_constants.dart';
 import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/utils/verified_email.dart';
 
 Color get _detailActionFill => AppColors.actionFill;
 Color get _detailActionText => AppColors.actionText;
@@ -180,6 +181,12 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
       }
     }
   }
+
+  Future<void> _composeEmail(AttestationRecord record) => composeVerifiedEmail(
+    context,
+    record,
+    location: record.isPhoto ? _geospatialValue(record.proofPayload) : null,
+  );
 
   String _hex(List<int> bytes) {
     final buffer = StringBuffer();
@@ -420,6 +427,36 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                               ),
                             ),
                           ),
+                          if (record.isAttestationAnchored) ...[
+                            const SizedBox(height: 14),
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                onPressed: () => _composeEmail(record),
+                                style: OutlinedButton.styleFrom(
+                                  side: BorderSide(color: _detailPanelBorder),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 18,
+                                    vertical: 16,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                ),
+                                icon: const Icon(
+                                  Icons.mail_outline_rounded,
+                                  size: 18,
+                                ),
+                                label: Text(
+                                  'EMAIL VERIFIED ${record.isFile ? 'FILE' : 'PHOTO'}',
+                                  style: AppTextStyles.buttonText.copyWith(
+                                    color: AppColors.textPrimary,
+                                    letterSpacing: 1.1,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                           const SizedBox(height: 20),
                           Container(height: 1, color: _detailHeaderBorder),
                           const SizedBox(height: 18),
