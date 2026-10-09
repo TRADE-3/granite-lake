@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -28,6 +29,9 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
   bool _isEndingSession = false;
   String? _errorMessage;
   AnimationController? _pulseController;
+  // Drives the comet arc orbiting the lock medallion - continuous one-way
+  // rotation, unlike _pulseController's reverse-breathing cycle.
+  AnimationController? _spinController;
   // Plays once on mount - fades/slides the whole content column in, rather
   // than having it snap into place, per the request for this screen to feel
   // animated rather than static.
@@ -37,6 +41,7 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
   void initState() {
     super.initState();
     _ensurePulseController();
+    _ensureSpinController();
     _introController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 650),
@@ -46,6 +51,7 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
   @override
   void dispose() {
     _pulseController?.dispose();
+    _spinController?.dispose();
     _introController?.dispose();
     super.dispose();
   }
@@ -211,6 +217,7 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
     final identity = controller.identity;
     final biometricIcon = _resolveBiometricIcon(controller.biometricBinding);
     final pulseController = _ensurePulseController();
+    final spinController = _ensureSpinController();
     final introController = _introController!;
 
     return DecoratedBox(
@@ -306,17 +313,26 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
                                       ),
                                     ),
                                     const SizedBox(height: 28),
-                                    GestureDetector(
-                                      onTap: () =>
-                                          _handlePrimaryAction(activeSession),
-                                      child: _BiometricUnlockButton(
-                                        pulse: pulseController,
-                                        isBusy: _isStartingSession,
-                                        isActive: activeSession,
-                                        iconData: biometricIcon,
-                                      ),
+                                    _SessionLockMedallion(
+                                      pulse: pulseController,
+                                      spin: spinController,
+                                      isBusy: _isStartingSession,
+                                      isActive: activeSession,
                                     ),
-                                    const SizedBox(height: 28),
+                                    const SizedBox(height: 26),
+                                    _UnlockCtaButton(
+                                      pulse: pulseController,
+                                      isBusy: _isStartingSession,
+                                      isActive: activeSession,
+                                      iconData: biometricIcon,
+                                      onPressed:
+                                          _isStartingSession || _isEndingSession
+                                          ? null
+                                          : () => _handlePrimaryAction(
+                                              activeSession,
+                                            ),
+                                    ),
+                                    const SizedBox(height: 20),
                                     AnimatedSwitcher(
                                       duration: const Duration(
                                         milliseconds: 300,
@@ -437,6 +453,13 @@ class _CaptureTabScreenState extends State<CaptureTabScreen>
       vsync: this,
       duration: const Duration(milliseconds: 2200),
     )..repeat(reverse: true);
+  }
+
+  AnimationController _ensureSpinController() {
+    return _spinController ??= AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 5),
+    )..repeat();
   }
 }
 
@@ -609,30 +632,36 @@ class _SecurityBadge extends StatelessWidget {
   }
 }
 
-class _BiometricUnlockButton extends StatelessWidget {
-  const _BiometricUnlockButton({
+/// Session-state medallion - display only, not a button. The fingerprint
+/// glyph previously centered here read as "scan your finger now" (user
+/// feedback confused it with an on-screen fingerprint requirement), so the
+/// medallion now shows a lock mirroring session state, and the biometric
+/// prompt is triggered exclusively by [_UnlockCtaButton] below it - the one
+/// place the biometric glyph still appears.
+class _SessionLockMedallion extends StatelessWidget {
+  const _SessionLockMedallion({
     required this.pulse,
+    required this.spin,
     required this.isBusy,
     required this.isActive,
-    required this.iconData,
   });
 
   final Animation<double> pulse;
+  final Animation<double> spin;
   final bool isBusy;
   final bool isActive;
-  final IconData iconData;
 
   @override
   Widget build(BuildContext context) {
-    final ringColor = isActive
-        ? AppColors.statusActive
-        : const Color(0xFF40E56C);
+    // Orange = locked, action needed; green = session active. Both are brand
+    // accents, and the swap makes the state readable from across a site.
+    final accent = isActive ? AppColors.statusActive : AppColors.secondary;
 
     return SizedBox(
       width: 180,
       height: 180,
       child: AnimatedBuilder(
-        animation: pulse,
+        animation: Listenable.merge([pulse, spin]),
         builder: (context, child) {
           final scale = 0.94 + (pulse.value * 0.14);
           final opacity = 0.14 + (pulse.value * 0.18);
@@ -648,48 +677,57 @@ class _BiometricUnlockButton extends StatelessWidget {
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: ringColor.withValues(alpha: opacity),
+                      color: accent.withValues(alpha: opacity),
                       width: 2,
                     ),
                   ),
                 ),
               ),
-              Container(
-                width: 144,
-                height: 144,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(color: ringColor.withAlpha(90)),
+              SizedBox(
+                width: 160,
+                height: 160,
+                child: CustomPaint(
+                  painter: _OrbitingArcPainter(
+                    progress: spin.value,
+                    color: accent,
+                  ),
                 ),
               ),
               Container(
                 width: 96,
                 height: 96,
                 decoration: BoxDecoration(
-                  shape: BoxShape.circle,
+                  borderRadius: BorderRadius.circular(28),
                   color: AppColors.surfaceElevated,
-                  border: Border.all(color: AppColors.borderActive),
+                  border: Border.all(color: accent.withAlpha(130), width: 1.4),
                   boxShadow: [
                     BoxShadow(
-                      color: ringColor.withAlpha(30),
-                      blurRadius: 24,
-                      spreadRadius: 6,
+                      color: accent.withAlpha(34 + (pulse.value * 42).round()),
+                      blurRadius: 26,
+                      spreadRadius: 4,
                     ),
                   ],
                 ),
                 child: Center(
                   child: isBusy
-                      ? const SizedBox(
+                      ? SizedBox(
                           width: 30,
                           height: 30,
-                          child: CircularProgressIndicator(strokeWidth: 2),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation(accent),
+                          ),
                         )
-                      : Icon(
-                          isActive
-                              ? Icons.collections_bookmark_rounded
-                              : iconData,
-                          size: 44,
-                          color: ringColor,
+                      : AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 300),
+                          child: Icon(
+                            isActive
+                                ? Icons.lock_open_rounded
+                                : Icons.lock_rounded,
+                            key: ValueKey(isActive),
+                            size: 42,
+                            color: accent,
+                          ),
                         ),
                 ),
               ),
@@ -698,6 +736,153 @@ class _BiometricUnlockButton extends StatelessWidget {
         },
       ),
     );
+  }
+}
+
+/// The single, unambiguous unlock control: tapping it is what prompts the
+/// device's biometric challenge (or continues into capture when a session
+/// is already active). Violet brand gradient + a glow that breathes in sync
+/// with the medallion's pulse ring, so the two read as one composed unit.
+class _UnlockCtaButton extends StatelessWidget {
+  const _UnlockCtaButton({
+    required this.pulse,
+    required this.isBusy,
+    required this.isActive,
+    required this.iconData,
+    required this.onPressed,
+  });
+
+  final Animation<double> pulse;
+  final bool isBusy;
+  final bool isActive;
+  // Modality-resolved icon (fingerprint/face/iris) - appropriate here, and
+  // only here, because this control really does trigger a biometric scan.
+  final IconData iconData;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final isEnabled = onPressed != null && !isBusy;
+    final label = isBusy
+        ? 'VERIFYING'
+        : isActive
+        ? 'CONTINUE CAPTURE'
+        : 'TAP TO UNLOCK';
+
+    return AnimatedBuilder(
+      animation: pulse,
+      builder: (context, child) {
+        return Opacity(
+          opacity: isEnabled ? 1 : 0.65,
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.statusEncrypt.withAlpha(
+                    isEnabled ? 56 + (pulse.value * 64).round() : 28,
+                  ),
+                  blurRadius: 24,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+            child: child,
+          ),
+        );
+      },
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: Ink(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.centerLeft,
+              end: Alignment.centerRight,
+              colors: [AppColors.primary, AppColors.statusEncrypt],
+            ),
+          ),
+          child: InkWell(
+            onTap: isEnabled ? onPressed : null,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (isBusy)
+                    const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation(Colors.white),
+                      ),
+                    )
+                  else
+                    Icon(
+                      isActive ? Icons.photo_camera_rounded : iconData,
+                      size: 20,
+                      color: Colors.white,
+                    ),
+                  const SizedBox(width: 10),
+                  Text(
+                    label,
+                    style: AppTextStyles.buttonText.copyWith(
+                      color: Colors.white,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A short rounded arc with a transparent-to-solid sweep gradient, rotated
+/// by [progress] - the "comet" orbiting the lock medallion, matching the
+/// screen's scanline/reticle HUD language.
+class _OrbitingArcPainter extends CustomPainter {
+  const _OrbitingArcPainter({required this.progress, required this.color});
+
+  final double progress;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const sweep = math.pi * 0.7;
+    final rect = (Offset.zero & size).deflate(3);
+    final center = rect.center;
+
+    // Arc and gradient stay fixed within [0, 2π]; the motion comes from
+    // rotating the canvas. Sweeping the gradient's own start/end angles
+    // past the 0/2π seam (3 o'clock) makes the engine clamp them there,
+    // which visibly parked the comet at the seam once per revolution.
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..shader = SweepGradient(
+        startAngle: 2 * math.pi - sweep,
+        endAngle: 2 * math.pi,
+        colors: [color.withAlpha(0), color.withAlpha(220)],
+      ).createShader(rect);
+
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(progress * 2 * math.pi);
+    canvas.translate(-center.dx, -center.dy);
+    canvas.drawArc(rect, -sweep, sweep, false, paint);
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _OrbitingArcPainter oldDelegate) {
+    return oldDelegate.progress != progress || oldDelegate.color != color;
   }
 }
 
