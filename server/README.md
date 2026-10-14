@@ -381,6 +381,60 @@ Response:
 }
 ```
 
+### `GET /admin/users/lookup`
+
+Returns a single user, found by email, employee ID or wallet address. The `by` query parameter says which identifier `value` is.
+
+Query parameters:
+
+| Param   | Required | Description                                                                                     |
+| ------- | -------- | ----------------------------------------------------------------------------------------------- |
+| `by`    | yes      | `email`, `employeeId` or `wallet`                                                               |
+| `value` | yes      | The identifier to look up. Email and wallet are case-insensitive. `employeeId` is the `userId`. |
+
+Headers:
+
+```http
+x-admin-api-key: <ADMIN_API_KEY>
+```
+
+Examples:
+
+```bash
+curl -H "x-admin-api-key: $ADMIN_API_KEY" "http://localhost:3000/admin/users/lookup?by=email&value=alice@acme.com"
+curl -H "x-admin-api-key: $ADMIN_API_KEY" "http://localhost:3000/admin/users/lookup?by=employeeId&value=3cb8c8a1-69da-4efe-8a78-4d51cfc2df48"
+curl -H "x-admin-api-key: $ADMIN_API_KEY" "http://localhost:3000/admin/users/lookup?by=wallet&value=0x..."
+```
+
+Success (`200`):
+
+```json
+{
+  "user": {
+    "userId": "3cb8c8a1-69da-4efe-8a78-4d51cfc2df48",
+    "domain": "acme.com",
+    "userEmail": "alice@acme.com",
+    "userWallet": "0x...",
+    "adminWallet": "0x...",
+    "status": "active",
+    "userCapId": "0x...",
+    "addUserTxDigest": "9k...",
+    "disableUserTxDigest": null,
+    "enableUserTxDigest": null,
+    "createdAt": "2026-06-05T05:31:00.000Z",
+    "updatedAt": "2026-06-05T05:31:00.000Z",
+    "lastVerifiedAt": "2026-06-05T05:31:00.000Z",
+    "disabledAt": null
+  }
+}
+```
+
+Errors:
+
+- `400 bad_request` — `by` is missing or not one of the allowed values, or `value` is empty.
+- `401 unauthorized` — missing or invalid admin API key.
+- `404 not_found` — no user matches.
+
 ### `PATCH /admin/users/:userId/disable`
 
 Submits on-chain `disable_user`, then marks the user as disabled in Postgres.

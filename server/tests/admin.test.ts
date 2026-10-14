@@ -34,6 +34,33 @@ vi.mock("../src/db/repositories.js", async (importOriginal) => {
         disabledAt: null,
       },
     ]),
+    findUserBy: vi.fn(async (field: string, value: string) => {
+      const matches =
+        (field === "email" && value === "alice@acme.com") ||
+        (field === "employeeId" && value === "user-id-1") ||
+        (field === "wallet" && value === "0xuser");
+
+      if (!matches) {
+        return null;
+      }
+
+      return {
+        userId: "user-id-1",
+        domain: "acme.com",
+        userEmail: "alice@acme.com",
+        userWallet: "0xuser",
+        adminWallet: "0xabc",
+        status: "active",
+        userCapId: "0xcap",
+        addUserTxDigest: "add-digest",
+        disableUserTxDigest: null,
+        enableUserTxDigest: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastVerifiedAt: new Date().toISOString(),
+        disabledAt: null,
+      };
+    }),
     disableUser: vi.fn(async (userId) => {
       if (userId !== "user-id-1") {
         return null;
@@ -145,6 +172,62 @@ describe("admin routes", () => {
       ],
     });
 
+    await app.close();
+  });
+
+  it.each([
+    ["email", "alice@acme.com"],
+    ["employeeId", "user-id-1"],
+    ["wallet", "0xuser"],
+  ])("looks up a user by %s", async (by, value) => {
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/admin/users/lookup?by=${by}&value=${encodeURIComponent(value)}`,
+      headers: { "x-admin-api-key": "admin-key" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().user.userId).toBe("user-id-1");
+    await app.close();
+  });
+
+  it("returns 404 when the looked-up user does not exist", async () => {
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/admin/users/lookup?by=email&value=nobody@acme.com",
+      headers: { "x-admin-api-key": "admin-key" },
+    });
+
+    expect(response.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("returns 400 for an invalid lookup query", async () => {
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/admin/users/lookup?by=phone&value=123",
+      headers: { "x-admin-api-key": "admin-key" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("requires the admin API key for lookup", async () => {
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/admin/users/lookup?by=email&value=alice@acme.com",
+    });
+
+    expect(response.statusCode).toBe(401);
     await app.close();
   });
 

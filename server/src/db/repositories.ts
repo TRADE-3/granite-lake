@@ -273,6 +273,49 @@ export async function listUsers(): Promise<UserRecord[]> {
   return result.rows.map(withConfiguredUserFields);
 }
 
+export type UserLookupField = "email" | "employeeId" | "wallet";
+
+/**
+ * Finds a single user by email, employee ID (users.user_id) or wallet address.
+ * Email and wallet are normalized (trimmed, lower-cased) the same way they are
+ * on write, so lookups are case-insensitive.
+ */
+export async function findUserBy(field: UserLookupField, value: string): Promise<UserRecord | null> {
+  switch (field) {
+    case "email":
+      return findUserByEmail(value);
+    case "wallet":
+      return findUserByWallet(value);
+    case "employeeId":
+      return findUser(value.trim());
+  }
+}
+
+async function findUserByWallet(userWallet: string): Promise<UserRecord | null> {
+  const result = await pool.query<UserRecord>(
+    `
+      select
+        user_id as "userId",
+        user_email as "userEmail",
+        user_wallet as "userWallet",
+        status,
+        user_cap_id as "userCapId",
+        add_user_tx_digest as "addUserTxDigest",
+        disable_user_tx_digest as "disableUserTxDigest",
+        enable_user_tx_digest as "enableUserTxDigest",
+        created_at as "createdAt",
+        updated_at as "updatedAt",
+        last_verified_at as "lastVerifiedAt",
+        disabled_at as "disabledAt"
+      from users
+      where user_wallet = $1
+    `,
+    [normalizeWallet(userWallet)]
+  );
+
+  return result.rows[0] ? withConfiguredUserFields(result.rows[0]) : null;
+}
+
 export async function disableUser(userId: string): Promise<UserRecord | null> {
   const existing = await findUser(userId);
 

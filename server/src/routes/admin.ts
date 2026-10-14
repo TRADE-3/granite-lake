@@ -1,7 +1,13 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { env } from "../config/env.js";
-import { disableUser, enableUser, findOrphanedCompletedOtpSessions, listUsers } from "../db/repositories.js";
+import {
+  disableUser,
+  enableUser,
+  findOrphanedCompletedOtpSessions,
+  findUserBy,
+  listUsers,
+} from "../db/repositories.js";
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
   // This hook is scoped to adminRoutes by Fastify's plugin encapsulation:
@@ -26,6 +32,36 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.get("/admin/users", async () => ({
     users: await listUsers(),
   }));
+
+  // GET /admin/users/lookup?by=email|employeeId|wallet&value=...
+  // `by` says which identifier `value` is. "employeeId" is the user's
+  // userId; no separate employee-ID column exists.
+  app.get("/admin/users/lookup", async (request, reply) => {
+    const query = z
+      .object({
+        by: z.enum(["email", "employeeId", "wallet"]),
+        value: z.string().trim().min(1),
+      })
+      .safeParse(request.query);
+
+    if (!query.success) {
+      return reply.status(400).send({
+        error: "bad_request",
+        message: "Query must include by (email | employeeId | wallet) and a non-empty value.",
+      });
+    }
+
+    const user = await findUserBy(query.data.by, query.data.value);
+
+    if (!user) {
+      return reply.status(404).send({
+        error: "not_found",
+        message: "No user found.",
+      });
+    }
+
+    return reply.send({ user });
+  });
 
   app.get("/admin/orphaned-sessions", async () => ({
     orphanedSessions: await findOrphanedCompletedOtpSessions(),
