@@ -35,7 +35,8 @@ const completeOtpSession = vi.fn();
 vi.mock("../src/db/repositories.js", () => ({
   completeOtpSession,
   createOtpSession,
-  disableUser: vi.fn(),
+  disableUserWithSignature: vi.fn(),
+  createDeactivationChallenge: vi.fn(),
   enableUser: vi.fn(),
   findOtpSession: vi.fn(),
   listUsers: vi.fn(async () => []),
@@ -369,9 +370,30 @@ describe("otp routes", () => {
     await app.close();
   });
 
-  it("deactivates a user's own account with the app API key", async () => {
-    const { disableUser } = await import("../src/db/repositories.js");
-    vi.mocked(disableUser).mockResolvedValueOnce({
+  it("issues a deactivation challenge with the app API key", async () => {
+    const { createDeactivationChallenge } = await import("../src/db/repositories.js");
+    vi.mocked(createDeactivationChallenge).mockResolvedValueOnce({
+      nonce: "bm9uY2U=",
+      expiresAt: "2026-06-05T05:36:00.000Z",
+    });
+
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/otp/user-id-1/deactivate/challenge",
+      headers: APP_API_KEY_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ userId: "user-id-1", nonce: "bm9uY2U=" });
+
+    await app.close();
+  });
+
+  it("deactivates a user's own account with a wallet signature", async () => {
+    const { disableUserWithSignature } = await import("../src/db/repositories.js");
+    vi.mocked(disableUserWithSignature).mockResolvedValueOnce({
       userId: "user-id-1",
       domain: "acme.com",
       userEmail: "alice@acme.com",
@@ -394,10 +416,14 @@ describe("otp routes", () => {
       method: "PATCH",
       url: "/otp/user-id-1/deactivate",
       headers: APP_API_KEY_HEADERS,
+      payload: { userWalletSignature: "sig" },
     });
 
     expect(response.statusCode).toBe(200);
-    expect(disableUser).toHaveBeenCalledWith("user-id-1");
+    expect(disableUserWithSignature).toHaveBeenCalledWith({
+      userId: "user-id-1",
+      userWalletSignature: "sig",
+    });
     expect(response.json()).toMatchObject({
       message: "User disabled successfully.",
       user: { userId: "user-id-1", status: "disabled" },
@@ -412,6 +438,7 @@ describe("otp routes", () => {
     const response = await app.inject({
       method: "PATCH",
       url: "/otp/user-id-1/deactivate",
+      payload: { userWalletSignature: "sig" },
     });
 
     expect(response.statusCode).toBe(401);
@@ -419,9 +446,43 @@ describe("otp routes", () => {
     await app.close();
   });
 
+  it("rejects account deactivation without a signature", async () => {
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/otp/user-id-1/deactivate",
+      headers: APP_API_KEY_HEADERS,
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("returns 401 for an invalid deactivation signature", async () => {
+    const { disableUserWithSignature } = await import("../src/db/repositories.js");
+    vi.mocked(disableUserWithSignature).mockRejectedValueOnce(new Error("Deactivation signature is invalid."));
+
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/otp/user-id-1/deactivate",
+      headers: APP_API_KEY_HEADERS,
+      payload: { userWalletSignature: "bad" },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toMatchObject({ error: "invalid_signature" });
+
+    await app.close();
+  });
+
   it("returns 404 deactivating an unknown account", async () => {
-    const { disableUser } = await import("../src/db/repositories.js");
-    vi.mocked(disableUser).mockResolvedValueOnce(null);
+    const { disableUserWithSignature } = await import("../src/db/repositories.js");
+    vi.mocked(disableUserWithSignature).mockResolvedValueOnce(null);
 
     const app = await buildApp();
 
@@ -429,6 +490,7 @@ describe("otp routes", () => {
       method: "PATCH",
       url: "/otp/missing-user/deactivate",
       headers: APP_API_KEY_HEADERS,
+      payload: { userWalletSignature: "sig" },
     });
 
     expect(response.statusCode).toBe(404);

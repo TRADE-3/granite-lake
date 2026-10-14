@@ -703,6 +703,96 @@ async function assertWalletSignature(params: {
   }
 }
 
+const DEACTIVATION_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+
+function deactivationMessage(userId: string, nonce: string): Buffer {
+  return Buffer.from(`deactivate:${userId}:${nonce}`, "utf8");
+}
+
+/**
+ * Issues a single-use challenge the registered wallet must sign to deactivate
+ * its own account. Returns null if the user does not exist.
+ */
+export async function createDeactivationChallenge(
+  userId: string
+): Promise<{ nonce: string; expiresAt: string } | null> {
+  const nonce = randomBytes(32).toString("base64");
+  const expiresAt = new Date(Date.now() + DEACTIVATION_CHALLENGE_TTL_MS).toISOString();
+  const result = await pool.query(
+    `update users set deactivate_nonce = $2, deactivate_nonce_expires_at = $3 where user_id = $1`,
+    [userId, nonce, expiresAt]
+  );
+
+  return result.rowCount ? { nonce, expiresAt } : null;
+}
+
+/**
+ * Disables a user after verifying the registered wallet signed the pending
+ * deactivation challenge. Returns null if the user does not exist; throws
+ * "Deactivation signature is invalid." for a missing/expired challenge or bad
+ * signature. The challenge is consumed atomically so it cannot be replayed.
+ */
+export async function disableUserWithSignature(input: {
+  userId: string;
+  userWalletSignature: string;
+}): Promise<UserRecord | null> {
+  const row = await pool.query<{
+    userWallet: string;
+    status: string;
+    nonce: string | null;
+    expiresAt: string | null;
+  }>(
+    `
+      select
+        user_wallet as "userWallet",
+        status,
+        deactivate_nonce as nonce,
+        deactivate_nonce_expires_at as "expiresAt"
+      from users
+      where user_id = $1
+    `,
+    [input.userId]
+  );
+  const user = row.rows[0];
+
+  if (!user) {
+    return null;
+  }
+
+  if (!user.nonce || !user.expiresAt || Date.now() > Date.parse(user.expiresAt)) {
+    throw new Error("Deactivation signature is invalid.");
+  }
+
+  try {
+    await verifyPersonalMessageSignature(deactivationMessage(input.userId, user.nonce), input.userWalletSignature, {
+      address: user.userWallet,
+    });
+  } catch {
+    throw new Error("Deactivation signature is invalid.");
+  }
+
+  const consumed = await pool.query(
+    `
+      update users
+      set deactivate_nonce = null, deactivate_nonce_expires_at = null
+      where user_id = $1 and deactivate_nonce = $2
+    `,
+    [input.userId, user.nonce]
+  );
+
+  if (!consumed.rowCount) {
+    throw new Error("Deactivation signature is invalid.");
+  }
+
+  // Already disabled (e.g. a retry after a failed client-side step): report
+  // success without a second on-chain disable_user.
+  if (user.status === "disabled") {
+    return findUser(input.userId);
+  }
+
+  return disableUser(input.userId);
+}
+
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }

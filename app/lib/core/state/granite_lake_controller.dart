@@ -955,25 +955,55 @@ class GraniteLakeController extends ChangeNotifier {
     await _resetAppState(GraniteLakeSecureStateService.biometricChangedMessage);
   }
 
-  Future<void> deleteAccount() async {
+  /// Deactivates the account on the backend, then wipes local state. If the
+  /// backend step fails the local account is left untouched and a failure is
+  /// returned, so the device and the server/chain never disagree about
+  /// whether the user is active. The user can retry later.
+  Future<ActionResult> deleteAccount() async {
     final claim = _photoAttestationClaim;
     if (claim != null) {
-      // Best-effort: local deletion must succeed even if this fails or the
-      // device is offline. Without it, the server (and the on-chain
-      // enabled flag) would keep listing this user as active indefinitely.
+      // The backend requires a wallet signature, so unlock the signing key
+      // for just this call and tear down whatever session this started.
+      final hadActiveSession = hasActiveSession;
       try {
-        await _photoAttestationService.deactivateUser(
-          domain: claim.domain,
-          userId: claim.userId,
+        if (!hadActiveSession) {
+          final sessionResult = await startSession(
+            promptTitle: 'Confirm account deletion',
+            promptSubtitle: 'Verify biometrics to delete your account.',
+          );
+          if (!sessionResult.isSuccess) {
+            return sessionResult;
+          }
+        }
+        final signingKey = _sessionSigningKey;
+        if (signingKey == null) {
+          return const ActionResult.failure(
+            'Your secure signing key is locked. Start a new session.',
+          );
+        }
+        await _photoAttestationService
+            .deactivateUser(
+              domain: claim.domain,
+              userId: claim.userId,
+              signingKey: signingKey,
+            )
+            .timeout(const Duration(seconds: 15));
+      } on PhotoAttestationException catch (error) {
+        return ActionResult.failure(error.userMessage);
+      } catch (error) {
+        debugPrint('[Delete] deactivateUser failed: $error');
+        return const ActionResult.failure(
+          'Could not reach the server to deactivate your account. Check your connection and try again. Your account was not deleted.',
         );
-      } catch (_) {
-        // Ignored: nothing the user can do about a failed server sync from
-        // the delete-account flow, and their device-local deletion should
-        // not be blocked by it.
+      } finally {
+        if (!hadActiveSession) {
+          await endSession();
+        }
       }
     }
 
     await _resetAppState(GraniteLakeSecureStateService.accountDeletedMessage);
+    return const ActionResult.success();
   }
 
   Future<void> _resetAppState(String notice) async {

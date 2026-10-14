@@ -525,26 +525,66 @@ class PhotoAttestationService {
     }
   }
 
+  static const Duration _deactivationRequestTimeout = Duration(seconds: 5);
+
   /// Tells the backend that this device deleted its local account, so the
   /// server (and the on-chain enabled flag) stop listing the user as
-  /// active. Best-effort by design: the caller should not block local
-  /// account deletion on this succeeding, since deletion is something the
-  /// user can always do to their own device regardless of connectivity.
+  /// active. Throws on any failure; the caller must not delete the local
+  /// account unless this succeeds, so device and server never disagree.
+  ///
+  /// The backend only honours this for the registered wallet: it issues a
+  /// single-use challenge, and [signingKey] must sign it.
   Future<void> deactivateUser({
     required String domain,
     required String userId,
+    required SuiED25519PrivateKey signingKey,
   }) async {
     final backendConfig = await AppUtils.resolveOtpBackendConfig(
       domain: domain,
     );
-    final uri = AppUtils.otpBackendUri(
-      backendConfig.url,
-      'otp/$userId/deactivate',
-    );
-    final response = await _httpClient.patch(
-      uri,
-      headers: {AppUtils.appApiKeyHeader: backendConfig.apiKey},
-    );
+    final headers = {
+      'Content-Type': 'application/json; charset=utf-8',
+      AppUtils.appApiKeyHeader: backendConfig.apiKey,
+    };
+
+    final challengeResponse = await _httpClient
+        .post(
+          AppUtils.otpBackendUri(
+            backendConfig.url,
+            'otp/$userId/deactivate/challenge',
+          ),
+          headers: headers,
+          body: jsonEncode(const <String, dynamic>{}),
+        )
+        .timeout(_deactivationRequestTimeout);
+    final challengePayload = _decodeJsonPayload(challengeResponse.body);
+    if (challengeResponse.statusCode < 200 ||
+        challengeResponse.statusCode >= 300) {
+      final message =
+          _readBackendMessage(challengePayload) ?? 'Deactivation failed.';
+      throw PhotoAttestationException(
+        userMessage: message,
+        rawMessage: message,
+      );
+    }
+    final nonce = (challengePayload['nonce'] as String? ?? '').trim();
+    if (nonce.isEmpty) {
+      throw const PhotoAttestationException(
+        userMessage: 'Deactivation failed.',
+        rawMessage: 'Deactivation challenge response is missing nonce.',
+      );
+    }
+
+    final signature = SuiEd25519Account(signingKey)
+        .signPersonalMessage(utf8.encode('deactivate:$userId:$nonce'))
+        .toVariantBcsBase64();
+    final response = await _httpClient
+        .patch(
+          AppUtils.otpBackendUri(backendConfig.url, 'otp/$userId/deactivate'),
+          headers: headers,
+          body: jsonEncode({'userWalletSignature': signature}),
+        )
+        .timeout(_deactivationRequestTimeout);
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final payload = _decodeJsonPayload(response.body);

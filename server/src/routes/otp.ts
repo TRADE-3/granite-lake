@@ -3,8 +3,9 @@ import { z } from "zod";
 import { env } from "../config/env.js";
 import {
   completeOtpSession,
+  createDeactivationChallenge,
   createOtpSession,
-  disableUser,
+  disableUserWithSignature,
   findOtpSession,
   isAcceptedEmailDomain,
   listAcceptedEmailDomains,
@@ -156,19 +157,61 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
-  // Self-service account deletion: when a user deletes the app's local
-  // copy of their account, nothing previously told the server, so it and
-  // the chain kept listing them as active indefinitely. Gated by the same
-  // app API key as every other route here — consistent with /otp/verify
-  // already trusting that key to complete a registration for any userId,
-  // this trusts it to disable one. userId is an unguessable random UUID,
-  // never listed by any unauthenticated endpoint.
+  // Self-service account deletion is a two-step, wallet-authenticated flow so
+  // that the shared app API key plus a known userId is not enough to disable
+  // someone else's account: (1) request a single-use challenge, (2) send a
+  // signature over it from the wallet registered for that user.
+  app.post("/otp/:userId/deactivate/challenge", async (request, reply) => {
+    const userId = z
+      .string()
+      .min(1)
+      .parse((request.params as { userId: string }).userId);
+    const challenge = await createDeactivationChallenge(userId);
+
+    if (!challenge) {
+      return reply.status(404).send({
+        error: "not_found",
+        message: "No user found.",
+      });
+    }
+
+    // The wallet signs the UTF-8 bytes of `deactivate:<userId>:<nonce>`.
+    return reply.send({ userId, ...challenge });
+  });
+
   app.patch("/otp/:userId/deactivate", async (request, reply) => {
     const userId = z
       .string()
       .min(1)
       .parse((request.params as { userId: string }).userId);
-    const user = await disableUser(userId);
+    const parsedBody = z
+      .object({ userWalletSignature: z.string().min(1) })
+      .safeParse(parseJsonStringBody(request.body));
+
+    if (!parsedBody.success) {
+      return reply.status(400).send({
+        error: "invalid_request",
+        message: "Request body must be a JSON object with userWalletSignature.",
+      });
+    }
+
+    let user;
+
+    try {
+      user = await disableUserWithSignature({
+        userId,
+        userWalletSignature: parsedBody.data.userWalletSignature,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Deactivation signature is invalid.") {
+        return reply.status(401).send({
+          error: "invalid_signature",
+          message: error.message,
+        });
+      }
+
+      throw error;
+    }
 
     if (!user) {
       return reply.status(404).send({

@@ -323,14 +323,34 @@ Success:
 }
 ```
 
+### `POST /otp/:userId/deactivate/challenge`
+
+Step 1 of self-service deactivation. Issues a single-use challenge (valid 5 minutes) for the registered user. Returns `404` if the user does not exist. Gated by `x-app-api-key`.
+
+```json
+{
+  "userId": "3cb8c8a1-69da-4efe-8a78-4d51cfc2df48",
+  "nonce": "<base64>",
+  "expiresAt": "2026-06-05T05:36:00.000Z"
+}
+```
+
+The wallet registered for the user must sign the UTF-8 bytes of `deactivate:<userId>:<nonce>` as a Sui personal message.
+
 ### `PATCH /otp/:userId/deactivate`
 
-Self-service deactivation: submits on-chain `disable_user`, then marks the user as disabled in Postgres. Called by the app when a user deletes their local account, so the server and chain stop listing them as active. Gated by `x-app-api-key`, the same as every other `/otp/*` route — not `x-admin-api-key`. See [App Authentication](#app-authentication) for what that credential does and does not prove.
+Step 2 of self-service deactivation: verifies the wallet signature over the challenge, submits on-chain `disable_user`, then marks the user as disabled in Postgres. Called by the app when a user deletes their local account, so the server and chain stop listing them as active. Gated by `x-app-api-key` (not `x-admin-api-key`) **and** by proof of wallet ownership, so the API key plus a known `userId` is not enough to disable someone else. The challenge is consumed on success and cannot be replayed. A missing, expired or invalid signature returns `401 invalid_signature`.
 
 Headers:
 
 ```http
 x-app-api-key: <APP_API_KEY>
+```
+
+Body:
+
+```json
+{ "userWalletSignature": "<serialized Sui signature>" }
 ```
 
 Success:
