@@ -383,6 +383,7 @@ class PhotoAttestationService {
   Future<PhotoAttestationOtpRequestResult> requestUserOtp({
     required String domain,
     required String userEmail,
+    required String walletAddress,
   }) async {
     try {
       final backendConfig = await AppUtils.resolveOtpBackendConfig(
@@ -396,7 +397,11 @@ class PhotoAttestationService {
           'Content-Type': 'application/json; charset=utf-8',
           AppUtils.appApiKeyHeader: backendConfig.apiKey,
         },
-        body: jsonEncode({'domain': domain, 'user_email': userEmail}),
+        body: jsonEncode({
+          'domain': domain,
+          'user_email': userEmail,
+          'user_wallet': walletAddress,
+        }),
       );
       final payload = _decodeJsonPayload(response.body);
 

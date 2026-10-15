@@ -72,7 +72,7 @@ VAULT_SECRET_PREFIX=
 
 ### OTP Delivery
 
-OTP codes are currently posted to a Google Chat incoming webhook using `GOOGLE_CHAT_WEBHOOK_URL`. This is a temporary delivery path until the paid email service is available. The API still requires `user_email` so it can validate the user belongs to the configured domain and record the verified user identity.
+OTP codes are currently posted to a Google Chat incoming webhook using `GOOGLE_CHAT_WEBHOOK_URL`. This is a temporary delivery path until the paid email service is available. The API still requires `user_email` so it can validate the user belongs to the configured domain and record the verified user identity, and `user_wallet` so the OTP session is bound to the wallet that will claim it. The Chat message includes the email, wallet address, code, and expiry.
 
 ## App Authentication
 
@@ -224,6 +224,7 @@ Rules:
 - `user_email` must be a valid email.
 - `user_email` domain must match env `DOMAIN`.
 - `user_email` must not already exist in the `users` table, **including disabled users** — see [Account Deletion and Re-registration](#account-deletion-and-re-registration).
+- `user_wallet` must be a Sui address. It is stored on the session (`otp_sessions.user_wallet`) and echoed back as `userWallet`; `POST /otp/verify` must later present this same address, so the session is bound to the wallet that started it.
 - The OTP is not returned by the API.
 
 Request:
@@ -231,7 +232,8 @@ Request:
 ```json
 {
   "domain": "acme.com",
-  "user_email": "alice@acme.com"
+  "user_email": "alice@acme.com",
+  "user_wallet": "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 }
 ```
 
@@ -532,11 +534,11 @@ The database does not store `domain` or `admin_wallet`; those come from env beca
 
 ## Flow
 
-1. User requests an OTP with `domain` and `user_email`.
+1. User requests an OTP with `domain`, `user_email`, and `user_wallet`.
 2. Server validates the email domain and checks the email is not already registered.
-3. Server stores an OTP session and posts the OTP to Google Chat.
-4. User submits `userId`, `otp`, `domain`, and `userWallet`.
-5. Server verifies OTP and submits Sui `add_user`.
+3. Server stores an OTP session, binding `user_wallet` to it, and posts the OTP (email, wallet, code) to Google Chat.
+4. User submits `userId`, `otp`, `domain`, `userWallet`, and `userWalletSignature`.
+5. Server verifies the OTP, that `userWallet` matches the wallet bound at request time, and the wallet signature, then submits Sui `add_user`.
 6. Server stores the user as `active`.
 7. Admin can call disable/enable endpoints, which also submit Sui transactions.
 

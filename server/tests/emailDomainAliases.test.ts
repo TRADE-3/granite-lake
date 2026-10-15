@@ -94,6 +94,7 @@ beforeEach(() => {
 describe("EMAIL_DOMAIN_ALIASES", () => {
   it("registers a tr3.io email under the aliased trade3.io registry domain", async () => {
     const keypair = new Ed25519Keypair();
+    currentSession = pendingSession({ userWallet: keypair.toSuiAddress() });
     const { signature } = await keypair.signPersonalMessage(Buffer.from(NONCE, "base64"));
 
     const result = await completeOtpSession({
