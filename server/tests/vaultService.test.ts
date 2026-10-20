@@ -47,6 +47,8 @@ const env = {
   SPONSOR_PREPARE_TTL_MS: 300_000,
   SPONSOR_MIN_BALANCE_MIST: 1_000_000_000n,
   SPONSOR_LEAK_CHECK_INTERVAL_MS: 900_000,
+  SPONSOR_COIN_SWEEP_MIN_MIST: 100_000_000n,
+  SPONSOR_TOPUP_MAX_PER_DAY_MIST: 10_000_000_000n,
   DATABASE_URL: "postgres://postgres:postgres@db:5432/development_domain_demo_granite_lake",
 } satisfies AppEnv;
 

@@ -83,6 +83,8 @@ SPONSOR_GAS_PER_DOMAIN_PER_DAY_MIST=50000000000
 SPONSOR_PREPARE_TTL_MS=300000
 SPONSOR_MIN_BALANCE_MIST=1000000000
 SPONSOR_LEAK_CHECK_INTERVAL_MS=900000
+SPONSOR_COIN_SWEEP_MIN_MIST=100000000
+SPONSOR_TOPUP_MAX_PER_DAY_MIST=10000000000
 ```
 
 `SUI_MODULE` is only the Move module name. Even though the source declares `module granite_lake::photo_attestation`, the transaction target is built as `<SUI_PACKAGE_ID>::<SUI_MODULE>::<function>`, so use `SUI_MODULE=photo_attestation`, not `granite_lake::photo_attestation`.
@@ -96,7 +98,7 @@ OTP codes are currently posted to a Google Chat incoming webhook using `GOOGLE_C
 When `SPONSOR_ENABLED=true`, the domain pays the network fee for its users' `attest_photo` / `attest_file` transactions, so device wallets need no SUI. The full design is `design/granite-lake-sponsored-transactions-design.md`.
 
 - **Dedicated sponsor wallet.** Gas is signed by `SPONSOR_PRIVATE_KEY`, never by `SUI_PRIVATE_KEY`. The server refuses to boot if `SPONSOR_WALLET` equals `ADMIN_WALLET` or doesn't match the key, and there is no fallback to the admin key. Like `SUI_PRIVATE_KEY`, it may be a `vault://` reference.
-- **Fund the address balance.** The sponsor pays from its SUI address balance (empty gas payment), so SUI held in coin objects can't pay. `GET /admin/sponsor/summary` reports both balances.
+- **Fund the address balance.** The sponsor pays from its SUI address balance (empty gas payment), so SUI held in coin objects can't pay gas directly. A normal transfer arrives as coin objects, so the server moves them into the address balance itself: each maintenance run sweeps the sponsor's coins into its address balance via `0x2::coin::send_funds` once they total at least `SPONSOR_COIN_SWEEP_MIN_MIST`, and `POST /admin/sponsor/sweep` does it on demand. The preferred way to fund is `POST /admin/sponsor/top-up`, which sends SUI from the admin wallet straight into the sponsor's address balance, within a daily ceiling of `SPONSOR_TOPUP_MAX_PER_DAY_MIST`. `GET /admin/sponsor/summary` reports coin and address balances separately, plus recent top-ups.
 - **The server builds every transaction.** The app sends attestation values to `POST /sponsor/prepare`. The server builds the one allowlisted `MoveCall`, with sender = user and gas owner = sponsor, simulates it and returns the unsigned bytes. The app checks those bytes against its own capture values, signs them, and sends only the signature to `POST /sponsor/submit`. The sponsor signs only bytes it built itself and that an active user has already signed.
 - **Spend is bounded.** Daily per-user and per-domain transaction and gas caps are computed from `sponsor_transactions` in Postgres. There is also a per-transaction budget cap and a gas-price ceiling, and requests are refused while the address balance is below `SPONSOR_MIN_BALANCE_MIST`.
 - **Unexpected spend pauses sponsorship.** Every `SPONSOR_LEAK_CHECK_INTERVAL_MS`, a job compares the drop in the sponsor balance with the gas the ledger explains. If more went out, it pauses sponsorship and posts a Google Chat alert. Resume with `POST /admin/sponsor/resume` once investigated. The same job resolves unconfirmed ledger rows from chain state.
@@ -563,6 +565,31 @@ Error codes for both routes: `400 invalid_request` / `invalid_user_signature`, `
 
 Headers: `x-admin-api-key`. Returns the enabled and paused state, the sponsor address, its coin and address balances, the configured caps, today's and the last 7 days' transaction counts and gas (domain-wide and per user), unresolved rows, and recent failures.
 
+### `POST /admin/sponsor/top-up`
+
+Headers: `x-admin-api-key`. Body: `{ "amountMist": "2000000000" }` (a decimal string; 1 SUI = 1,000,000,000 MIST). Signs with the admin key and sends the amount from the admin wallet into the sponsor's address balance. The admin's SUI can be in coin objects or its address balance.
+
+- Every top-up is recorded in `sponsor_topups` _before_ it executes, and counts toward `SPONSOR_TOPUP_MAX_PER_DAY_MIST` for the current UTC day. A request that would exceed the ceiling returns `409 top_up_ceiling_exceeded`.
+- A top-up is never retried automatically. If its outcome is unknown (for example a network timeout), it returns `502 top_up_failed` and the row stays `pending`, still counting toward the ceiling, until the next top-up call resolves it from chain by its digest. Check the summary before retrying.
+
+Success:
+
+```json
+{
+  "digest": "...",
+  "status": "executed",
+  "amountMist": "2000000000",
+  "gasUsedMist": "1001099",
+  "error": null,
+  "toppedUpTodayMist": "2000000000",
+  "dailyCeilingMist": "10000000000"
+}
+```
+
+### `POST /admin/sponsor/sweep`
+
+Headers: `x-admin-api-key`. Moves the sponsor's coin objects into its own address balance now, instead of waiting for the next maintenance run. Its gas comes from those coins, and about two gas budgets (`SUI_GAS_BUDGET`) stay behind as the gas coin. Returns `{ "swept": true, "digest", "amountMist", "gasUsedMist" }`, or `{ "swept": false, "reason", "coinBalanceMist" }` when the coins total less than `SPONSOR_COIN_SWEEP_MIN_MIST`.
+
 ### `POST /admin/sponsor/resume`
 
 Headers: `x-admin-api-key`. Lifts a pause set by the unexpected-spend check.
@@ -594,7 +621,7 @@ Headers: `x-admin-api-key`. Lifts a pause set by the unexpected-spend check.
 - `enable_user_tx_digest`
 - timestamps
 
-`sponsor_transactions` is the sponsor's spend ledger, keyed by `tx_digest`. It holds `user_id`, `kind`, `status` (`signed` → `executed` / `failed` / `dropped`), `gas_budget`, `gas_used`, `max_epoch`, `error` and timestamps. It deliberately stores no attestation content (no hashes, GPS, project ids or transaction bytes). `sponsor_state` holds the single pause flag.
+`sponsor_transactions` is the sponsor's spend ledger, keyed by `tx_digest`. It holds `user_id`, `kind`, `status` (`signed` → `executed` / `failed` / `dropped`), `gas_budget`, `gas_used`, `max_epoch`, `error` and timestamps. It deliberately stores no attestation content (no hashes, GPS, project ids or transaction bytes). `sponsor_state` holds the single pause flag. `sponsor_topups` records admin-wallet top-ups (`amount_mist`, `status` `pending` → `executed` / `failed`, `tx_digest`, `gas_used`).
 
 The database does not store `domain` or `admin_wallet`; those come from env because each stack is domain-scoped.
 

@@ -195,7 +195,7 @@ At a high level:
 
 1. Publish or use the configured Granite Lake Move package.
 2. Register a domain with its admin wallet in the shared registry.
-3. Configure the server with matching `DOMAIN`, `ADMIN_WALLET`, `SUI_PRIVATE_KEY`, `SUI_PACKAGE_ID`, and `SUI_REGISTRY_ID`. `SUI_PRIVATE_KEY` can be a literal env value when Vault is disabled, or a `vault://` reference when Vault is enabled.
+3. Configure the server with matching `DOMAIN`, `ADMIN_WALLET`, `SUI_PRIVATE_KEY`, `SUI_PACKAGE_ID`, and `SUI_REGISTRY_ID`. `SUI_PRIVATE_KEY` can be a literal env value when Vault is disabled, or a `vault://` reference when Vault is enabled. See [Wallet Setup And Funding](#wallet-setup-and-funding) for creating and funding the admin wallet (and, optionally, a sponsor wallet).
 4. Publish a DNS TXT record at `_attest.<domain>` so `verification_api` and `verification_portal` can each confirm the domain's attester wallet out-of-band from the chain. The record value must be `;`-separated `key=value` pairs including `chain_id`, `attester`, and `revoked`, for example:
 
    ```text
@@ -234,6 +234,76 @@ See:
 - `verification_api/README.md` for the server-side DNS TXT consensus lookup and DNSSEC validation details
 - `verification_portal/README.md` for the client-side (in-browser) DNS TXT consensus lookup
 - `verification_api/README.md` for DNS TXT consensus lookup and DNSSEC validation details
+
+## Wallet Setup And Funding
+
+Each domain stack uses up to two server-side wallets. Both are separate from the device wallets the app creates for users.
+
+| Wallet                 | Env vars                                | Signs                                                            | Pays for                                              |
+| ---------------------- | --------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------- |
+| **Admin** (required)   | `ADMIN_WALLET`, `SUI_PRIVATE_KEY`       | `add_user` / `enable_user` / `disable_user`, and sponsor top-ups | Its own gas, and the SUI it sends to the sponsor      |
+| **Sponsor** (optional) | `SPONSOR_WALLET`, `SPONSOR_PRIVATE_KEY` | Gas for users' `attest_photo` / `attest_file`                    | Attestation network fees, so user wallets need no SUI |
+
+The admin key controls user administration for the whole domain, so it is the highest-value secret in the system. The sponsor key is used on every attestation, so it holds only a small working balance and has no admin rights. **They must be different wallets**: the server refuses to start with sponsorship enabled if `SPONSOR_WALLET` equals `ADMIN_WALLET`.
+
+### 1) Create the wallets
+
+With the [Sui CLI](https://docs.sui.io/guides/developer/getting-started/sui-install), create one ed25519 address per wallet and export its private key:
+
+```bash
+sui client new-address ed25519 acme-admin     # prints the address
+sui client new-address ed25519 acme-sponsor
+sui keytool export --key-identity acme-admin   # prints suiprivkey1...
+sui keytool export --key-identity acme-sponsor
+```
+
+Put the values in `server/.env`, or in Vault as `vault://` references (see `server/README.md` → HashiCorp Vault Secrets). Each per-domain stack should be scoped to only its own secret paths.
+
+```env
+ADMIN_WALLET=0x<acme-admin address>
+SUI_PRIVATE_KEY=suiprivkey1...          # or vault://...
+# Only for domain-sponsored attestation gas:
+SPONSOR_ENABLED=true
+SPONSOR_WALLET=0x<acme-sponsor address>
+SPONSOR_PRIVATE_KEY=suiprivkey1...      # or vault://...
+```
+
+Use new wallets per network: never reuse testnet keys on mainnet. Then have the contract owner register the domain with the **admin** address (`add_domain`, step 2 above), and use the same address as `attester` in the `_attest.<domain>` DNS TXT record (step 4). The sponsor wallet is never registered on-chain and never appears in DNS. It only pays gas.
+
+### 2) Fund the admin wallet
+
+The admin wallet needs SUI for its own transactions (roughly 0.001–0.01 SUI each), plus whatever it will pass on to the sponsor.
+
+- **Testnet:** request SUI from the [Sui faucet](https://faucet.sui.io) for the admin address, or run `sui client faucet --address <admin address>`.
+- **Mainnet:** buy SUI on an exchange, withdraw it to a treasury wallet you control offline, and transfer working amounts to the admin wallet.
+
+Check balances with `sui client balance <address>`. Coin objects and the address balance both work for the admin wallet.
+
+### 3) Fund the sponsor wallet (only with `SPONSOR_ENABLED=true`)
+
+Sponsored gas is paid from the sponsor's **address balance**, not from coin objects. Use one of these, in order of preference:
+
+1. **Top up from the admin wallet (recommended).** This moves SUI from the admin wallet directly into the sponsor's address balance, recorded and limited to `SPONSOR_TOPUP_MAX_PER_DAY_MIST` per UTC day (default 10 SUI):
+
+   ```bash
+   curl -X POST https://<server>/admin/sponsor/top-up \
+     -H "x-admin-api-key: <ADMIN_API_KEY>" -H "content-type: application/json" \
+     -d '{"amountMist":"2000000000"}'   # 2 SUI; 1 SUI = 1,000,000,000 MIST
+   ```
+
+2. **Send SUI to the sponsor address directly** (from any wallet, an exchange, or the faucet). It arrives as coin objects, which can't pay sponsored gas until they are moved. The server sweeps them into the address balance automatically every `SPONSOR_LEAK_CHECK_INTERVAL_MS` (default 15 minutes) once they total at least `SPONSOR_COIN_SWEEP_MIN_MIST` (default 0.1 SUI). To sweep immediately:
+
+   ```bash
+   curl -X POST https://<server>/admin/sponsor/sweep -H "x-admin-api-key: <ADMIN_API_KEY>"
+   ```
+
+Keep about one to two weeks of expected attestation spend in the sponsor. While its address balance is below `SPONSOR_MIN_BALANCE_MIST`, the server stops sponsoring, posts a low-balance Google Chat alert, and app captures wait in the queue. Check the state at any time:
+
+```bash
+curl https://<server>/admin/sponsor/summary -H "x-admin-api-key: <ADMIN_API_KEY>"
+```
+
+It reports the sponsor's address and coin balances, today's spend against the caps, recent top-ups, and whether sponsorship is paused. If the balance drops by more than recorded attestations explain, sponsorship pauses automatically and an alert is sent. Investigate, then resume with `POST /admin/sponsor/resume`. See `server/README.md` → Sponsored Attestations for all sponsor settings, and `design/granite-lake-sponsored-transactions-design.md` for the full design.
 
 ## Notes
 

@@ -237,3 +237,85 @@ export async function setSponsorPaused(input: { paused: boolean; reason?: string
 
   return result.rows[0];
 }
+
+export type SponsorTopUpStatus = "pending" | "executed" | "failed";
+
+export type SponsorTopUpRecord = {
+  id: string;
+  amountMist: string;
+  status: SponsorTopUpStatus;
+  txDigest: string | null;
+  gasUsed: string | null;
+  error: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+};
+
+const sponsorTopUpColumns = `
+  id,
+  amount_mist::text as "amountMist",
+  status,
+  tx_digest as "txDigest",
+  gas_used::text as "gasUsed",
+  error,
+  created_at as "createdAt",
+  resolved_at as "resolvedAt"
+`;
+
+export async function insertSponsorTopUp(input: { id: string; amountMist: bigint }): Promise<void> {
+  await pool.query(`insert into sponsor_topups (id, amount_mist, status) values ($1, $2, 'pending')`, [
+    input.id,
+    input.amountMist.toString(),
+  ]);
+}
+
+export async function setSponsorTopUpDigest(input: { id: string; txDigest: string }): Promise<void> {
+  await pool.query(`update sponsor_topups set tx_digest = $2 where id = $1`, [input.id, input.txDigest]);
+}
+
+export async function resolveSponsorTopUp(input: {
+  id: string;
+  status: Exclude<SponsorTopUpStatus, "pending">;
+  gasUsed?: bigint | null;
+  error?: string | null;
+}): Promise<void> {
+  await pool.query(
+    `
+      update sponsor_topups
+      set status = $2, gas_used = $3, error = $4, resolved_at = now()
+      where id = $1 and status = 'pending'
+    `,
+    [input.id, input.status, input.gasUsed?.toString() ?? null, input.error ?? null]
+  );
+}
+
+/** Topped up since `since`, counting in-flight (`pending`) rows. */
+export async function getSponsorTopUpTotal(since: Date): Promise<bigint> {
+  const result = await pool.query<{ total: string }>(
+    `
+      select coalesce(sum(amount_mist), 0)::text as total
+      from sponsor_topups
+      where created_at >= $1 and status <> 'failed'
+    `,
+    [since.toISOString()]
+  );
+
+  return BigInt(result.rows[0]?.total ?? 0);
+}
+
+export async function listPendingSponsorTopUps(): Promise<SponsorTopUpRecord[]> {
+  const result = await pool.query<SponsorTopUpRecord>(
+    `select ${sponsorTopUpColumns} from sponsor_topups where status = 'pending' order by created_at asc limit 50`
+  );
+
+  return result.rows;
+}
+
+export async function listRecentSponsorTopUps(limit: number): Promise<SponsorTopUpRecord[]> {
+  const result = await pool.query<SponsorTopUpRecord>(
+    `select ${sponsorTopUpColumns} from sponsor_topups order by created_at desc limit $1`,
+    [limit]
+  );
+
+  return result.rows;
+}

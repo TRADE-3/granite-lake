@@ -12,8 +12,10 @@ import {
   findSponsorTransaction,
   getSponsorLedgerSpend,
   getSponsorState,
+  getSponsorTopUpTotal,
   getSponsorUsage,
   insertSponsorTransaction,
+  listRecentSponsorTopUps,
   listRecentSponsorTransactions,
   listSponsorUsageByUser,
   listUnresolvedSponsorTransactions,
@@ -116,6 +118,9 @@ type HealthSnapshot = {
 // rebate is only refunded after execution, so it must not be subtracted.
 const GAS_SAFE_OVERHEAD = 1000n;
 const HEALTH_CACHE_MS = 30_000;
+const SUI_COIN_TYPE = "0x2::sui::SUI";
+// Sui allows up to 256 gas payment objects; stay under it.
+const MAX_GAS_PAYMENT_COINS = 200;
 const MAX_PREPARED_PER_WALLET = 5;
 // Unresolved rows younger than this are left to the submit that created them.
 const SWEEP_MIN_AGE_MS = 60_000;
@@ -138,6 +143,9 @@ export class SponsorService {
   private chainIdentifier: string | null = null;
   private readonly alertSentAt = new Map<string, number>();
   private leakSnapshot: { totalBalance: bigint; at: Date } | null = null;
+  // Gas this service spent outside the attestation ledger (coin sweeps)
+  // since the last unexpected-spend check, so the check doesn't flag it.
+  private unledgeredSpendMist = 0n;
   private maintenanceTimer: NodeJS.Timeout | null = null;
   private submitLock: Promise<unknown> = Promise.resolve();
 
@@ -411,10 +419,13 @@ export class SponsorService {
 
     // A top-up only raises the balance, so it can mask a drain within one
     // window; the next window still catches it.
-    if (!previous || totalBalance >= previous.totalBalance) return;
+    if (!previous || totalBalance >= previous.totalBalance) {
+      this.consumeUnledgeredSpend();
+      return;
+    }
 
     const drop = previous.totalBalance - totalBalance;
-    const explained = await getSponsorLedgerSpend({ since: previous.at, until: now });
+    const explained = (await getSponsorLedgerSpend({ since: previous.at, until: now })) + this.consumeUnledgeredSpend();
     // One transaction's budget of slack for rows resolving across the window edge.
     const tolerance = this.appEnv.SPONSOR_MAX_GAS_BUDGET_MIST;
 
@@ -437,7 +448,103 @@ export class SponsorService {
     );
   }
 
+  /**
+   * Sponsored gas is paid only from the sponsor's address balance, but SUI
+   * sent with a normal transfer arrives as coin objects. Deposits the
+   * sponsor's coins into its own address balance (`0x2::coin::send_funds`),
+   * paying this transaction's gas from those same coins. A small remainder
+   * stays behind as the gas coin. Never touches the address balance, so it
+   * can't conflict with in-flight sponsored transactions.
+   */
+  async sweepCoinsIntoAddressBalance(): Promise<
+    | { swept: false; reason: string; coinBalanceMist: string }
+    | { swept: true; digest: string; amountMist: string; gasUsedMist: string }
+  > {
+    const keypair = await this.initialize();
+    const owner = this.sponsorWallet;
+
+    const coins = [];
+    let cursor: string | null = null;
+    do {
+      const page = await this.client.core.listCoins({ owner, coinType: SUI_COIN_TYPE, cursor, limit: 50 });
+      coins.push(...page.objects);
+      cursor = page.hasNextPage ? page.cursor : null;
+    } while (cursor && coins.length < MAX_GAS_PAYMENT_COINS);
+
+    // Largest first; a transaction can name at most a few hundred gas coins.
+    const payment = coins
+      .sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1))
+      .slice(0, MAX_GAS_PAYMENT_COINS);
+    const coinBalance = payment.reduce((sum, coin) => sum + BigInt(coin.balance), 0n);
+
+    if (coinBalance < this.appEnv.SPONSOR_COIN_SWEEP_MIN_MIST) {
+      return { swept: false, reason: "coin balance below sweep minimum", coinBalanceMist: coinBalance.toString() };
+    }
+
+    const gasBudget = BigInt(this.appEnv.SUI_GAS_BUDGET);
+    // Leave enough in the gas coin to cover this transaction's own gas.
+    const amount = coinBalance - 2n * gasBudget;
+    if (amount <= 0n) {
+      return { swept: false, reason: "coin balance too small to cover gas", coinBalanceMist: coinBalance.toString() };
+    }
+
+    const { referenceGasPrice } = await this.client.core.getReferenceGasPrice();
+    const tx = new Transaction();
+    tx.setSender(owner);
+    tx.setGasPayment(payment.map(({ objectId, version, digest }) => ({ objectId, version, digest })));
+    tx.setGasPrice(BigInt(referenceGasPrice));
+    tx.setGasBudget(gasBudget);
+    const [coin] = tx.splitCoins(tx.gas, [amount]);
+    tx.moveCall({
+      target: "0x2::coin::send_funds",
+      typeArguments: [SUI_COIN_TYPE],
+      arguments: [coin, tx.pure.address(owner)],
+    });
+
+    // Fully specified above (gas coins, price, budget), so it builds offline.
+    const bytes = await tx.build();
+    const { signature } = await keypair.signTransaction(bytes);
+    const result = await this.client.core.executeTransaction({
+      transaction: bytes,
+      signatures: [signature],
+      include: { effects: true },
+    });
+    const executed = result.$kind === "Transaction" ? result.Transaction : result.FailedTransaction;
+    const gasUsed = executed.effects.gasUsed;
+    const gasUsedMist = BigInt(gasUsed.computationCost) + BigInt(gasUsed.storageCost) - BigInt(gasUsed.storageRebate);
+    this.unledgeredSpendMist += gasUsedMist;
+    this.health = null;
+
+    if (!executed.effects.status.success) {
+      throw new Error(`Coin sweep failed on-chain: ${executed.effects.status.error?.message ?? "unknown error"}`);
+    }
+
+    console.log(
+      JSON.stringify({
+        level: 30,
+        time: Date.now(),
+        msg: "Swept sponsor coins into address balance",
+        digest: TransactionDataBuilder.getDigestFromBytes(bytes),
+        amountMist: amount.toString(),
+        gasUsedMist: gasUsedMist.toString(),
+      })
+    );
+
+    return {
+      swept: true,
+      digest: TransactionDataBuilder.getDigestFromBytes(bytes),
+      amountMist: amount.toString(),
+      gasUsedMist: gasUsedMist.toString(),
+    };
+  }
+
   async runMaintenance(): Promise<void> {
+    try {
+      await this.sweepCoinsIntoAddressBalance();
+    } catch (error) {
+      console.error("Sponsor coin sweep failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+
     try {
       await this.sweepUnresolved();
     } catch (error) {
@@ -462,6 +569,11 @@ export class SponsorService {
   stopMaintenance(): void {
     if (this.maintenanceTimer) clearInterval(this.maintenanceTimer);
     this.maintenanceTimer = null;
+  }
+
+  /** Forces the next health check to re-read balance and pause state. */
+  invalidateHealth(): void {
+    this.health = null;
   }
 
   async resume(): Promise<SponsorState> {
@@ -493,6 +605,7 @@ export class SponsorService {
         listRecentSponsorTransactions({ statuses: ["signed"], limit: 50 }),
         listRecentSponsorTransactions({ statuses: ["failed", "dropped"], limit: 20 }),
       ]);
+    const [toppedUpToday, recentTopUps] = await Promise.all([getSponsorTopUpTotal(today), listRecentSponsorTopUps(10)]);
 
     return {
       enabled: this.enabled,
@@ -520,6 +633,15 @@ export class SponsorService {
       },
       unresolved,
       recentFailures,
+      funding: {
+        // SUI in coin objects can't pay sponsored gas until it is swept into
+        // the address balance (automatically each maintenance run, or via
+        // POST /admin/sponsor/sweep).
+        coinSweepMinMist: this.appEnv.SPONSOR_COIN_SWEEP_MIN_MIST.toString(),
+        topUpDailyCeilingMist: this.appEnv.SPONSOR_TOPUP_MAX_PER_DAY_MIST.toString(),
+        toppedUpTodayMist: toppedUpToday.toString(),
+        recentTopUps,
+      },
     };
   }
 
@@ -529,6 +651,7 @@ export class SponsorService {
     this.health = null;
     this.alertSentAt.clear();
     this.leakSnapshot = null;
+    this.unledgeredSpendMist = 0n;
     this.sharedObjectVersions.clear();
     this.chainIdentifier = null;
   }
@@ -776,6 +899,12 @@ export class SponsorService {
       gasUsed,
       error: effects.status.success ? null : (effects.status.error?.message ?? "Transaction failed on-chain."),
     });
+  }
+
+  private consumeUnledgeredSpend(): bigint {
+    const spent = this.unledgeredSpendMist;
+    this.unledgeredSpendMist = 0n;
+    return spent;
   }
 
   private withSubmitLock<T>(fn: () => Promise<T>): Promise<T> {

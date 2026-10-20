@@ -8,7 +8,11 @@ import {
   findUserBy,
   listUsers,
 } from "../db/repositories.js";
+import { SponsorError } from "../services/SponsorService.js";
+import { SponsorFundingService } from "../services/SponsorFundingService.js";
 import { sponsorService } from "./sponsor.js";
+
+export const sponsorFundingService = new SponsorFundingService(env, sponsorService);
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
   // This hook is scoped to adminRoutes by Fastify's plugin encapsulation:
@@ -65,6 +69,42 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.get("/admin/sponsor/summary", async () => sponsorService.summary());
+
+  // Moves SUI from the admin wallet into the sponsor's address balance,
+  // within SPONSOR_TOPUP_MAX_PER_DAY_MIST. Amount is a decimal MIST string
+  // (1 SUI = 1000000000) so large values don't lose precision.
+  app.post("/admin/sponsor/top-up", async (request, reply) => {
+    const body = z.object({ amountMist: z.string().regex(/^[1-9][0-9]{0,19}$/) }).safeParse(request.body);
+
+    if (!body.success) {
+      return reply.status(400).send({
+        error: "bad_request",
+        message: 'Body must be { amountMist: "<positive integer MIST>" }.',
+      });
+    }
+
+    try {
+      return reply.send(await sponsorFundingService.topUp(BigInt(body.data.amountMist)));
+    } catch (error) {
+      if (error instanceof SponsorError) {
+        return reply.status(error.statusCode).send({ error: error.code, message: error.message });
+      }
+      throw error;
+    }
+  });
+
+  // Sweeps the sponsor's coin objects into its address balance now, rather
+  // than waiting for the next maintenance run.
+  app.post("/admin/sponsor/sweep", async (_request, reply) => {
+    try {
+      return reply.send(await sponsorService.sweepCoinsIntoAddressBalance());
+    } catch (error) {
+      if (error instanceof SponsorError) {
+        return reply.status(error.statusCode).send({ error: error.code, message: error.message });
+      }
+      throw error;
+    }
+  });
 
   // Lifts a pause set by the unexpected-spend check. Deliberately manual.
   app.post("/admin/sponsor/resume", async () => ({

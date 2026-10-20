@@ -4,10 +4,13 @@ import { bcs } from "@mysten/sui/bcs";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { TransactionDataBuilder } from "@mysten/sui/transactions";
 import { fromBase64, normalizeSuiAddress, toBase64 } from "@mysten/sui/utils";
+import { verifyTransactionSignature } from "@mysten/sui/verify";
 
 const sponsorKeypair = Ed25519Keypair.generate();
 const userKeypair = Ed25519Keypair.generate();
 const otherKeypair = Ed25519Keypair.generate();
+const adminKeypair = Ed25519Keypair.generate();
+const ADMIN_WALLET = adminKeypair.toSuiAddress();
 const USER_WALLET = userKeypair.toSuiAddress();
 const SPONSOR_WALLET = sponsorKeypair.toSuiAddress();
 const PACKAGE_ID = normalizeSuiAddress("0xaa");
@@ -17,12 +20,13 @@ const CHAIN_ID = "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S";
 
 process.env.DOMAINS = "acme.com";
 process.env.CLIENT_ID = "acme";
-process.env.ADMIN_WALLET = "0xabc";
+process.env.ADMIN_WALLET = ADMIN_WALLET;
 process.env.ADMIN_API_KEY = "admin-key";
 process.env.APP_API_KEY = "app-key";
 process.env.SUI_NETWORK = "testnet";
 process.env.SUI_RPC_URL = "https://fullnode.testnet.sui.io:443";
-process.env.SUI_PRIVATE_KEY = "suiprivkey-test";
+process.env.SUI_PRIVATE_KEY = adminKeypair.getSecretKey();
+process.env.SUI_GAS_BUDGET = "10000000";
 process.env.SUI_PACKAGE_ID = PACKAGE_ID;
 process.env.SUI_REGISTRY_ID = REGISTRY_ID;
 process.env.SPONSOR_ENABLED = "true";
@@ -39,6 +43,8 @@ process.env.SPONSOR_GAS_PER_DOMAIN_PER_DAY_MIST = "50000000000";
 process.env.SPONSOR_PREPARE_TTL_MS = "300000";
 process.env.SPONSOR_MIN_BALANCE_MIST = "1000000000";
 process.env.SPONSOR_LEAK_CHECK_INTERVAL_MS = "900000";
+process.env.SPONSOR_COIN_SWEEP_MIN_MIST = "100000000";
+process.env.SPONSOR_TOPUP_MAX_PER_DAY_MIST = "10000000000";
 
 const APP_HEADERS = { "x-app-api-key": "app-key" };
 const ADMIN_HEADERS = { "x-admin-api-key": "admin-key" };
@@ -48,6 +54,7 @@ const state = vi.hoisted(() => ({
   ledger: new Map<string, Record<string, unknown>>(),
   paused: { paused: false, pausedReason: null as string | null, pausedAt: null as string | null },
   chain: {} as Record<string, unknown>,
+  topups: new Map<string, Record<string, unknown>>(),
 }));
 
 const chain = vi.hoisted(() => ({
@@ -70,6 +77,7 @@ const chain = vi.hoisted(() => ({
   executeFailure: null as string | null,
   executed: [] as Array<{ transaction: Uint8Array; signatures: string[] }>,
   onChain: new Map<string, { success: boolean }>(),
+  coins: new Map<string, Array<{ objectId: string; version: string; digest: string; balance: string }>>(),
 }));
 
 function fakeClient() {
@@ -80,7 +88,21 @@ function fakeClient() {
 
   return {
     core: {
-      getCurrentSystemState: vi.fn(async () => ({ systemState: { epoch: chain.epoch } })),
+      // No transport-specific resolver: Transaction#build falls back to the
+      // SDK's core resolver, which uses the methods below.
+      resolveTransactionPlugin: () => undefined,
+      getCurrentSystemState: vi.fn(async () => ({
+        systemState: { epoch: chain.epoch, referenceGasPrice: chain.referenceGasPrice },
+      })),
+      listCoins: vi.fn(async ({ owner }: { owner: string }) => ({
+        objects: (chain.coins.get(normalizeSuiAddress(owner)) ?? []).map((coin) => ({
+          ...coin,
+          owner: { $kind: "AddressOwner", AddressOwner: owner },
+          type: "0x2::coin::Coin<0x2::sui::SUI>",
+        })),
+        hasNextPage: false,
+        cursor: null,
+      })),
       getChainIdentifier: vi.fn(async () => ({ chainIdentifier: CHAIN_ID })),
       getReferenceGasPrice: vi.fn(async () => ({ referenceGasPrice: chain.referenceGasPrice })),
       getBalance: vi.fn(async () => ({
@@ -234,6 +256,29 @@ vi.mock("../src/db/sponsorRepositories.js", () => {
     listSponsorUsageByUser: vi.fn(async () => []),
     listRecentSponsorTransactions: vi.fn(async () => []),
     getSponsorState: vi.fn(async () => ({ ...state.paused })),
+    insertSponsorTopUp: vi.fn(async (input: { id: string; amountMist: bigint }) => {
+      state.topups.set(input.id, {
+        id: input.id,
+        amountMist: input.amountMist.toString(),
+        status: "pending",
+        txDigest: null,
+        createdAt: new Date().toISOString(),
+      });
+    }),
+    setSponsorTopUpDigest: vi.fn(async (input: { id: string; txDigest: string }) => {
+      state.topups.get(input.id)!.txDigest = input.txDigest;
+    }),
+    resolveSponsorTopUp: vi.fn(async (input: { id: string; status: string; gasUsed?: bigint | null }) => {
+      const row = state.topups.get(input.id);
+      if (row?.status === "pending") Object.assign(row, { status: input.status, gasUsed: String(input.gasUsed) });
+    }),
+    getSponsorTopUpTotal: vi.fn(async () =>
+      [...state.topups.values()]
+        .filter((row) => row.status !== "failed")
+        .reduce((sum, row) => sum + BigInt(row.amountMist as string), 0n)
+    ),
+    listPendingSponsorTopUps: vi.fn(async () => [...state.topups.values()].filter((row) => row.status === "pending")),
+    listRecentSponsorTopUps: vi.fn(async () => [...state.topups.values()]),
     setSponsorPaused: vi.fn(async (input: { paused: boolean; reason?: string }) => {
       state.paused = {
         paused: input.paused,
@@ -249,6 +294,7 @@ client.current = fakeClient();
 
 const { buildApp } = await import("../src/app.js");
 const { sponsorService } = await import("../src/routes/sponsor.js");
+const { sponsorFundingService } = await import("../src/routes/admin.js");
 const { resetAllRateLimiters } = await import("../src/utils/rateLimit.js");
 const { SponsorService, buildAttestationTransaction } = await import("../src/services/SponsorService.js");
 const { env } = await import("../src/config/env.js");
@@ -332,6 +378,8 @@ describe("sponsor routes", () => {
       executed: [],
     });
     chain.onChain.clear();
+    chain.coins.clear();
+    state.topups.clear();
     app = await buildApp();
   });
 
@@ -704,6 +752,168 @@ describe("sponsor routes", () => {
     for (let i = 0; i < 31; i++) last = await prepare(app);
     expect(last!.statusCode).toBe(429);
     expect(last!.headers["retry-after"]).toBeDefined();
+  });
+
+  describe("funding", () => {
+    const DIGEST = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi";
+    const coin = (id: string, balance: string) => ({
+      objectId: normalizeSuiAddress(id),
+      version: "7",
+      digest: DIGEST,
+      balance,
+    });
+
+    // The send_funds call: (recipient, amount) decoded from the built bytes.
+    function decodeSendFunds(bytes: Uint8Array) {
+      const data = TransactionDataBuilder.fromBytes(bytes);
+      const moveCall = data.commands.find((command) => command.MoveCall)?.MoveCall;
+      const split = data.commands.find((command) => command.SplitCoins)?.SplitCoins;
+      const pure = (arg: { Input?: number } | undefined) =>
+        fromBase64((data.inputs[arg!.Input!] as { Pure: { bytes: string } }).Pure.bytes);
+      return {
+        data,
+        moveCall,
+        recipient: normalizeSuiAddress(bcs.Address.parse(pure(moveCall!.arguments[1] as { Input: number }))),
+        amount: bcs.u64().parse(pure(split!.amounts[0] as { Input: number })),
+      };
+    }
+
+    it("sweeps the sponsor's coin objects into its own address balance", async () => {
+      chain.coins.set(normalizeSuiAddress(SPONSOR_WALLET), [coin("0xc1", "300000000"), coin("0xc2", "200000000")]);
+
+      const response = await app.inject({ method: "POST", url: "/admin/sponsor/sweep", headers: ADMIN_HEADERS });
+      expect(response.statusCode).toBe(200);
+      // 0.5 SUI of coins minus 2x the 10,000,000 MIST gas budget left for gas.
+      expect(response.json()).toMatchObject({ swept: true, amountMist: "480000000", gasUsedMist: "2020000" });
+
+      expect(chain.executed).toHaveLength(1);
+      const [executed] = chain.executed;
+      const { data, moveCall, recipient, amount } = decodeSendFunds(executed.transaction);
+      expect(normalizeSuiAddress(data.sender!)).toBe(normalizeSuiAddress(SPONSOR_WALLET));
+      expect(data.gasData.payment?.map((ref) => ref.objectId)).toEqual([
+        normalizeSuiAddress("0xc1"),
+        normalizeSuiAddress("0xc2"),
+      ]);
+      expect(moveCall).toMatchObject({ module: "coin", function: "send_funds" });
+      expect(recipient).toBe(normalizeSuiAddress(SPONSOR_WALLET));
+      expect(amount).toBe("480000000");
+      await expect(
+        verifyTransactionSignature(executed.transaction, executed.signatures[0], { address: SPONSOR_WALLET })
+      ).resolves.toBeDefined();
+    });
+
+    it("skips the sweep below the minimum", async () => {
+      chain.coins.set(normalizeSuiAddress(SPONSOR_WALLET), [coin("0xc1", "99999999")]);
+
+      const response = await app.inject({ method: "POST", url: "/admin/sponsor/sweep", headers: ADMIN_HEADERS });
+      expect(response.json()).toMatchObject({ swept: false, coinBalanceMist: "99999999" });
+      expect(chain.executed).toHaveLength(0);
+    });
+
+    it("doesn't count the sweep's own gas as unexpected spend", async () => {
+      await sponsorService.checkUnexpectedSpend();
+
+      // A sweep whose gas alone exceeds the one-budget tolerance.
+      chain.gasUsed = { ...chain.gasUsed, computationCost: "60000000" };
+      chain.coins.set(normalizeSuiAddress(SPONSOR_WALLET), [coin("0xc1", "500000000")]);
+      await sponsorService.sweepCoinsIntoAddressBalance();
+      chain.addressBalance = (5_000_000_000n - 61_020_000n).toString();
+      chain.gasUsed = { ...chain.gasUsed, computationCost: "1000000" };
+
+      await sponsorService.checkUnexpectedSpend();
+      expect(state.paused.paused).toBe(false);
+    });
+
+    it("tops up the sponsor's address balance from the admin wallet", async () => {
+      chain.coins.set(normalizeSuiAddress(ADMIN_WALLET), [coin("0xa1", "5000000000")]);
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/sponsor/top-up",
+        headers: ADMIN_HEADERS,
+        payload: { amountMist: "2000000000" },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        status: "executed",
+        amountMist: "2000000000",
+        toppedUpTodayMist: "2000000000",
+        dailyCeilingMist: "10000000000",
+      });
+
+      const [executed] = chain.executed;
+      const { data, recipient, amount } = decodeSendFunds(executed.transaction);
+      expect(normalizeSuiAddress(data.sender!)).toBe(normalizeSuiAddress(ADMIN_WALLET));
+      expect(recipient).toBe(normalizeSuiAddress(SPONSOR_WALLET));
+      expect(amount).toBe("2000000000");
+      await expect(
+        verifyTransactionSignature(executed.transaction, executed.signatures[0], { address: ADMIN_WALLET })
+      ).resolves.toBeDefined();
+      expect([...state.topups.values()]).toMatchObject([{ status: "executed", txDigest: response.json().digest }]);
+    });
+
+    it("enforces the daily top-up ceiling", async () => {
+      chain.coins.set(normalizeSuiAddress(ADMIN_WALLET), [coin("0xa1", "50000000000")]);
+      const topUp = (amountMist: string) =>
+        app.inject({ method: "POST", url: "/admin/sponsor/top-up", headers: ADMIN_HEADERS, payload: { amountMist } });
+
+      expect((await topUp("10000000001")).statusCode).toBe(409);
+      expect((await topUp("6000000000")).statusCode).toBe(200);
+      const over = await topUp("4000000001");
+      expect(over.statusCode).toBe(409);
+      expect(over.json().error).toBe("top_up_ceiling_exceeded");
+      expect(chain.executed).toHaveLength(1);
+    });
+
+    it("keeps an unconfirmed top-up counting toward the ceiling until resolved", async () => {
+      chain.coins.set(normalizeSuiAddress(ADMIN_WALLET), [coin("0xa1", "50000000000")]);
+      chain.executeError = new Error("fetch failed");
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/sponsor/top-up",
+        headers: ADMIN_HEADERS,
+        payload: { amountMist: "9000000000" },
+      });
+      expect(response.statusCode).toBe(502);
+      const [row] = [...state.topups.values()];
+      expect(row).toMatchObject({ status: "pending" });
+      expect(row.txDigest).toBeTruthy();
+
+      // Still pending (not found on chain): counts toward the ceiling.
+      chain.executeError = null;
+      const blocked = await app.inject({
+        method: "POST",
+        url: "/admin/sponsor/top-up",
+        headers: ADMIN_HEADERS,
+        payload: { amountMist: "2000000000" },
+      });
+      expect(blocked.statusCode).toBe(409);
+
+      // It turns out to have landed.
+      chain.onChain.set(row.txDigest as string, { success: true });
+      await sponsorFundingService.resolvePending();
+      expect(row.status).toBe("executed");
+    });
+
+    it("validates the top-up body and requires the admin key", async () => {
+      for (const amountMist of ["0", "-5", "1.5", "abc", 5]) {
+        const response = await app.inject({
+          method: "POST",
+          url: "/admin/sponsor/top-up",
+          headers: ADMIN_HEADERS,
+          payload: { amountMist },
+        });
+        expect(response.statusCode).toBe(400);
+      }
+      const unauthorized = await app.inject({
+        method: "POST",
+        url: "/admin/sponsor/top-up",
+        payload: { amountMist: "1" },
+      });
+      expect(unauthorized.statusCode).toBe(401);
+      expect(chain.executed).toHaveLength(0);
+    });
   });
 });
 

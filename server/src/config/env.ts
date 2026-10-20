@@ -119,6 +119,11 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(15 * 60 * 1000),
+  // Coins held by the sponsor above this are swept into its address balance
+  // (the only place sponsored gas is paid from).
+  SPONSOR_COIN_SWEEP_MIN_MIST: z.coerce.bigint().positive().default(100_000_000n),
+  // Daily ceiling on admin-wallet -> sponsor top-ups via POST /admin/sponsor/top-up.
+  SPONSOR_TOPUP_MAX_PER_DAY_MIST: z.coerce.bigint().nonnegative().default(10_000_000_000n),
 });
 
 const parsedEnv = envSchema.parse(process.env);
