@@ -8,6 +8,7 @@ import {
   findUserBy,
   listUsers,
 } from "../db/repositories.js";
+import { sponsorService } from "./sponsor.js";
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
   // This hook is scoped to adminRoutes by Fastify's plugin encapsulation:
@@ -62,6 +63,14 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
     return reply.send({ user });
   });
+
+  app.get("/admin/sponsor/summary", async () => sponsorService.summary());
+
+  // Lifts a pause set by the unexpected-spend check. Deliberately manual.
+  app.post("/admin/sponsor/resume", async () => ({
+    message: "Sponsorship resumed.",
+    state: await sponsorService.resume(),
+  }));
 
   app.get("/admin/orphaned-sessions", async () => ({
     orphanedSessions: await findOrphanedCompletedOtpSessions(),

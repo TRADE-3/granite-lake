@@ -11,6 +11,8 @@ import '../constants/app_constants.dart';
 import '../state/granite_lake_models.dart';
 import '../utils/network_error_classifier.dart';
 import '../utils/utils.dart';
+import 'attestation_transaction_builder.dart';
+import 'sponsor_attestation_service.dart';
 import 'sui_graphql_service.dart';
 
 class _GraphQlCoin {
@@ -26,11 +28,13 @@ class PhotoAttestationClaimInput {
     required this.userId,
     required this.otp,
     required this.walletNonce,
+    this.userEmail = '',
   });
 
   final String domain;
   final String userId;
   final String otp;
+  final String userEmail;
 
   // Server-issued nonce this claim's wallet must sign to prove possession of
   // its private key before the backend binds it to the OTP session.
@@ -360,11 +364,15 @@ class PhotoAttestationService {
   PhotoAttestationService({
     http.Client? httpClient,
     SuiGraphQlService? graphQlService,
+    SponsorAttestationService? sponsorService,
   }) : _httpClient = httpClient ?? http.Client(),
-       _graphQlService = graphQlService ?? SuiGraphQlService();
+       _graphQlService = graphQlService ?? SuiGraphQlService(),
+       _sponsorService =
+           sponsorService ?? SponsorAttestationService(httpClient: httpClient);
 
   final http.Client _httpClient;
   final SuiGraphQlService _graphQlService;
+  final SponsorAttestationService _sponsorService;
 
   // Well-known shared Clock object every Sui network exposes at this fixed
   // address (sui::clock::Clock, id 0x6).
@@ -524,6 +532,7 @@ class PhotoAttestationService {
         userCapObjectId: userCapObjectId,
         claimTxDigest: claimTxDigest,
         claimedAt: DateTime.now().toUtc(),
+        userEmail: input.userEmail,
       );
     } catch (error) {
       throw PhotoAttestationException.fromError(error, operation: 'claim');
@@ -539,6 +548,32 @@ class PhotoAttestationService {
   ///
   /// The backend only honours this for the registered wallet: it issues a
   /// single-use challenge, and [signingKey] must sign it.
+  /// The email this account registered with, as recorded by the domain
+  /// backend on the OTP session (`GET /otp/:userId`). Used to backfill
+  /// installs that registered before the app stored it locally.
+  Future<String?> fetchRegisteredEmail({
+    required String domain,
+    required String userId,
+  }) async {
+    final backendConfig = await AppUtils.resolveOtpBackendConfig(
+      domain: domain,
+    );
+    final uri = AppUtils.otpBackendUri(
+      backendConfig.url,
+      'otp/${Uri.encodeComponent(userId)}',
+    );
+    final response = await _httpClient.get(
+      uri,
+      headers: {AppUtils.appApiKeyHeader: backendConfig.apiKey},
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      return null;
+    }
+    final email = (_decodeJsonPayload(response.body)['userEmail'] as String?)
+        ?.trim();
+    return email == null || email.isEmpty ? null : email;
+  }
+
   Future<void> deactivateUser({
     required String domain,
     required String userId,
@@ -633,8 +668,7 @@ class PhotoAttestationService {
         _suiClockObjectId,
       );
 
-      var tx = SuiTransactionDataV1(
-        expiration: const SuiTransactionExpirationNone(),
+      final tx = AttestationTransactionBuilder.photo(
         sender: owner,
         gasData: SuiGasData(
           payment: const [],
@@ -642,52 +676,23 @@ class PhotoAttestationService {
           price: await _graphQlService.getReferenceGasPrice(config.rpcUrl),
           budget: BigInt.from(50000000),
         ),
-        kind: SuiTransactionKindProgrammableTransaction(
-          SuiProgrammableTransaction(
-            inputs: [
-              SuiCallArgObject(
-                SuiObjectArgImmOrOwnedObject(userCap.toObjectRef()),
-              ),
-              SuiCallArgObject(registry),
-              SuiCallArgPure.bytes(utf8.encode(imageSha256)),
-              SuiCallArgPure.bytes(utf8.encode(gps)),
-              SuiCallArgPure.bytes(utf8.encode(altitude)),
-              SuiCallArgPure.bytes(utf8.encode(projectId)),
-              SuiCallArgPure.u64(BigInt.from(capturedAtMs)),
-              SuiCallArgPure.boolean(isOnline),
-              SuiCallArgPure.boolean(isForcedOffline),
-              SuiCallArgPure.bytes(_hexToBytes(internetNullReasonHashHex)),
-              SuiCallArgPure.boolean(hasGps),
-              SuiCallArgPure.boolean(isGpsForcedNull),
-              SuiCallArgPure.bytes(_hexToBytes(gpsNullReasonHashHex)),
-              SuiCallArgObject(clock),
-            ],
-            commands: [
-              SuiCommandMoveCall(
-                SuiProgrammableMoveCall(
-                  package: SuiAddress(config.packageId),
-                  module: config.moduleName,
-                  function: 'attest_photo',
-                  arguments: [
-                    SuiArgumentInput(0),
-                    SuiArgumentInput(1),
-                    SuiArgumentInput(2),
-                    SuiArgumentInput(3),
-                    SuiArgumentInput(4),
-                    SuiArgumentInput(5),
-                    SuiArgumentInput(6),
-                    SuiArgumentInput(7),
-                    SuiArgumentInput(8),
-                    SuiArgumentInput(9),
-                    SuiArgumentInput(10),
-                    SuiArgumentInput(11),
-                    SuiArgumentInput(12),
-                    SuiArgumentInput(13),
-                  ],
-                ),
-              ),
-            ],
-          ),
+        userCap: userCap.toObjectRef(),
+        registry: registry,
+        clock: clock,
+        packageId: config.packageId,
+        moduleName: config.moduleName,
+        args: PhotoAttestationTxArgs(
+          imageSha256: imageSha256,
+          gps: gps,
+          altitude: altitude,
+          projectId: projectId,
+          capturedAtMs: capturedAtMs,
+          isOnline: isOnline,
+          isForcedOffline: isForcedOffline,
+          internetNullReasonHashHex: internetNullReasonHashHex,
+          hasGps: hasGps,
+          isGpsForcedNull: isGpsForcedNull,
+          gpsNullReasonHashHex: gpsNullReasonHashHex,
         ),
       );
 
@@ -854,8 +859,7 @@ class PhotoAttestationService {
         _suiClockObjectId,
       );
 
-      var tx = SuiTransactionDataV1(
-        expiration: const SuiTransactionExpirationNone(),
+      final tx = AttestationTransactionBuilder.file(
         sender: owner,
         gasData: SuiGasData(
           payment: const [],
@@ -863,44 +867,19 @@ class PhotoAttestationService {
           price: await _graphQlService.getReferenceGasPrice(config.rpcUrl),
           budget: BigInt.from(50000000),
         ),
-        kind: SuiTransactionKindProgrammableTransaction(
-          SuiProgrammableTransaction(
-            inputs: [
-              SuiCallArgObject(
-                SuiObjectArgImmOrOwnedObject(userCap.toObjectRef()),
-              ),
-              SuiCallArgObject(registry),
-              SuiCallArgPure.bytes(utf8.encode(record.contentSha256)),
-              SuiCallArgPure.bytes(utf8.encode(record.fileId)),
-              SuiCallArgPure.bytes(utf8.encode(projectId)),
-              SuiCallArgPure.u64(BigInt.from(capturedAtMs)),
-              SuiCallArgPure.boolean(isOnline),
-              SuiCallArgPure.boolean(isForcedOffline),
-              SuiCallArgPure.bytes(_hexToBytes(internetNullReasonHashHex)),
-              SuiCallArgObject(clock),
-            ],
-            commands: [
-              SuiCommandMoveCall(
-                SuiProgrammableMoveCall(
-                  package: SuiAddress(config.packageId),
-                  module: config.moduleName,
-                  function: 'attest_file',
-                  arguments: [
-                    SuiArgumentInput(0),
-                    SuiArgumentInput(1),
-                    SuiArgumentInput(2),
-                    SuiArgumentInput(3),
-                    SuiArgumentInput(4),
-                    SuiArgumentInput(5),
-                    SuiArgumentInput(6),
-                    SuiArgumentInput(7),
-                    SuiArgumentInput(8),
-                    SuiArgumentInput(9),
-                  ],
-                ),
-              ),
-            ],
-          ),
+        userCap: userCap.toObjectRef(),
+        registry: registry,
+        clock: clock,
+        packageId: config.packageId,
+        moduleName: config.moduleName,
+        args: FileAttestationTxArgs(
+          contentSha256: record.contentSha256,
+          fileId: record.fileId,
+          projectId: projectId,
+          capturedAtMs: capturedAtMs,
+          isOnline: isOnline,
+          isForcedOffline: isForcedOffline,
+          internetNullReasonHashHex: internetNullReasonHashHex,
         ),
       );
 
@@ -923,6 +902,235 @@ class PhotoAttestationService {
     } catch (error) {
       throw PhotoAttestationException.fromError(error, operation: 'attest');
     }
+  }
+
+  Future<SponsorStatus> fetchSponsorStatus({required String domain}) =>
+      _sponsorService.fetchStatus(domain: domain);
+
+  /// [attestPhoto] with the network fee paid by the domain's sponsor wallet
+  /// (design doc granite-lake-sponsored-transactions-design.md). Throws
+  /// [SponsorAttestationException] for anything sponsorship-specific so the
+  /// caller can decide between queueing and the self-pay fallback.
+  Future<PhotoAttestationSubmissionResult> attestPhotoSponsored({
+    required IdentityRecord identity,
+    required SuiED25519PrivateKey signingKey,
+    required PhotoAttestationContractConfig config,
+    required PhotoAttestationClaimRecord claim,
+    required SponsorStatus sponsorStatus,
+    required PhotoAttestationTxArgs args,
+  }) async {
+    final response = await _attestSponsored(
+      identity: identity,
+      signingKey: signingKey,
+      config: config,
+      claim: claim,
+      sponsorStatus: sponsorStatus,
+      prepare: () => _sponsorService.preparePhoto(
+        domain: claim.domain,
+        userWallet: identity.walletAddress,
+        args: args,
+      ),
+      expected: (sender, gasData, userCap, registry, clock) =>
+          AttestationTransactionBuilder.photo(
+            sender: sender,
+            gasData: gasData,
+            userCap: userCap,
+            registry: registry,
+            clock: clock,
+            packageId: config.packageId,
+            moduleName: config.moduleName,
+            args: args,
+          ),
+    );
+    final verification = _buildImmediateVerificationResult(
+      response: response,
+      config: config,
+      walletAddress: identity.walletAddress,
+      imageSha256: args.imageSha256,
+      gps: args.gps,
+      altitude: args.altitude,
+      projectId: args.projectId,
+    );
+    if (verification == null || !verification.isVerified) {
+      throw _notConfirmed(response.digest);
+    }
+    return PhotoAttestationSubmissionResult(
+      transactionDigest: response.digest,
+      status: response.status,
+      verification: verification,
+    );
+  }
+
+  /// [attestFile] with the network fee paid by the domain's sponsor wallet.
+  Future<FileAttestationSubmissionResult> attestFileSponsored({
+    required IdentityRecord identity,
+    required SuiED25519PrivateKey signingKey,
+    required PhotoAttestationContractConfig config,
+    required PhotoAttestationClaimRecord claim,
+    required SponsorStatus sponsorStatus,
+    required AttestationRecord record,
+    required FileAttestationTxArgs args,
+  }) async {
+    final response = await _attestSponsored(
+      identity: identity,
+      signingKey: signingKey,
+      config: config,
+      claim: claim,
+      sponsorStatus: sponsorStatus,
+      prepare: () => _sponsorService.prepareFile(
+        domain: claim.domain,
+        userWallet: identity.walletAddress,
+        args: args,
+      ),
+      expected: (sender, gasData, userCap, registry, clock) =>
+          AttestationTransactionBuilder.file(
+            sender: sender,
+            gasData: gasData,
+            userCap: userCap,
+            registry: registry,
+            clock: clock,
+            packageId: config.packageId,
+            moduleName: config.moduleName,
+            args: args,
+          ),
+    );
+    final verification = _buildImmediateFileVerificationResult(
+      response: response,
+      config: config,
+      walletAddress: identity.walletAddress,
+      record: record,
+      projectId: args.projectId,
+    );
+    if (verification == null || !verification.isVerified) {
+      throw _notConfirmed(response.digest);
+    }
+    return FileAttestationSubmissionResult(
+      transactionDigest: response.digest,
+      status: response.status,
+      verification: verification,
+    );
+  }
+
+  /// prepare -> verify (§8) -> sign -> submit -> confirm on-chain. The
+  /// server's word is never taken as proof: the transaction is looked up by
+  /// the digest of the bytes this device signed.
+  Future<SuiGraphQlTransactionResult> _attestSponsored({
+    required IdentityRecord identity,
+    required SuiED25519PrivateKey signingKey,
+    required PhotoAttestationContractConfig config,
+    required PhotoAttestationClaimRecord claim,
+    required SponsorStatus sponsorStatus,
+    required Future<PreparedSponsorTransaction> Function() prepare,
+    required SuiTransactionDataV1 Function(
+      SuiAddress sender,
+      SuiGasData gasData,
+      SuiObjectRef userCap,
+      SuiObjectArg registry,
+      SuiObjectArg clock,
+    )
+    expected,
+  }) async {
+    try {
+      final prepared = await prepare();
+      final chainInfo = await _graphQlService.getChainInfo(config.rpcUrl);
+      final bytes = SponsorAttestationService.verifyPreparedTransaction(
+        prepared: prepared,
+        status: sponsorStatus,
+        ownWallet: identity.walletAddress,
+        expectedUserCapObjectId: claim.userCapObjectId,
+        expectedRegistryId: config.registryId,
+        currentEpoch: chainInfo.epoch,
+        chainDigest: chainInfo.chainDigest,
+        expected: expected,
+      );
+
+      // Same key, same signing path as the self-paid _execute.
+      final signature = SuiEd25519Account(
+        signingKey,
+      ).signTransaction([0, 0, 0, ...bytes]).toVariantBcsBase64();
+      final submitted = await _sponsorService.submit(
+        domain: claim.domain,
+        userWallet: identity.walletAddress,
+        digest: prepared.digest,
+        userSignature: signature,
+      );
+      debugPrint(
+        '[SPONSOR] submit status=${submitted.status} digest=${prepared.digest} '
+        'gasUsed=${submitted.gasUsedMist}',
+      );
+
+      switch (submitted.status) {
+        case 'executed':
+          break;
+        case 'failed':
+          throw PhotoAttestationException.fromError(
+            StateError(submitted.error ?? 'Sui transaction failed.'),
+            operation: 'attest',
+          );
+        case 'dropped':
+          throw const SponsorAttestationException(
+            code: 'dropped',
+            userMessage:
+                'The submission did not go through. It will be retried automatically.',
+          );
+        default:
+          throw const SponsorAttestationException(
+            code: 'pending',
+            userMessage:
+                'The submission is still being confirmed. It will be checked again automatically.',
+          );
+      }
+
+      final response = await _waitForTransaction(
+        config.rpcUrl,
+        prepared.digest,
+      );
+      if (response == null) {
+        throw _notConfirmed(prepared.digest);
+      }
+      if (response.status != 'SUCCESS') {
+        throw PhotoAttestationException.fromError(
+          StateError(response.error ?? 'Sui transaction failed.'),
+          operation: 'attest',
+        );
+      }
+      return response;
+    } on SponsorAttestationException {
+      rethrow;
+    } on PhotoAttestationException {
+      rethrow;
+    } catch (error) {
+      throw PhotoAttestationException.fromError(error, operation: 'attest');
+    }
+  }
+
+  /// The indexer behind GraphQL can trail execution by a few seconds.
+  Future<SuiGraphQlTransactionResult?> _waitForTransaction(
+    String graphqlUrl,
+    String digest,
+  ) async {
+    const attempts = 6;
+    for (var attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        return await _graphQlService.getTransaction(graphqlUrl, digest: digest);
+      } catch (error) {
+        debugPrint('[SPONSOR] lookup $attempt/$attempts failed: $error');
+        if (attempt == attempts) {
+          return null;
+        }
+        await Future<void>.delayed(Duration(milliseconds: 500 * attempt));
+      }
+    }
+    return null;
+  }
+
+  SponsorAttestationException _notConfirmed(String digest) {
+    return SponsorAttestationException(
+      code: 'not_confirmed',
+      userMessage:
+          'The submission could not be confirmed yet. It will be checked again automatically.',
+      rawMessage: 'Sponsored transaction $digest not confirmed on-chain.',
+    );
   }
 
   Future<FileAttestationVerificationResult> verifyFileAttestation({
@@ -1637,22 +1845,6 @@ class PhotoAttestationService {
     final dePadded = noPrefix.replaceFirst(RegExp(r'^0+'), '');
     final normalized = dePadded.isEmpty ? '0' : dePadded;
     return '0x$normalized';
-  }
-
-  /// Decodes a hex-encoded hash (as persisted in `*_null_reason_hash`
-  /// columns) back to raw bytes for a `vector<u8>` transaction argument. A
-  /// null/empty input becomes an empty vector, matching what the contract's
-  /// `is_empty()` check expects in the one no-reason-needed state per axis.
-  List<int> _hexToBytes(String? hex) {
-    final normalized = hex?.trim() ?? '';
-    if (normalized.isEmpty) {
-      return const <int>[];
-    }
-    final bytes = <int>[];
-    for (var i = 0; i + 1 < normalized.length; i += 2) {
-      bytes.add(int.parse(normalized.substring(i, i + 2), radix: 16));
-    }
-    return bytes;
   }
 
   String _decodeMoveBytesValue(Object? value) {

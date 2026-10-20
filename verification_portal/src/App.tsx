@@ -100,6 +100,25 @@ function msToLocaleString(ms: string | null | undefined): string {
 // already loaded alongside the rest of the result. Renders nothing when
 // onChainHashHex is empty - that field was present, no reason was ever
 // required, so there is nothing to check.
+// Who paid the network fee. A sponsored transaction is still attested by the
+// user's own wallet (it is the sender and the event's user_wallet); the
+// sponsor only paid gas, so this is informational, not a trust signal.
+function FeeSponsorCard({ sponsorWallet }: { sponsorWallet: string | null }) {
+  return (
+    <div className="detail-card detail-card-wide">
+      <span>Network Fee</span>
+      {sponsorWallet ? (
+        <>
+          <span className="sponsor-badge">Sponsored</span>
+          <code>{sponsorWallet}</code>
+        </>
+      ) : (
+        <code>Paid by the attesting wallet</code>
+      )}
+    </div>
+  );
+}
+
 function NullReasonCheck({ label, onChainHashHex }: { label: string; onChainHashHex: string }) {
   const [reasonText, setReasonText] = useState("");
   const [status, setStatus] = useState<ReasonCheckState>("idle");
@@ -552,6 +571,7 @@ export default function App() {
                             <span>Attesting Wallet</span>
                             <code>{record.userWallet}</code>
                           </div>
+                          <FeeSponsorCard sponsorWallet={record.sponsorWallet} />
                           <div className="detail-card">
                             <span>Captured At</span>
                             <code>{msToLocaleString(record.capturedAtMs)}</code>
@@ -618,6 +638,7 @@ export default function App() {
                             <span>Attesting Wallet</span>
                             <code>{record.userWallet}</code>
                           </div>
+                          <FeeSponsorCard sponsorWallet={record.sponsorWallet} />
                           <div className="detail-card">
                             <span>Captured At</span>
                             <code>{msToLocaleString(record.capturedAtMs)}</code>
@@ -763,11 +784,14 @@ export default function App() {
                           className="wallet-event-card"
                         >
                           <div className="wallet-event-card-top">
-                            <span
-                              className={`wallet-event-chip ${entry.attestType === "attest_photo" ? "is-photo" : "is-file"}`}
-                            >
-                              {attestationTypeLabel(entry)}
-                            </span>
+                            <div className="wallet-event-chips">
+                              <span
+                                className={`wallet-event-chip ${entry.attestType === "attest_photo" ? "is-photo" : "is-file"}`}
+                              >
+                                {attestationTypeLabel(entry)}
+                              </span>
+                              {entry.sponsorWallet && <span className="wallet-event-chip is-sponsored">Sponsored</span>}
+                            </div>
                             <a
                               href={`https://suiscan.xyz/testnet/tx/${entry.txDigest}`}
                               target="_blank"
@@ -791,6 +815,12 @@ export default function App() {
                               <span>Wallet</span>
                               <code>{entry.userWallet}</code>
                             </div>
+                            {entry.sponsorWallet && (
+                              <div>
+                                <span>Fee Sponsor</span>
+                                <code>{entry.sponsorWallet}</code>
+                              </div>
+                            )}
                             <div>
                               <span>Domain</span>
                               <code>{entry.domain ?? "Unavailable"}</code>

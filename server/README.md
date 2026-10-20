@@ -68,15 +68,44 @@ VAULT_KV_MOUNT=secret
 VAULT_SECRET_PREFIX=
 ```
 
+Optional, for domain-sponsored attestation gas (see [Sponsored Attestations](#sponsored-attestations)):
+
+```env
+SPONSOR_ENABLED=false
+SPONSOR_PRIVATE_KEY=<dedicated-sponsor-suiprivkey-or-vault-ref>
+SPONSOR_WALLET=0x...
+SPONSOR_MAX_GAS_BUDGET_MIST=50000000
+SPONSOR_MAX_GAS_PRICE_MIST=1000
+SPONSOR_TX_PER_USER_PER_DAY=200
+SPONSOR_GAS_PER_USER_PER_DAY_MIST=1000000000
+SPONSOR_TX_PER_DOMAIN_PER_DAY=5000
+SPONSOR_GAS_PER_DOMAIN_PER_DAY_MIST=50000000000
+SPONSOR_PREPARE_TTL_MS=300000
+SPONSOR_MIN_BALANCE_MIST=1000000000
+SPONSOR_LEAK_CHECK_INTERVAL_MS=900000
+```
+
 `SUI_MODULE` is only the Move module name. Even though the source declares `module granite_lake::photo_attestation`, the transaction target is built as `<SUI_PACKAGE_ID>::<SUI_MODULE>::<function>`, so use `SUI_MODULE=photo_attestation`, not `granite_lake::photo_attestation`.
 
 ### OTP Delivery
 
 OTP codes are currently posted to a Google Chat incoming webhook using `GOOGLE_CHAT_WEBHOOK_URL`. This is a temporary delivery path until the paid email service is available. The API still requires `user_email` so it can validate the user belongs to the configured domain and record the verified user identity, and `user_wallet` so the OTP session is bound to the wallet that will claim it. The Chat message includes the email, wallet address, code, and expiry.
 
+## Sponsored Attestations
+
+When `SPONSOR_ENABLED=true`, the domain pays the network fee for its users' `attest_photo` / `attest_file` transactions, so device wallets need no SUI. The full design is `design/granite-lake-sponsored-transactions-design.md`.
+
+- **Dedicated sponsor wallet.** Gas is signed by `SPONSOR_PRIVATE_KEY`, never by `SUI_PRIVATE_KEY`. The server refuses to boot if `SPONSOR_WALLET` equals `ADMIN_WALLET` or doesn't match the key, and there is no fallback to the admin key. Like `SUI_PRIVATE_KEY`, it may be a `vault://` reference.
+- **Fund the address balance.** The sponsor pays from its SUI address balance (empty gas payment), so SUI held in coin objects can't pay. `GET /admin/sponsor/summary` reports both balances.
+- **The server builds every transaction.** The app sends attestation values to `POST /sponsor/prepare`. The server builds the one allowlisted `MoveCall`, with sender = user and gas owner = sponsor, simulates it and returns the unsigned bytes. The app checks those bytes against its own capture values, signs them, and sends only the signature to `POST /sponsor/submit`. The sponsor signs only bytes it built itself and that an active user has already signed.
+- **Spend is bounded.** Daily per-user and per-domain transaction and gas caps are computed from `sponsor_transactions` in Postgres. There is also a per-transaction budget cap and a gas-price ceiling, and requests are refused while the address balance is below `SPONSOR_MIN_BALANCE_MIST`.
+- **Unexpected spend pauses sponsorship.** Every `SPONSOR_LEAK_CHECK_INTERVAL_MS`, a job compares the drop in the sponsor balance with the gas the ledger explains. If more went out, it pauses sponsorship and posts a Google Chat alert. Resume with `POST /admin/sponsor/resume` once investigated. The same job resolves unconfirmed ledger rows from chain state.
+
+Rotation: generate a new key, store it in Vault, update `SPONSOR_WALLET` / `SPONSOR_PRIVATE_KEY`, move the remaining balance and redeploy. Apps read the sponsor address from `/sponsor/status`, so no app release is needed. If the key is compromised, set `SPONSOR_ENABLED=false` first.
+
 ## App Authentication
 
-`APP_API_KEY` gates `/otp/request`, `/otp/verify`, `/otp/:userId`, and `/utc` via an `x-app-api-key` header. It is separate from `ADMIN_API_KEY`, which protects the operator-only `/admin/*` routes. `/health` stays public and requires no credential, so deployment/uptime checks keep working.
+`APP_API_KEY` gates `/otp/request`, `/otp/verify`, `/otp/:userId`, `/sponsor/*`, and `/utc` via an `x-app-api-key` header. It is separate from `ADMIN_API_KEY`, which protects the operator-only `/admin/*` routes. `/health` stays public and requires no credential, so deployment/uptime checks keep working.
 
 Requests missing the header, or sending the wrong value, get a `401`:
 
@@ -503,6 +532,41 @@ Success:
 }
 ```
 
+### `GET /sponsor/status`
+
+Headers: `x-app-api-key`. Tells the app whether to use the sponsored path and which sponsor address to expect as gas owner. Never includes the balance.
+
+```json
+{ "enabled": true, "sponsorWallet": "0x...", "maxGasBudgetMist": "50000000", "maxGasPriceMist": "1000" }
+```
+
+When sponsorship is off: `{ "enabled": false }`.
+
+### `POST /sponsor/prepare`
+
+Headers: `x-app-api-key`. Body: `userWallet`, `kind` (`photo` or `file`), and `args` with the attestation values (`hash`, `gps`, `altitude`, `projectId` or `fileId`, `capturedAtMs`, the connectivity/GPS flags, and the null-reason hashes as hex or `""`). It returns `201` with the unsigned `txBytes` (base64), its `digest`, the declared `gasData`, the `objectRefs` used, the `validDuring` expiration and `expiresAt` (after which submit is refused).
+
+### `POST /sponsor/submit`
+
+Headers: `x-app-api-key`. Body: `userWallet`, `digest`, `userSignature`. The bytes are never re-sent; the signature is verified against the bytes cached at prepare time.
+
+| Status | Body `status` | Meaning                                                                                            |
+| ------ | ------------- | -------------------------------------------------------------------------------------------------- |
+| `200`  | `executed`    | Landed; `gasUsedMist` recorded. Also returned for a repeat of an executed digest.                  |
+| `200`  | `failed`      | Landed but aborted on-chain; gas is still counted. Re-prepare.                                     |
+| `200`  | `dropped`     | Never landed and its validity window has passed. Re-prepare.                                       |
+| `202`  | `pending`     | The outcome isn't known yet (an earlier execute timed out). Repeat the submit or check the digest. |
+
+Error codes for both routes: `400 invalid_request` / `invalid_user_signature`, `401 unauthorized`, `403 user_not_active`, `404 prepared_tx_not_found`, `409 quota_exceeded`, `422 simulation_failed`, `429 rate_limit_exceeded`, `502 sui_rpc_failed`, `503 sponsor_disabled` / `sponsor_unavailable`. Only the `503` codes let the app fall back to paying its own fee.
+
+### `GET /admin/sponsor/summary`
+
+Headers: `x-admin-api-key`. Returns the enabled and paused state, the sponsor address, its coin and address balances, the configured caps, today's and the last 7 days' transaction counts and gas (domain-wide and per user), unresolved rows, and recent failures.
+
+### `POST /admin/sponsor/resume`
+
+Headers: `x-admin-api-key`. Lifts a pause set by the unexpected-spend check.
+
 ## Data Model
 
 `otp_sessions` stores pending/completed OTP flows:
@@ -529,6 +593,8 @@ Success:
 - `disable_user_tx_digest`
 - `enable_user_tx_digest`
 - timestamps
+
+`sponsor_transactions` is the sponsor's spend ledger, keyed by `tx_digest`. It holds `user_id`, `kind`, `status` (`signed` → `executed` / `failed` / `dropped`), `gas_budget`, `gas_used`, `max_epoch`, `error` and timestamps. It deliberately stores no attestation content (no hashes, GPS, project ids or transaction bytes). `sponsor_state` holds the single pause flag.
 
 The database does not store `domain` or `admin_wallet`; those come from env because each stack is domain-scoped.
 
@@ -560,10 +626,11 @@ The tradeoff is operational: there is currently no self-service or admin path to
 
 The API implements rate limiting to prevent brute-force attacks:
 
-| Endpoint       | Limit       | Window     | Key        |
-| -------------- | ----------- | ---------- | ---------- |
-| `/otp/request` | 5 requests  | 1 minute   | IP address |
-| `/otp/verify`  | 10 attempts | 15 minutes | userId     |
+| Endpoint                              | Limit                 | Window     | Key                       |
+| ------------------------------------- | --------------------- | ---------- | ------------------------- |
+| `/otp/request`                        | 5 requests            | 1 minute   | IP address                |
+| `/otp/verify`                         | 10 attempts           | 15 minutes | userId                    |
+| `/sponsor/prepare`, `/sponsor/submit` | 30 requests per route | 1 minute   | wallet, and separately IP |
 
 When rate limited, the API returns:
 

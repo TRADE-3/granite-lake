@@ -39,4 +39,23 @@ export class GoogleChatService {
       throw new Error(message || "Google Chat failed to send OTP message.");
     }
   }
+
+  async sendText(text: string): Promise<void> {
+    if (!this.appEnv.GOOGLE_CHAT_WEBHOOK_URL) {
+      throw new Error("Google Chat configuration is incomplete. Set GOOGLE_CHAT_WEBHOOK_URL.");
+    }
+
+    const response = await fetch(this.appEnv.GOOGLE_CHAT_WEBHOOK_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ text }),
+    });
+
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(message || "Google Chat failed to send message.");
+    }
+  }
 }

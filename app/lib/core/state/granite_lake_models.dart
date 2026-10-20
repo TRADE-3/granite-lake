@@ -227,6 +227,7 @@ class PhotoAttestationClaimRecord {
     required this.userCapObjectId,
     required this.claimTxDigest,
     required this.claimedAt,
+    this.userEmail = '',
   });
 
   factory PhotoAttestationClaimRecord.fromJson(Map<String, dynamic> json) {
@@ -236,6 +237,7 @@ class PhotoAttestationClaimRecord {
       userCapObjectId: json['userCapObjectId'] as String,
       claimTxDigest: json['claimTxDigest'] as String? ?? '',
       claimedAt: DateTime.parse(json['claimedAt'] as String).toUtc(),
+      userEmail: json['userEmail'] as String? ?? '',
     );
   }
 
@@ -244,6 +246,8 @@ class PhotoAttestationClaimRecord {
   final String userCapObjectId;
   final String claimTxDigest;
   final DateTime claimedAt;
+  // Empty for installs registered before the email was stored.
+  final String userEmail;
 
   String get domainLabel => domain.trim().isEmpty ? 'UNSET' : domain;
   String get userLabel => userId.trim().isEmpty ? 'UNSET' : userId;
@@ -255,6 +259,7 @@ class PhotoAttestationClaimRecord {
       'userCapObjectId': userCapObjectId,
       'claimTxDigest': claimTxDigest,
       'claimedAt': claimedAt.toIso8601String(),
+      'userEmail': userEmail,
     };
   }
 }

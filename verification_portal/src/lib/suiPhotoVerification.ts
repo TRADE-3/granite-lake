@@ -19,6 +19,8 @@ type SuiEvent = {
   id: SuiEventCursor;
   packageId: string;
   sender: string;
+  // The transaction's gas payer. Equals `sender` for self-paid transactions.
+  gasSponsor: string;
   timestampMs?: string;
   parsedJson?: Record<string, unknown>;
   typeRepr?: string;
@@ -93,6 +95,7 @@ export type PhotoAttestationRecord = OfflineCaptureFields &
     domain: string | null;
     domainAdminWallet: string | null;
     userEnabledAtAttestation: boolean | null;
+    sponsorWallet: string | null;
   };
 
 export type FileAttestationRecord = OfflineCaptureFields & {
@@ -109,6 +112,7 @@ export type FileAttestationRecord = OfflineCaptureFields & {
   domain: string | null;
   domainAdminWallet: string | null;
   userEnabledAtAttestation: boolean | null;
+  sponsorWallet: string | null;
 };
 
 export type VerificationResult =
@@ -167,6 +171,10 @@ export type WalletAttestationRecord = OfflineCaptureFields & {
   domain: string | null;
   domainAdminWallet: string | null;
   userEnabledAtAttestation: boolean | null;
+  // Set when someone other than the attesting user paid the network fee
+  // (a domain-sponsored transaction). Sponsorship doesn't change who
+  // attested: the sender, and the event's user_wallet, are still the user.
+  sponsorWallet: string | null;
   photoHashHex?: string;
   fileHashHex?: string;
   fileIdRawHex?: string;
@@ -461,7 +469,7 @@ function buildGraphQlRequest(method: string, params: unknown[]): { query: string
               sequenceNumber
               timestamp
               sender { address }
-              transaction { digest }
+              transaction { digest gasInput { gasSponsor { address } } }
               transactionModule { name package { address } }
               contents {
                 type { repr }
@@ -554,6 +562,7 @@ function mapEventsGraphQlResult(data: Record<string, unknown>): SuiEventPage {
       const entry = asRecord(node);
       const sender = asRecord(entry?.sender);
       const transaction = asRecord(entry?.transaction);
+      const gasSponsor = asRecord(asRecord(transaction?.gasInput)?.gasSponsor);
       const module = asRecord(entry?.transactionModule);
       const modulePackage = asRecord(module?.package);
       const contents = asRecord(entry?.contents);
@@ -565,6 +574,7 @@ function mapEventsGraphQlResult(data: Record<string, unknown>): SuiEventPage {
         },
         packageId: asString(modulePackage?.address),
         sender: asString(sender?.address),
+        gasSponsor: asString(gasSponsor?.address),
         timestampMs: toTimestampMs(asString(entry?.timestamp) || undefined),
         parsedJson: asRecord(contents?.json) ?? undefined,
         typeRepr: asString(contentType?.repr),
@@ -835,6 +845,7 @@ function toRecord(
     domain,
     domainAdminWallet,
     userEnabledAtAttestation: enabled,
+    sponsorWallet: sponsorWalletFor(event, userWallet),
   };
 }
 
@@ -873,11 +884,20 @@ function toFileRecord(
     domain,
     domainAdminWallet,
     userEnabledAtAttestation: enabled,
+    sponsorWallet: sponsorWalletFor(event, userWallet),
   };
 }
 
 function normalizeWalletAddress(value: string): string {
   return normalizeHex(value);
+}
+
+// The gas payer when it isn't the attesting user, i.e. a sponsored
+// transaction; null for self-paid ones (or if the node didn't report it).
+function sponsorWalletFor(event: SuiEvent, userWallet: string): string | null {
+  const sponsor = safeAddress(event.gasSponsor);
+  if (!sponsor) return null;
+  return normalizeWalletAddress(sponsor) === normalizeWalletAddress(userWallet) ? null : sponsor;
 }
 
 function matchesWallet(event: SuiEvent, wallet: string): boolean {
@@ -930,6 +950,7 @@ function toWalletPhotoRecord(
     domain,
     domainAdminWallet,
     userEnabledAtAttestation: enabled,
+    sponsorWallet: sponsorWalletFor(event, userWallet),
   };
 }
 
@@ -971,6 +992,7 @@ function toWalletFileRecord(
     domain,
     domainAdminWallet,
     userEnabledAtAttestation: enabled,
+    sponsorWallet: sponsorWalletFor(event, userWallet),
   };
 }
 

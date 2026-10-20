@@ -67,7 +67,7 @@ const suiRpcFetch: typeof fetch = (input, init) => {
 
 // Undici and the gRPC-web transport both collapse real network failures into
 // a generic "fetch failed" / RpcError a few `.cause` levels deep.
-function isTransientNetworkError(error: unknown, depth = 0): boolean {
+export function isTransientNetworkError(error: unknown, depth = 0): boolean {
   if (!(error instanceof Error) || depth > 5) return false;
 
   const code = (error as NodeJS.ErrnoException).code;
@@ -110,22 +110,26 @@ async function withNetworkRetry<T>(fn: () => Promise<T>, attempts = 3, baseDelay
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ExecuteTransactionResult = any;
 
+export function createSuiClient(appEnv: AppEnv): SuiGrpcClient {
+  return new SuiGrpcClient({
+    network: appEnv.SUI_NETWORK,
+    // Built manually (rather than passing baseUrl/fetch straight to
+    // SuiGrpcClient) because the installed @mysten/sui only forwards
+    // `baseUrl`/`fetchInit` to its internal transport, silently dropping a
+    // top-level `fetch` option despite the type allowing it.
+    transport: new GrpcWebFetchTransport({
+      baseUrl: appEnv.SUI_RPC_URL,
+      fetch: suiRpcFetch,
+    }),
+  });
+}
+
 export class SuiService {
   private readonly client: SuiGrpcClient;
   private keypair: Ed25519Keypair | null = null;
 
   constructor(private readonly appEnv: AppEnv) {
-    this.client = new SuiGrpcClient({
-      network: appEnv.SUI_NETWORK,
-      // Built manually (rather than passing baseUrl/fetch straight to
-      // SuiGrpcClient) because the installed @mysten/sui only forwards
-      // `baseUrl`/`fetchInit` to its internal transport, silently dropping a
-      // top-level `fetch` option despite the type allowing it.
-      transport: new GrpcWebFetchTransport({
-        baseUrl: appEnv.SUI_RPC_URL,
-        fetch: suiRpcFetch,
-      }),
-    });
+    this.client = createSuiClient(appEnv);
   }
 
   private async initializeKeypair(): Promise<Ed25519Keypair> {

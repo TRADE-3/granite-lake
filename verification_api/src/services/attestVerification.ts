@@ -23,6 +23,8 @@ type SuiEvent = {
   id: SuiEventCursor;
   packageId: string;
   sender: string;
+  // The transaction's gas payer. Equals `sender` for self-paid transactions.
+  gasSponsor: string;
   timestampMs?: string;
   parsedJson?: Record<string, unknown>;
   typeRepr?: string;
@@ -168,6 +170,14 @@ function decodePhotoHash(value: unknown): string {
   if (/^[a-f0-9]{64}$/i.test(candidate)) return candidate;
 
   return "";
+}
+
+// The gas payer when it isn't the attesting user, i.e. a domain-sponsored
+// transaction; null for self-paid ones (or if the node didn't report it).
+function sponsorWalletFor(event: SuiEvent, userWallet: string): string | null {
+  const sponsor = safeAddress(event.gasSponsor);
+  if (!sponsor) return null;
+  return normalizeHex(sponsor) === normalizeHex(userWallet) ? null : sponsor;
 }
 
 function safeAddress(value: unknown): string {
@@ -326,7 +336,7 @@ function buildGraphQlRequest(method: string, params: unknown[]): { query: string
               sequenceNumber
               timestamp
               sender { address }
-              transaction { digest }
+              transaction { digest gasInput { gasSponsor { address } } }
               transactionModule { name package { address } }
               contents {
                 type { repr }
@@ -441,6 +451,7 @@ function mapEventsGraphQlResult(data: Record<string, unknown>): SuiEventPage {
       const entry = asRecord(node);
       const sender = asRecord(entry?.sender);
       const transaction = asRecord(entry?.transaction);
+      const gasSponsor = asRecord(asRecord(transaction?.gasInput)?.gasSponsor);
       const module = asRecord(entry?.transactionModule);
       const modulePackage = asRecord(module?.package);
       const contents = asRecord(entry?.contents);
@@ -452,6 +463,7 @@ function mapEventsGraphQlResult(data: Record<string, unknown>): SuiEventPage {
         },
         packageId: asString(modulePackage?.address),
         sender: asString(sender?.address),
+        gasSponsor: asString(gasSponsor?.address),
         timestampMs: toTimestampMs(asString(entry?.timestamp) || undefined),
         parsedJson: asRecord(contents?.json) ?? undefined,
         typeRepr: asString(contentType?.repr),
@@ -879,6 +891,7 @@ export async function verifyAttestationHashDetailed(
       domain,
       domainAdminWallet,
       userEnabledAtAttestation,
+      sponsorWallet: sponsorWalletFor(event, userWallet),
     });
   }
 
@@ -1021,6 +1034,7 @@ export async function getAttestationsByWallet(
             domain,
             domainAdminWallet,
             userEnabledAtAttestation,
+            sponsorWallet: sponsorWalletFor(event, safeAddress(parsed.user_wallet)),
           };
 
           events.push(record);

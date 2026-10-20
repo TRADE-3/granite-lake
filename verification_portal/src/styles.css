@@ -661,6 +661,29 @@ code {
   color: var(--accent);
 }
 
+.wallet-event-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wallet-event-chip.is-sponsored,
+.detail-card .sponsor-badge {
+  background: color-mix(in oklab, var(--accent-strong) 15%, transparent);
+  color: var(--accent-strong);
+}
+
+.detail-card .sponsor-badge {
+  justify-self: start;
+  width: fit-content;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .wallet-event-title {
   font-family: "Raleway", sans-serif;
   font-weight: 700;

@@ -74,15 +74,20 @@ export class RateLimiter {
 // Rate limiters for different endpoints
 export const otpRequestLimiter = new RateLimiter(5, 60 * 1000); // 5 requests per minute per IP
 export const otpVerifyLimiter = new RateLimiter(10, 15 * 60 * 1000); // 10 attempts per 15 min per userId
+// Request volume only; money caps live in Postgres (sponsor_transactions).
+export const sponsorWalletLimiter = new RateLimiter(30, 60 * 1000); // 30 per minute per wallet, per route
+export const sponsorIpLimiter = new RateLimiter(30, 60 * 1000); // 30 per minute per IP, per route
 
 // Cleanup old entries every 5 minutes
 setInterval(
   () => {
     otpRequestLimiter.cleanup();
     otpVerifyLimiter.cleanup();
+    sponsorWalletLimiter.cleanup();
+    sponsorIpLimiter.cleanup();
   },
   5 * 60 * 1000
-);
+).unref();
 
 /**
  * Reset all rate limiters (for testing purposes).
@@ -90,6 +95,8 @@ setInterval(
 export function resetAllRateLimiters(): void {
   otpRequestLimiter.reset();
   otpVerifyLimiter.reset();
+  sponsorWalletLimiter.reset();
+  sponsorIpLimiter.reset();
 }
 
 /**

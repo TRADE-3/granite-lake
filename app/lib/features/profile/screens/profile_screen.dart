@@ -61,10 +61,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final registeredDeviceAt = deviceRegistration == null
         ? 'Pending registration'
         : _formatDateTime(deviceRegistration.registeredAt);
-    final operatorName = employee?.fullName ?? _operatorName;
-    final operatorRole = employee?.role ?? _operatorRole;
     final tenantName = employee?.tenantName ?? _tenantName;
-    final operatorInitials = employee?.initials ?? _operatorInitials;
+    final userEmail = controller.photoAttestationClaim?.userEmail ?? '';
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
@@ -87,30 +85,33 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
           const SizedBox(height: 20),
           _ProfileHeaderCard(
-            initials: operatorInitials,
             isVerified: identity != null && binding != null,
             employeeId: employeeId,
-            operatorName: operatorName,
-            operatorRole: operatorRole,
+            email: userEmail.isEmpty ? 'Not available' : userEmail,
             tenantName: tenantName,
+            sponsorStatus: controller.isAttestationGasSponsored
+                ? 'Fees covered by tenant'
+                : 'Not sponsored',
             walletAddress: identity?.walletAddress ?? 'Secure ID not ready',
-            createdAt: createdAt,
-            biometricLabel:
-                binding?.modalitiesLabel ?? 'Awaiting protection setup',
           ),
-          const SizedBox(height: 22),
-          const _SectionLabel('Account Balance'),
-          const SizedBox(height: 10),
-          _Panel(
-            child: _WalletBalanceTile(
-              suiBalance: controller.walletSuiBalanceSui,
-              isRefreshing: controller.isRefreshingWalletSuiBalance,
-              hasEnoughForAttestation: controller.hasEnoughSuiForAttestation,
-              hasWallet: identity != null,
-              walletAddress: identity?.walletAddress ?? '',
-              onRefresh: () => controller.refreshWalletSuiBalance(force: true),
+          // The tenant pays network fees for sponsored domains, so the
+          // wallet balance and top-up steps don't apply.
+          if (!controller.isAttestationGasSponsored) ...[
+            const SizedBox(height: 22),
+            const _SectionLabel('Account Balance'),
+            const SizedBox(height: 10),
+            _Panel(
+              child: _WalletBalanceTile(
+                suiBalance: controller.walletSuiBalanceSui,
+                isRefreshing: controller.isRefreshingWalletSuiBalance,
+                hasEnoughForAttestation: controller.hasEnoughSuiForAttestation,
+                hasWallet: identity != null,
+                walletAddress: identity?.walletAddress ?? '',
+                onRefresh: () =>
+                    controller.refreshWalletSuiBalance(force: true),
+              ),
             ),
-          ),
+          ],
           const SizedBox(height: 22),
           const _SectionLabel('Session Protocol'),
           const SizedBox(height: 10),
@@ -486,26 +487,20 @@ class _DangerZoneCard extends StatelessWidget {
 
 class _ProfileHeaderCard extends StatelessWidget {
   const _ProfileHeaderCard({
-    required this.initials,
     required this.isVerified,
     required this.employeeId,
-    required this.operatorName,
-    required this.operatorRole,
+    required this.email,
     required this.tenantName,
+    required this.sponsorStatus,
     required this.walletAddress,
-    required this.createdAt,
-    required this.biometricLabel,
   });
 
-  final String initials;
   final bool isVerified;
   final String employeeId;
-  final String operatorName;
-  final String operatorRole;
+  final String email;
   final String tenantName;
+  final String sponsorStatus;
   final String walletAddress;
-  final String createdAt;
-  final String biometricLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -527,22 +522,6 @@ class _ProfileHeaderCard extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
             child: Row(
               children: [
-                Container(
-                  width: 42,
-                  height: 42,
-                  decoration: BoxDecoration(
-                    color: AppColors.primary,
-                    borderRadius: BorderRadius.circular(21),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    initials,
-                    style: AppTextStyles.labelLarge.copyWith(
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 14),
                 Expanded(
                   child: Text(
                     'TRADE3',
@@ -574,53 +553,18 @@ class _ProfileHeaderCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'OPERATOR',
-                            style: AppTextStyles.labelSmall.copyWith(
-                              color: AppColors.textSecondary,
-                              letterSpacing: 0.8,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            operatorName,
-                            style: AppTextStyles.headlineLarge,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            operatorRole,
-                            style: AppTextStyles.labelLarge.copyWith(
-                              color: AppColors.statusActive,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Icon(
-                      Icons.qr_code_2_rounded,
-                      color: AppColors.statusActive.withAlpha(220),
-                      size: 30,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                Divider(height: 1, color: AppColors.border),
-                const SizedBox(height: 16),
                 _KeyValueGrid(
                   items: [
                     _KeyValueItem(label: 'Employee ID', value: employeeId),
                     _KeyValueItem(label: 'Tenant', value: tenantName),
-                    _KeyValueItem(label: 'Identity Created', value: createdAt),
-                    _KeyValueItem(label: 'Protection', value: biometricLabel),
+                    _KeyValueItem(
+                      label: 'Sponsor Status',
+                      value: sponsorStatus,
+                    ),
                   ],
                 ),
+                const SizedBox(height: 14),
+                _DataBlock(label: 'Email', value: email),
                 const SizedBox(height: 14),
                 _DataBlock(
                   label: 'Secure ID',
@@ -629,48 +573,6 @@ class _ProfileHeaderCard extends StatelessWidget {
                   copyValue: walletAddress != 'Secure ID not ready'
                       ? walletAddress
                       : null,
-                ),
-                const SizedBox(height: 14),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppColors.statusActive.withAlpha(16),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                        color: AppColors.statusActive.withAlpha(72),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          isVerified
-                              ? Icons.verified_user_rounded
-                              : Icons.warning_amber_rounded,
-                          color: isVerified
-                              ? AppColors.statusActive
-                              : const Color(0xFFFFB347),
-                          size: 16,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          isVerified
-                              ? 'IDENTITY VERIFIED'
-                              : 'IDENTITY INCOMPLETE',
-                          style: AppTextStyles.labelMedium.copyWith(
-                            color: isVerified
-                                ? AppColors.statusActive
-                                : const Color(0xFFFFB347),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
                 ),
               ],
             ),
@@ -1206,8 +1108,5 @@ String _employeeId(IdentityRecord? identity) {
   return 'OP-${key.substring(0, 4)}${key.substring(key.length - 2)}';
 }
 
-const String _operatorName = 'John Doe';
-const String _operatorRole = 'Senior Inspector';
 const String _tenantName = 'Global Audit Corp';
 const String _buildLabel = 'TRADE3';
-const String _operatorInitials = 'JD';

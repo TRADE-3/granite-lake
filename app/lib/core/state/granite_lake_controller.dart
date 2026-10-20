@@ -8,9 +8,11 @@ import 'package:on_chain/sui/sui.dart';
 
 import '../database/granite_lake_data_controllers.dart';
 import '../constants/app_constants.dart';
+import '../services/attestation_transaction_builder.dart';
 import '../services/capture_encryption_service.dart';
 import '../services/granite_lake_capture_workflow_service.dart';
 import '../services/photo_attestation_service.dart';
+import '../services/sponsor_attestation_service.dart';
 import '../services/granite_lake_secure_state_service.dart';
 import '../utils/network_error_classifier.dart';
 import 'granite_lake_models.dart';
@@ -98,6 +100,8 @@ class GraniteLakeController extends ChangeNotifier {
   bool _requiresLocalDataInitialization = false;
   BigInt? _walletSuiBalanceMist;
   bool _isRefreshingWalletSuiBalance = false;
+  SponsorStatus _sponsorStatus = SponsorStatus.disabled;
+  bool _hasFetchedSponsorStatus = false;
   bool _isDarkMode = false;
 
   bool get isInitializing => _isInitializing;
@@ -137,6 +141,71 @@ class GraniteLakeController extends ChangeNotifier {
   bool get hasEnoughSuiForAttestation =>
       (_walletSuiBalanceMist ?? BigInt.zero) >=
       BigInt.from(AppConstants.minimumAttestationMistBalance);
+
+  /// True when the domain's sponsor wallet pays attestation network fees,
+  /// so the wallet needs no balance and the balance gates/top-up UI don't
+  /// apply.
+  bool get isAttestationGasSponsored => _sponsorStatus.enabled;
+
+  /// Balance gate for submissions: skipped entirely for sponsored domains.
+  bool get _canSubmitAttestation =>
+      isAttestationGasSponsored || hasEnoughSuiForAttestation;
+
+  /// Installs registered before the claim record stored the email get it
+  /// from the domain backend once, then keep it locally.
+  Future<void> _backfillRegisteredEmail() async {
+    final claim = _photoAttestationClaim;
+    if (claim == null || claim.userEmail.isNotEmpty) {
+      return;
+    }
+    try {
+      final email = await _photoAttestationService.fetchRegisteredEmail(
+        domain: claim.domain,
+        userId: claim.userId,
+      );
+      if (email == null || _photoAttestationClaim != claim) {
+        return;
+      }
+      final updated = PhotoAttestationClaimRecord(
+        domain: claim.domain,
+        userId: claim.userId,
+        userCapObjectId: claim.userCapObjectId,
+        claimTxDigest: claim.claimTxDigest,
+        claimedAt: claim.claimedAt,
+        userEmail: email.toLowerCase(),
+      );
+      await _dataControllers.config.savePhotoAttestationClaim(updated);
+      _photoAttestationClaim = updated;
+      notifyListeners();
+    } catch (error) {
+      // Offline or backend unreachable: try again next launch.
+      debugPrint('[PROFILE] email backfill failed: $error');
+    }
+  }
+
+  Future<void> refreshSponsorStatus() async {
+    final claim = _photoAttestationClaim;
+    if (claim == null) {
+      return;
+    }
+    try {
+      final status = await _photoAttestationService.fetchSponsorStatus(
+        domain: claim.domain,
+      );
+      _hasFetchedSponsorStatus = true;
+      if (status.enabled != _sponsorStatus.enabled ||
+          status.sponsorWallet != _sponsorStatus.sponsorWallet) {
+        _sponsorStatus = status;
+        notifyListeners();
+      } else {
+        _sponsorStatus = status;
+      }
+    } catch (error) {
+      // Offline or backend unreachable: keep the last known status.
+      debugPrint('[SPONSOR] status check failed: $error');
+    }
+  }
+
   ProjectRecord? get selectedProject {
     final selectedProjectId = _selectedProjectId;
     if (selectedProjectId == null) {
@@ -236,6 +305,8 @@ class GraniteLakeController extends ChangeNotifier {
           .syncPhotoAttestationContractConfig();
       await _loadDatabaseState();
       unawaited(refreshWalletSuiBalance());
+      unawaited(refreshSponsorStatus());
+      unawaited(_backfillRegisteredEmail());
     } catch (error) {
       _initializationError = 'Application initialization failed: $error';
     } finally {
@@ -334,6 +405,7 @@ class GraniteLakeController extends ChangeNotifier {
     required String userId,
     required String otp,
     required String walletNonce,
+    String userEmail = '',
   }) async {
     final identity = _identity;
     final config = _photoAttestationConfig;
@@ -396,6 +468,7 @@ class GraniteLakeController extends ChangeNotifier {
           userId: normalizedUserId,
           otp: normalizedOtp,
           walletNonce: normalizedWalletNonce,
+          userEmail: userEmail.trim().toLowerCase(),
         ),
       );
       await _dataControllers.config.savePhotoAttestationClaim(claim);
@@ -417,6 +490,7 @@ class GraniteLakeController extends ChangeNotifier {
       _deviceRegistration ??= await _secureStateService
           .storeDeviceRegistration();
       unawaited(refreshWalletSuiBalance(force: true));
+      unawaited(refreshSponsorStatus());
       notifyListeners();
       return const ActionResult.success();
     } on PhotoAttestationException catch (error) {
@@ -562,9 +636,12 @@ class GraniteLakeController extends ChangeNotifier {
       // real, current balance here first rather than spending a doomed
       // transaction attempt and letting the chain reject it - and record
       // *why* on every affected row, not just leave it silently pending.
-      await refreshWalletSuiBalance(force: true);
-      if ((_walletSuiBalanceMist ?? BigInt.zero) <
-          BigInt.from(AppConstants.minimumAttestationMistBalance)) {
+      // Sponsored domains pay the fee centrally, so no balance is needed.
+      await refreshSponsorStatus();
+      if (!isAttestationGasSponsored) {
+        await refreshWalletSuiBalance(force: true);
+      }
+      if (!_canSubmitAttestation) {
         final insufficientBalanceMessage =
             'Your balance needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} before submitting for verification. Add funds and try again.';
         for (final record in pending) {
@@ -1229,9 +1306,10 @@ class GraniteLakeController extends ChangeNotifier {
     // has ever populated the cache) must not be permanently blocked from
     // queuing an offline capture just because the cache defaults to zero.
     final willAttemptLiveSubmission = isOnline && !isForcedOffline;
-    if (willAttemptLiveSubmission &&
-        (_walletSuiBalanceMist ?? BigInt.zero) <
-            BigInt.from(AppConstants.minimumAttestationMistBalance)) {
+    if (willAttemptLiveSubmission && !_hasFetchedSponsorStatus) {
+      await refreshSponsorStatus();
+    }
+    if (willAttemptLiveSubmission && !_canSubmitAttestation) {
       return AttestationActionResult.failure(
         'Your balance needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} before submitting for verification. Add funds and try again.',
       );
@@ -1413,9 +1491,10 @@ class GraniteLakeController extends ChangeNotifier {
     // RPC read, and skipped entirely when offline - see the matching
     // comment in persistCaptureWithMetadata.
     final willAttemptLiveSubmission = isOnline && !isForcedOffline;
-    if (willAttemptLiveSubmission &&
-        (_walletSuiBalanceMist ?? BigInt.zero) <
-            BigInt.from(AppConstants.minimumAttestationMistBalance)) {
+    if (willAttemptLiveSubmission && !_hasFetchedSponsorStatus) {
+      await refreshSponsorStatus();
+    }
+    if (willAttemptLiveSubmission && !_canSubmitAttestation) {
       return AttestationActionResult.failure(
         'Your balance needs at least ${AppConstants.minimumAttestationSuiBalance.toStringAsFixed(3)} before submitting for verification. Add funds and try again.',
       );
@@ -1649,11 +1728,7 @@ class GraniteLakeController extends ChangeNotifier {
     }
 
     try {
-      final submission = await _photoAttestationService.attestPhoto(
-        identity: identity,
-        signingKey: sessionSigningKey,
-        config: config,
-        claim: claim,
+      final args = PhotoAttestationTxArgs(
         imageSha256: submissionSource.imageSha256,
         gps: resolveAttestationLabel(
           gpsLabel,
@@ -1674,6 +1749,34 @@ class GraniteLakeController extends ChangeNotifier {
         hasGps: submissionSource.hasGps,
         isGpsForcedNull: submissionSource.isGpsForcedNull,
         gpsNullReasonHashHex: submissionSource.gpsNullReasonHash,
+      );
+      final submission = await _attestWithSponsorship(
+        sponsored: (sponsorStatus) =>
+            _photoAttestationService.attestPhotoSponsored(
+              identity: identity,
+              signingKey: sessionSigningKey,
+              config: config,
+              claim: claim,
+              sponsorStatus: sponsorStatus,
+              args: args,
+            ),
+        selfPaid: () => _photoAttestationService.attestPhoto(
+          identity: identity,
+          signingKey: sessionSigningKey,
+          config: config,
+          claim: claim,
+          imageSha256: args.imageSha256,
+          gps: args.gps,
+          altitude: args.altitude,
+          projectId: args.projectId,
+          capturedAtMs: args.capturedAtMs,
+          isOnline: args.isOnline,
+          isForcedOffline: args.isForcedOffline,
+          internetNullReasonHashHex: args.internetNullReasonHashHex,
+          hasGps: args.hasGps,
+          isGpsForcedNull: args.isGpsForcedNull,
+          gpsNullReasonHashHex: args.gpsNullReasonHashHex,
+        ),
       );
       final updated = await _updateAttestationRecord(
         record,
@@ -1707,6 +1810,21 @@ class GraniteLakeController extends ChangeNotifier {
         };
       }
       return updated;
+    } on SponsorAttestationException catch (error) {
+      debugPrint(
+        '[SPONSOR][${record.captureId}] ${error.code}: '
+        '${error.rawMessage ?? error.userMessage}',
+      );
+      return _updateAttestationRecord(
+        record,
+        suiObjectId: claim.userCapObjectId,
+        suiSubmissionStatus: error.keepQueued
+            ? 'PENDING_SUBMISSION'
+            : 'FAILED_SUBMISSION',
+        suiErrorMessage: error.userMessage,
+        incrementAttempt: true,
+        decryptedRecord: decryptedRecord,
+      );
     } on PhotoAttestationException catch (error) {
       return _updateAttestationRecord(
         record,
@@ -1729,6 +1847,36 @@ class GraniteLakeController extends ChangeNotifier {
         incrementAttempt: true,
         decryptedRecord: decryptedRecord,
       );
+    }
+  }
+
+  /// Routes a submission through the domain's sponsor when sponsorship is
+  /// on. Falls back to the wallet paying its own fee only when the sponsor
+  /// reports itself off or unavailable (503) *and* the wallet passes the
+  /// usual balance gate; quota (409) and rate-limit (429) responses never
+  /// fall back, so a capped user doesn't silently start spending their own
+  /// funds - those, like an unavailable sponsor with no balance to fall back
+  /// on, keep the capture queued.
+  Future<T> _attestWithSponsorship<T>({
+    required Future<T> Function(SponsorStatus sponsorStatus) sponsored,
+    required Future<T> Function() selfPaid,
+  }) async {
+    final sponsorStatus = _sponsorStatus;
+    if (!sponsorStatus.enabled) {
+      return selfPaid();
+    }
+    try {
+      return await sponsored(sponsorStatus);
+    } on SponsorAttestationException catch (error) {
+      if (!error.allowsSelfPayFallback) {
+        rethrow;
+      }
+      await refreshWalletSuiBalance(force: true);
+      if (!hasEnoughSuiForAttestation) {
+        rethrow;
+      }
+      debugPrint('[SPONSOR] ${error.code}; falling back to self-paid gas');
+      return selfPaid();
     }
   }
 
@@ -1798,12 +1946,9 @@ class GraniteLakeController extends ChangeNotifier {
     }
 
     try {
-      final submission = await _photoAttestationService.attestFile(
-        identity: identity,
-        signingKey: sessionSigningKey,
-        config: config,
-        claim: claim,
-        record: submissionSource,
+      final args = FileAttestationTxArgs(
+        contentSha256: submissionSource.contentSha256,
+        fileId: submissionSource.fileId,
         projectId: resolveAttestationLabel(
           projectId,
           fallback: AppConstants.attestationUnassignedLabel,
@@ -1812,6 +1957,30 @@ class GraniteLakeController extends ChangeNotifier {
         isOnline: submissionSource.isOnline,
         isForcedOffline: submissionSource.isForcedOffline,
         internetNullReasonHashHex: submissionSource.internetNullReasonHash,
+      );
+      final submission = await _attestWithSponsorship(
+        sponsored: (sponsorStatus) =>
+            _photoAttestationService.attestFileSponsored(
+              identity: identity,
+              signingKey: sessionSigningKey,
+              config: config,
+              claim: claim,
+              sponsorStatus: sponsorStatus,
+              record: submissionSource,
+              args: args,
+            ),
+        selfPaid: () => _photoAttestationService.attestFile(
+          identity: identity,
+          signingKey: sessionSigningKey,
+          config: config,
+          claim: claim,
+          record: submissionSource,
+          projectId: args.projectId,
+          capturedAtMs: args.capturedAtMs,
+          isOnline: args.isOnline,
+          isForcedOffline: args.isForcedOffline,
+          internetNullReasonHashHex: args.internetNullReasonHashHex,
+        ),
       );
       final updated = await _updateAttestationRecord(
         record,
@@ -1844,6 +2013,21 @@ class GraniteLakeController extends ChangeNotifier {
         };
       }
       return updated;
+    } on SponsorAttestationException catch (error) {
+      debugPrint(
+        '[SPONSOR][${record.captureId}] ${error.code}: '
+        '${error.rawMessage ?? error.userMessage}',
+      );
+      return _updateAttestationRecord(
+        record,
+        suiObjectId: claim.userCapObjectId,
+        suiSubmissionStatus: error.keepQueued
+            ? 'PENDING_SUBMISSION'
+            : 'FAILED_SUBMISSION',
+        suiErrorMessage: error.userMessage,
+        incrementAttempt: true,
+        decryptedRecord: decryptedRecord,
+      );
     } on PhotoAttestationException catch (error) {
       return _updateAttestationRecord(
         record,
