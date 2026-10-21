@@ -4,6 +4,7 @@ import rateLimit from "@fastify/rate-limit";
 import { adminRoutes } from "./routes/admin.js";
 import { healthRoutes } from "./routes/health.js";
 import { otpRoutes } from "./routes/otp.js";
+import { sponsorRoutes } from "./routes/sponsor.js";
 
 // Libraries like undici and protobuf-ts wrap the real errno-level failure
 // (ECONNRESET, ETIMEDOUT, ...) several `.cause` levels deep behind a generic
@@ -61,6 +62,7 @@ export async function buildApp() {
   await app.register(healthRoutes);
   await app.register(adminRoutes);
   await app.register(otpRoutes);
+  await app.register(sponsorRoutes);
 
   return app;
 }

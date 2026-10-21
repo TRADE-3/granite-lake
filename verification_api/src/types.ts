@@ -80,6 +80,10 @@ export type AttestationRecord = {
     latestEnabledTimestampMs: number | null;
     latestDisabledTimestampMs: number | null;
   };
+  // Set when someone other than the attesting user paid the network fee (a
+  // domain-sponsored transaction). Informational only: the attester is still
+  // userWallet (the transaction sender and the event's user_wallet).
+  sponsorWallet: string | null;
 };
 
 export type VerificationResponse = {

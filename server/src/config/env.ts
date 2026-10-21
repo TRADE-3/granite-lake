@@ -98,6 +98,32 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(5 * 60 * 1000),
+  // Domain-sponsored attestation gas; see design/granite-lake-sponsored-transactions-design.md.
+  SPONSOR_ENABLED: booleanFromEnv.default(false),
+  SPONSOR_PRIVATE_KEY: z.string().default(""),
+  SPONSOR_WALLET: z.string().default(""),
+  SPONSOR_MAX_GAS_BUDGET_MIST: z.coerce.bigint().positive().default(50_000_000n),
+  SPONSOR_MAX_GAS_PRICE_MIST: z.coerce.bigint().positive().default(1_000n),
+  SPONSOR_TX_PER_USER_PER_DAY: z.coerce.number().int().nonnegative().default(200),
+  SPONSOR_GAS_PER_USER_PER_DAY_MIST: z.coerce.bigint().nonnegative().default(1_000_000_000n),
+  SPONSOR_TX_PER_DOMAIN_PER_DAY: z.coerce.number().int().nonnegative().default(5_000),
+  SPONSOR_GAS_PER_DOMAIN_PER_DAY_MIST: z.coerce.bigint().nonnegative().default(50_000_000_000n),
+  SPONSOR_PREPARE_TTL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5 * 60 * 1000),
+  SPONSOR_MIN_BALANCE_MIST: z.coerce.bigint().nonnegative().default(1_000_000_000n),
+  SPONSOR_LEAK_CHECK_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(15 * 60 * 1000),
+  // Coins held by the sponsor above this are swept into its address balance
+  // (the only place sponsored gas is paid from).
+  SPONSOR_COIN_SWEEP_MIN_MIST: z.coerce.bigint().positive().default(100_000_000n),
+  // Daily ceiling on admin-wallet -> sponsor top-ups via POST /admin/sponsor/top-up.
+  SPONSOR_TOPUP_MAX_PER_DAY_MIST: z.coerce.bigint().nonnegative().default(10_000_000_000n),
 });
 
 const parsedEnv = envSchema.parse(process.env);

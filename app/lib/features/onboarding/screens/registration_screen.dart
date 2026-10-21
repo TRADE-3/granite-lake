@@ -121,6 +121,8 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       userId: userId,
       otp: _otpController.text,
       walletNonce: walletNonce,
+      // Unchanged since the OTP request: editing it clears the OTP session.
+      userEmail: _emailController.text,
     );
     if (!mounted) {
       return;

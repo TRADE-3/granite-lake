@@ -67,7 +67,7 @@ const suiRpcFetch: typeof fetch = (input, init) => {
 
 // Undici and the gRPC-web transport both collapse real network failures into
 // a generic "fetch failed" / RpcError a few `.cause` levels deep.
-function isTransientNetworkError(error: unknown, depth = 0): boolean {
+export function isTransientNetworkError(error: unknown, depth = 0): boolean {
   if (!(error instanceof Error) || depth > 5) return false;
 
   const code = (error as NodeJS.ErrnoException).code;
@@ -110,22 +110,29 @@ async function withNetworkRetry<T>(fn: () => Promise<T>, attempts = 3, baseDelay
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ExecuteTransactionResult = any;
 
+export function createSuiClient(appEnv: AppEnv): SuiGrpcClient {
+  return new SuiGrpcClient({
+    network: appEnv.SUI_NETWORK,
+    // Built manually (rather than passing baseUrl/fetch straight to
+    // SuiGrpcClient) because the installed @mysten/sui only forwards
+    // `baseUrl`/`fetchInit` to its internal transport, silently dropping a
+    // top-level `fetch` option despite the type allowing it.
+    transport: new GrpcWebFetchTransport({
+      baseUrl: appEnv.SUI_RPC_URL,
+      fetch: suiRpcFetch,
+    }),
+  });
+}
+
 export class SuiService {
   private readonly client: SuiGrpcClient;
   private keypair: Ed25519Keypair | null = null;
 
-  constructor(private readonly appEnv: AppEnv) {
-    this.client = new SuiGrpcClient({
-      network: appEnv.SUI_NETWORK,
-      // Built manually (rather than passing baseUrl/fetch straight to
-      // SuiGrpcClient) because the installed @mysten/sui only forwards
-      // `baseUrl`/`fetchInit` to its internal transport, silently dropping a
-      // top-level `fetch` option despite the type allowing it.
-      transport: new GrpcWebFetchTransport({
-        baseUrl: appEnv.SUI_RPC_URL,
-        fetch: suiRpcFetch,
-      }),
-    });
+  constructor(
+    private readonly appEnv: AppEnv,
+    client: SuiGrpcClient = createSuiClient(appEnv)
+  ) {
+    this.client = client;
   }
 
   private async initializeKeypair(): Promise<Ed25519Keypair> {
@@ -217,6 +224,56 @@ export class SuiService {
     });
 
     return digest;
+  }
+
+  /**
+   * Moves SUI from the admin wallet into `recipient`'s address balance
+   * (`0x2::coin::send_funds`) - used to fund the domain's sponsor wallet,
+   * whose gas can only come from its address balance. Works whether the
+   * admin's SUI sits in coin objects or its address balance.
+   *
+   * Deliberately not retried: unlike the admin calls above, a duplicate
+   * here moves money twice. `onDigest` fires before execution so the caller
+   * can record the digest and resolve an unknown outcome from chain later.
+   */
+  async depositSuiToAddressBalance(params: {
+    recipient: string;
+    amountMist: bigint;
+    onDigest?: (digest: string) => Promise<void>;
+  }): Promise<{ digest: string; success: boolean; gasUsedMist: bigint; error: string | null }> {
+    const keypair = await this.initializeKeypair();
+
+    const tx = new Transaction();
+    tx.setSender(keypair.toSuiAddress());
+    tx.setGasBudget(this.appEnv.SUI_GAS_BUDGET);
+    const [coin] = tx.splitCoins(tx.gas, [params.amountMist]);
+    tx.moveCall({
+      target: "0x2::coin::send_funds",
+      typeArguments: ["0x2::sui::SUI"],
+      arguments: [coin, tx.pure.address(params.recipient)],
+    });
+
+    const bytes = await tx.build({ client: this.client });
+    const digest = await tx.getDigest();
+    await params.onDigest?.(digest);
+
+    const { signature } = await keypair.signTransaction(bytes);
+    const result = await this.client.core.executeTransaction({
+      transaction: bytes,
+      signatures: [signature],
+      include: { effects: true },
+    });
+    const executed = result.$kind === "Transaction" ? result.Transaction : result.FailedTransaction;
+    const gasUsed = executed.effects.gasUsed;
+
+    return {
+      digest,
+      success: executed.effects.status.success,
+      gasUsedMist: BigInt(gasUsed.computationCost) + BigInt(gasUsed.storageCost) - BigInt(gasUsed.storageRebate),
+      error: executed.effects.status.success
+        ? null
+        : (executed.effects.status.error?.message ?? "Transaction failed on-chain."),
+    };
   }
 
   /**

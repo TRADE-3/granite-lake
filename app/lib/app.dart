@@ -147,6 +147,8 @@ class _GraniteLakeAppState extends State<GraniteLakeApp>
     // screen isn't mounted. A no-op when there's no active session or
     // nothing queued (retryPendingAttestations() guards both itself).
     if (state == AppLifecycleState.resumed) {
+      // Sponsorship can be switched on/off per domain at any time.
+      unawaited(_controller.refreshSponsorStatus());
       unawaited(_controller.retryPendingAttestations());
     }
   }
