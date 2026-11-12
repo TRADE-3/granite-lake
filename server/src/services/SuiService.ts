@@ -167,6 +167,7 @@ export function createSuiClient(appEnv: AppEnv): SuiGrpcClient {
     transport: new GrpcWebFetchTransport({
       baseUrl,
       fetch: createSuiRpcFetch(appEnv as EnvWithRpcKey, inlineKey),
+      format: "binary",
     }),
   });
 }
