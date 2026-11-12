@@ -1,8 +1,10 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Transaction } from "@mysten/sui/transactions";
-import { GrpcWebFetchTransport } from "@protobuf-ts/grpcweb-transport";
+import { GrpcTransport } from "@protobuf-ts/grpc-transport";
+import { ChannelCredentials } from "@grpc/grpc-js";
 import type { AppEnv } from "../config/env.js";
 import { resolveSecretValue } from "./VaultService.js";
 
@@ -21,9 +23,6 @@ const TRANSIENT_NETWORK_ERROR_CODES = new Set([
   "ECONNABORTED",
 ]);
 
-// Walks the full error chain (the error itself, then `.cause`, `.cause.cause`,
-// ...), including stack traces. Used to log the real failure before it gets
-// discarded upstream - see createSuiRpcFetch below.
 function serializeErrorChain(error: unknown, maxDepth = 6): Array<Record<string, unknown>> {
   const chain: Array<Record<string, unknown>> = [];
   let current: unknown = error;
@@ -41,92 +40,24 @@ function serializeErrorChain(error: unknown, maxDepth = 6): Array<Record<string,
   return chain.length > 0 ? chain : [{ value: String(error) }];
 }
 
-type EnvWithRpcKey = AppEnv & {
-  SUI_RPC_API_KEY?: string;
-  SUI_API_KEY?: string;
-};
-
-// Extracts a clean baseUrl (no trailing slash) and optional inline key if
-// an Alchemy v2 URL was provided.
-function parseRpcUrl(rawUrl: string): { baseUrl: string; inlineKey?: string } {
-  const trimmed = rawUrl.trim();
-  const alchemyV2Match = trimmed.match(/^(https?:\/\/[^/]+\.alchemy\.com)\/v2\/([^/?#]+)\/?$/i);
-  if (alchemyV2Match) {
-    return {
-      baseUrl: alchemyV2Match[1],
-      inlineKey: alchemyV2Match[2],
-    };
-  }
-
-  return {
-    baseUrl: trimmed.replace(/\/+$/, ""),
-  };
-}
-
-// @protobuf-ts/grpcweb-transport's unary()/serverStreaming() catch the real
-// fetch rejection and rethrow `new RpcError(reason.message, ...)`, dropping
-// `reason` (and its `.cause` chain, errno code, stack) entirely. Wrapping
-// fetch here injects the Alchemy `X-Token` header (resolving Vault references
-// lazily once) and logs the real error at the source before that swallow happens.
-function createSuiRpcFetch(appEnv: EnvWithRpcKey, inlineKey?: string): typeof fetch {
-  let resolvedTokenPromise: Promise<string | undefined> | null = null;
-
-  const getAuthToken = (): Promise<string | undefined> => {
-    if (!resolvedTokenPromise) {
-      const configuredKey = appEnv.SUI_RPC_API_KEY ?? appEnv.SUI_API_KEY ?? inlineKey;
-      resolvedTokenPromise = resolveSecretValue(appEnv, configuredKey).catch((err) => {
-        // Reset promise so the next call can retry if Vault was temporarily unreachable
-        resolvedTokenPromise = null;
-        throw err;
-      });
-    }
-    return resolvedTokenPromise;
-  };
-
-  return async (input, init) => {
-    const startedAt = Date.now();
-    try {
-      const token = await getAuthToken();
-      const headers = new Headers(init?.headers);
-
-      if (token && !headers.has("X-Token")) {
-        headers.set("X-Token", token.trim());
-      }
-
-      return await fetch(input, { ...init, headers });
-    } catch (error: unknown) {
-      console.error(
-        JSON.stringify({
-          level: 50,
-          time: Date.now(),
-          msg: "Sui RPC fetch failed",
-          url: String(input),
-          durationMs: Date.now() - startedAt,
-          errorChain: serializeErrorChain(error),
-        })
-      );
-      throw error;
-    }
-  };
-}
-
-// Undici and the gRPC-web transport both collapse real network failures into
-// a generic "fetch failed" / RpcError a few `.cause` levels deep.
 export function isTransientNetworkError(error: unknown, depth = 0): boolean {
   if (!(error instanceof Error) || depth > 5) return false;
 
+  if (/fetch failed/i.test(error.message)) return true;
+
+  if (error.name === "RpcError") {
+    const code = (error as any).code;
+    if (code === "UNAVAILABLE" || code === "DEADLINE_EXCEEDED" || code === "INTERNAL") {
+      return true;
+    }
+  }
+
   const code = (error as NodeJS.ErrnoException).code;
   if (code && TRANSIENT_NETWORK_ERROR_CODES.has(code)) return true;
-  if (error.name === "RpcError" || /fetch failed/i.test(error.message)) return true;
 
   return isTransientNetworkError((error as { cause?: unknown }).cause, depth + 1);
 }
 
-// Retries only transient network failures. Safe to rebuild-and-resubmit here
-// because the failures we've seen occur while the SDK resolves gas/coin data
-// during Transaction.build(), before anything is signed or broadcast. Each
-// attempt must build a fresh Transaction (see callers) rather than reusing
-// one across retries, since we can't assume partial build state is clean.
 async function withNetworkRetry<T>(fn: () => Promise<T>, attempts = 3, baseDelayMs = 300): Promise<T> {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
@@ -152,25 +83,39 @@ async function withNetworkRetry<T>(fn: () => Promise<T>, attempts = 3, baseDelay
   throw new Error("unreachable");
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type ExecuteTransactionResult = any;
+// Convertit l'URL Alchemy classique en hôte TCP requis par grpc-js (hote:port)
+function formatGrpcHost(rawUrl: string): string {
+  let host = rawUrl.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  if (!host.includes(":")) {
+    host += ":443";
+  }
+  return host;
+}
 
 export function createSuiClient(appEnv: AppEnv): SuiGrpcClient {
-  const { baseUrl, inlineKey } = parseRpcUrl(appEnv.SUI_RPC_URL);
+  const host = formatGrpcHost(appEnv.SUI_RPC_URL);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const token = (appEnv as any).SUI_RPC_API_KEY ?? (appEnv as any).SUI_API_KEY ?? process.env.SUI_RPC_API_KEY;
+
+  const meta: Record<string, string> = {};
+  if (token) {
+    // Les clés de métadonnées HTTP/2 (gRPC) doivent être en minuscules, grpc-js l'exige
+    meta["x-token"] = token.trim();
+  }
 
   return new SuiGrpcClient({
     network: appEnv.SUI_NETWORK,
-    // Built manually (rather than passing baseUrl/fetch straight to
-    // SuiGrpcClient) because the installed @mysten/sui only forwards
-    // `baseUrl`/`fetchInit` to its internal transport, silently dropping a
-    // top-level `fetch` option despite the type allowing it.
-    transport: new GrpcWebFetchTransport({
-      baseUrl,
-      fetch: createSuiRpcFetch(appEnv as EnvWithRpcKey, inlineKey),
-      format: "binary",
+    transport: new GrpcTransport({
+      host,
+      channelCredentials: ChannelCredentials.createSsl(),
+      meta,
     }),
   });
 }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ExecuteTransactionResult = any;
 
 export class SuiService {
   private readonly client: SuiGrpcClient;
@@ -219,12 +164,8 @@ export class SuiService {
       userWallet: params.userWallet,
     });
 
-    // Wait for transaction to be indexed
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await this.client.waitForTransaction({ result: result as any });
 
-    // Query the transaction to get created objects
-    // gRPC uses include.objectTypes + effects.changedObjects instead of objectChanges
     const txDetails = await this.client.getTransaction({
       digest,
       include: {
@@ -233,14 +174,12 @@ export class SuiService {
       },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const txData: any = txDetails.$kind === "Transaction" ? txDetails.Transaction : txDetails;
     const changedObjects = txData.effects?.changedObjects ?? [];
     const objectTypes = txData.objectTypes ?? {};
     const userCapId = findCreatedObjectId(changedObjects, objectTypes, "::photo_attestation::UserCap");
 
     if (!userCapId) {
-      // Log for debugging
       console.error(
         "UserCap not found in changedObjects. Query result:",
         JSON.stringify(txDetails, null, 2).slice(0, 2000)
@@ -274,16 +213,6 @@ export class SuiService {
     return digest;
   }
 
-  /**
-   * Moves SUI from the admin wallet into `recipient`'s address balance
-   * (`0x2::coin::send_funds`) - used to fund the domain's sponsor wallet,
-   * whose gas can only come from its address balance. Works whether the
-   * admin's SUI sits in coin objects or its address balance.
-   *
-   * Deliberately not retried: unlike the admin calls above, a duplicate
-   * here moves money twice. `onDigest` fires before execution so the caller
-   * can record the digest and resolve an unknown outcome from chain later.
-   */
   async depositSuiToAddressBalance(params: {
     recipient: string;
     amountMist: bigint;
@@ -297,7 +226,6 @@ export class SuiService {
     const tx = new Transaction();
     tx.setSender(keypair.toSuiAddress());
     tx.setGasBudget(this.appEnv.SUI_GAS_BUDGET);
-    // Bound transaction lifetime so an unconfirmed top-up cannot execute past next epoch.
     tx.setExpiration({ Epoch: Number(currentEpoch + 1n) });
 
     const [coin] = tx.splitCoins(tx.gas, [params.amountMist]);
@@ -330,11 +258,6 @@ export class SuiService {
     };
   }
 
-  /**
-   * Gas is resolved by the SDK, which pays from the address balance when it
-   * covers the budget and from coin objects otherwise. When a call fails, log
-   * how the admin wallet's SUI is held so a gas failure is diagnosable.
-   */
   private async logGasState(owner: string, error: unknown): Promise<void> {
     try {
       const { balance } = await this.client.core.getBalance({ owner });
@@ -387,15 +310,11 @@ export class SuiService {
       throw error;
     }
 
-    // Check for failed transaction
     if (result.$kind === "FailedTransaction") {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const status = (result as any).FailedTransaction;
       throw new Error(status?.error?.message ?? "Sui transaction failed.");
     }
 
-    // Get the digest - it could be in different places depending on result structure
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const digest = (result as any).digest ?? (result as any).Transaction?.digest;
     if (!digest) {
       console.error("No digest in result:", JSON.stringify(result, null, 2).slice(0, 1000));
@@ -407,9 +326,7 @@ export class SuiService {
 }
 
 function findCreatedObjectId(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   changes: any[],
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   objectTypes: Record<string, any>,
   objectTypeSuffix: string
 ): string | null {
