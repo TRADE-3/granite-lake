@@ -488,12 +488,18 @@ export class SponsorService {
       return { swept: false, reason: "coin balance too small to cover gas", coinBalanceMist: coinBalance.toString() };
     }
 
-    const { referenceGasPrice } = await this.client.core.getReferenceGasPrice();
+    const [{ referenceGasPrice }, { systemState }] = await Promise.all([
+      this.client.core.getReferenceGasPrice(),
+      this.client.core.getCurrentSystemState(),
+    ]);
     const tx = new Transaction();
     tx.setSender(owner);
     tx.setGasPayment(payment.map(({ objectId, version, digest }) => ({ objectId, version, digest })));
     tx.setGasPrice(BigInt(referenceGasPrice));
     tx.setGasBudget(gasBudget);
+    // Bound lifetime so a timed-out sweep cannot remain executable indefinitely.
+    tx.setExpiration({ Epoch: Number(BigInt(systemState.epoch) + 1n) });
+
     const [coin] = tx.splitCoins(tx.gas, [amount]);
     tx.moveCall({
       target: "0x2::coin::send_funds",
@@ -501,7 +507,7 @@ export class SponsorService {
       arguments: [coin, tx.pure.address(owner)],
     });
 
-    // Fully specified above (gas coins, price, budget), so it builds offline.
+    // Fully specified above (gas coins, price, budget, expiration), so it builds offline.
     const bytes = await tx.build();
     const { signature } = await keypair.signTransaction(bytes);
     const result = await this.client.core.executeTransaction({

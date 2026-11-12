@@ -63,7 +63,7 @@ async function readKvSecret(env: AppEnv, mount: string, secretPath: string): Pro
   return json.data?.data ?? {};
 }
 
-async function vaultFetch<T = unknown>(env: AppEnv, path: string, init: RequestInit): Promise<T> {
+async function vaultFetch<T = unknown>(env: AppEnv, path: string, init: RequestInit, retried = false): Promise<T> {
   const token = await getVaultToken(env);
   const headers = new Headers(init.headers);
   headers.set("X-Vault-Token", token);
@@ -82,6 +82,12 @@ async function vaultFetch<T = unknown>(env: AppEnv, path: string, init: RequestI
     });
   } catch (error) {
     throw new VaultConnectionError(env.VAULT_ADDR, error);
+  }
+
+  // If the cached AppRole token expired, clear it and retry once.
+  if ((res.status === 403 || res.status === 401) && !env.VAULT_TOKEN && cachedToken && !retried) {
+    cachedToken = undefined;
+    return vaultFetch<T>(env, path, init, true);
   }
 
   if (!res.ok) {

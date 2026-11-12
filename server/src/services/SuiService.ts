@@ -23,7 +23,7 @@ const TRANSIENT_NETWORK_ERROR_CODES = new Set([
 
 // Walks the full error chain (the error itself, then `.cause`, `.cause.cause`,
 // ...), including stack traces. Used to log the real failure before it gets
-// discarded upstream - see suiRpcFetch below.
+// discarded upstream - see createSuiRpcFetch below.
 function serializeErrorChain(error: unknown, maxDepth = 6): Array<Record<string, unknown>> {
   const chain: Array<Record<string, unknown>> = [];
   let current: unknown = error;
@@ -41,29 +41,74 @@ function serializeErrorChain(error: unknown, maxDepth = 6): Array<Record<string,
   return chain.length > 0 ? chain : [{ value: String(error) }];
 }
 
+type EnvWithRpcKey = AppEnv & {
+  SUI_RPC_API_KEY?: string;
+  SUI_API_KEY?: string;
+};
+
+// Extracts a clean baseUrl (no trailing slash) and optional inline key if
+// an Alchemy v2 URL was provided.
+function parseRpcUrl(rawUrl: string): { baseUrl: string; inlineKey?: string } {
+  const trimmed = rawUrl.trim();
+  const alchemyV2Match = trimmed.match(/^(https?:\/\/[^/]+\.alchemy\.com)\/v2\/([^/?#]+)\/?$/i);
+  if (alchemyV2Match) {
+    return {
+      baseUrl: alchemyV2Match[1],
+      inlineKey: alchemyV2Match[2],
+    };
+  }
+
+  return {
+    baseUrl: trimmed.replace(/\/+$/, ""),
+  };
+}
+
 // @protobuf-ts/grpcweb-transport's unary()/serverStreaming() catch the real
 // fetch rejection and rethrow `new RpcError(reason.message, ...)`, dropping
-// `reason` (and its `.cause` chain, errno code, stack) entirely - see
-// node_modules/@protobuf-ts/grpcweb-transport/.../grpc-web-transport.js. That
-// leaves us diagnosing "fetch failed" with no way to tell ECONNRESET from
-// ETIMEDOUT from a DNS failure. Wrapping fetch here logs the real error at
-// the source, before that swallow happens.
-const suiRpcFetch: typeof fetch = (input, init) => {
-  const startedAt = Date.now();
-  return fetch(input, init).catch((error: unknown) => {
-    console.error(
-      JSON.stringify({
-        level: 50,
-        time: Date.now(),
-        msg: "Sui RPC fetch failed",
-        url: String(input),
-        durationMs: Date.now() - startedAt,
-        errorChain: serializeErrorChain(error),
-      })
-    );
-    throw error;
-  });
-};
+// `reason` (and its `.cause` chain, errno code, stack) entirely. Wrapping
+// fetch here injects the Alchemy `X-Token` header (resolving Vault references
+// lazily once) and logs the real error at the source before that swallow happens.
+function createSuiRpcFetch(appEnv: EnvWithRpcKey, inlineKey?: string): typeof fetch {
+  let resolvedTokenPromise: Promise<string | undefined> | null = null;
+
+  const getAuthToken = (): Promise<string | undefined> => {
+    if (!resolvedTokenPromise) {
+      const configuredKey = appEnv.SUI_RPC_API_KEY ?? appEnv.SUI_API_KEY ?? inlineKey;
+      resolvedTokenPromise = resolveSecretValue(appEnv, configuredKey).catch((err) => {
+        // Reset promise so the next call can retry if Vault was temporarily unreachable
+        resolvedTokenPromise = null;
+        throw err;
+      });
+    }
+    return resolvedTokenPromise;
+  };
+
+  return async (input, init) => {
+    const startedAt = Date.now();
+    try {
+      const token = await getAuthToken();
+      const headers = new Headers(init?.headers);
+
+      if (token && !headers.has("X-Token")) {
+        headers.set("X-Token", token.trim());
+      }
+
+      return await fetch(input, { ...init, headers });
+    } catch (error: unknown) {
+      console.error(
+        JSON.stringify({
+          level: 50,
+          time: Date.now(),
+          msg: "Sui RPC fetch failed",
+          url: String(input),
+          durationMs: Date.now() - startedAt,
+          errorChain: serializeErrorChain(error),
+        })
+      );
+      throw error;
+    }
+  };
+}
 
 // Undici and the gRPC-web transport both collapse real network failures into
 // a generic "fetch failed" / RpcError a few `.cause` levels deep.
@@ -111,6 +156,8 @@ async function withNetworkRetry<T>(fn: () => Promise<T>, attempts = 3, baseDelay
 type ExecuteTransactionResult = any;
 
 export function createSuiClient(appEnv: AppEnv): SuiGrpcClient {
+  const { baseUrl, inlineKey } = parseRpcUrl(appEnv.SUI_RPC_URL);
+
   return new SuiGrpcClient({
     network: appEnv.SUI_NETWORK,
     // Built manually (rather than passing baseUrl/fetch straight to
@@ -118,8 +165,8 @@ export function createSuiClient(appEnv: AppEnv): SuiGrpcClient {
     // `baseUrl`/`fetchInit` to its internal transport, silently dropping a
     // top-level `fetch` option despite the type allowing it.
     transport: new GrpcWebFetchTransport({
-      baseUrl: appEnv.SUI_RPC_URL,
-      fetch: suiRpcFetch,
+      baseUrl,
+      fetch: createSuiRpcFetch(appEnv as EnvWithRpcKey, inlineKey),
     }),
   });
 }
@@ -243,9 +290,15 @@ export class SuiService {
   }): Promise<{ digest: string; success: boolean; gasUsedMist: bigint; error: string | null }> {
     const keypair = await this.initializeKeypair();
 
+    const { systemState } = await this.client.core.getCurrentSystemState();
+    const currentEpoch = BigInt(systemState.epoch);
+
     const tx = new Transaction();
     tx.setSender(keypair.toSuiAddress());
     tx.setGasBudget(this.appEnv.SUI_GAS_BUDGET);
+    // Bound transaction lifetime so an unconfirmed top-up cannot execute past next epoch.
+    tx.setExpiration({ Epoch: Number(currentEpoch + 1n) });
+
     const [coin] = tx.splitCoins(tx.gas, [params.amountMist]);
     tx.moveCall({
       target: "0x2::coin::send_funds",

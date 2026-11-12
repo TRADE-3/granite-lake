@@ -79,6 +79,7 @@ const envSchema = z.object({
   GOOGLE_CHAT_WEBHOOK_URL: z.string().default(""),
   SUI_NETWORK: z.enum(["mainnet", "testnet", "devnet", "localnet"]).default("testnet"),
   SUI_RPC_URL: z.string().url(),
+  SUI_RPC_API_KEY: z.string().optional(),
   SUI_PRIVATE_KEY: z.string().default(""),
   SUI_PACKAGE_ID: z.string().default(""),
   SUI_MODULE: z.string().default("photo_attestation"),
