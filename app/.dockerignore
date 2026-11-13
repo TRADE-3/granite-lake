@@ -1,0 +1,7 @@
+build
+.dart_tool
+.flutter-plugins-dependencies
+android/.gradle
+android/.kotlin
+android/local.properties
+secrets*.json
