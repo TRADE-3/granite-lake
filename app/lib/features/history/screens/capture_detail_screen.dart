@@ -36,6 +36,37 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
   bool _isSavingFile = false;
   bool _verificationRequested = false;
 
+  // Trade3 pin (EP-04) status labels for the detail cells above.
+  String _trade3PinValue(AttestationRecord record) {
+    if (record.trade3UploadStatus?.toUpperCase() == 'UPLOADED') {
+      final documentId = record.trade3DocumentId ?? '';
+      final cid = record.trade3IpfsCid ?? '';
+      final parts = [
+        'PINNED',
+        if (documentId.isNotEmpty) 'doc $documentId',
+        if (cid.isNotEmpty) cid,
+      ];
+      return parts.join(' // ');
+    }
+    if (record.isTrade3UploadFailed) {
+      final message = record.trade3ErrorMessage?.trim() ?? '';
+      return message.isEmpty
+          ? 'FAILED // not retried automatically.'
+          : 'FAILED // $message';
+    }
+    return 'PENDING // uploads with connectivity.';
+  }
+
+  String? _trade3PinAccent(AttestationRecord record) {
+    if (record.trade3UploadStatus?.toUpperCase() == 'UPLOADED') {
+      return 'PINNED';
+    }
+    if (record.isTrade3UploadFailed) {
+      return 'FAILED';
+    }
+    return 'PENDING';
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -489,6 +520,21 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                     canCopy: true,
                                     copyValue: record.domainLabel,
                                   ),
+                                if (record.hasTrade3Target) ...[
+                                  _DetailCell(
+                                    label: 'TRADE3_TARGET',
+                                    value:
+                                        '${record.trade3TransactionId} / ${record.trade3PaymentScheduleId}',
+                                    accent: _trade3PinAccent(record),
+                                  ),
+                                  _DetailCell(
+                                    label: 'TRADE3_PIN',
+                                    value: _trade3PinValue(record),
+                                    canCopy:
+                                        (record.trade3IpfsCid ?? '').isNotEmpty,
+                                    copyValue: record.trade3IpfsCid,
+                                  ),
+                                ],
                                 _DetailCell(
                                   label: 'CAPTURED_AT',
                                   value:

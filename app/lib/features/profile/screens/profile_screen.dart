@@ -9,6 +9,7 @@ import '../../../app.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/state/granite_lake_controller.dart';
+import '../../../core/utils/sync_time_format.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 
@@ -21,6 +22,7 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   bool _isDeletingAccount = false;
+  bool _isUnlinkingTrade3 = false;
 
   @override
   void initState() {
@@ -143,6 +145,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
           ),
           const SizedBox(height: 22),
+          const _SectionLabel('Trade3 Account'),
+          const SizedBox(height: 10),
+          _Panel(
+            child: _Trade3AccountTile(
+              isPaired: controller.isTrade3Paired,
+              isWorking: _isUnlinkingTrade3,
+              lastSyncedAt: controller.trade3HierarchySyncedAt,
+              onLink: () => GoRouter.of(context).push(AppRoutes.pair),
+              onUnlink: () => _confirmUnlinkTrade3(controller),
+            ),
+          ),
+          const SizedBox(height: 22),
           const _SectionLabel('Appearance'),
           const SizedBox(height: 10),
           _Panel(
@@ -216,9 +230,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     _KeyValueItem(
                       label: 'Projects',
-                      value: controller.projects.isEmpty
+                      value: controller.isTrade3Paired
+                          ? (controller.selectedTrade3Target?.displayLabel ??
+                                'No payment schedule selected')
+                          : controller.localProjects.isEmpty
                           ? 'No linked projects'
-                          : '${controller.projects.length} assigned',
+                          : '${controller.localProjects.length} assigned',
                     ),
                     _KeyValueItem(
                       label: 'Capture History',
@@ -332,6 +349,174 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
     GoRouter.of(context).go(AppRoutes.welcome);
+  }
+
+  Future<void> _confirmUnlinkTrade3(GraniteLakeController controller) async {
+    final shouldUnlink = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: AppColors.surfaceElevated,
+          title: Row(
+            children: [
+              Icon(Icons.link_off_rounded, color: AppColors.textWarning),
+              const SizedBox(width: 10),
+              const Expanded(child: Text('Unlink Trade3 account?')),
+            ],
+          ),
+          content: Text(
+            'This removes the link between this device and your Trade3 account. '
+            'You can pair again anytime with a new code from your Trade3 profile.',
+            style: AppTextStyles.bodyMedium.copyWith(
+              color: AppColors.textSecondary,
+              height: 1.5,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: Text(
+                'CANCEL',
+                style: AppTextStyles.buttonText.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: Text(
+                'UNLINK',
+                style: AppTextStyles.buttonText.copyWith(
+                  color: AppColors.textWarning,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldUnlink != true || !mounted) {
+      return;
+    }
+
+    setState(() => _isUnlinkingTrade3 = true);
+    final result = await controller.disconnectTrade3();
+    if (!mounted) {
+      return;
+    }
+    setState(() => _isUnlinkingTrade3 = false);
+    if (!result.isSuccess) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(result.message ?? 'Could not unlink your account.'),
+          ),
+        );
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(content: Text('Trade3 account unlinked')));
+  }
+}
+
+/// EP-05 unlink entry point: the linked/not-linked state of this device's
+/// Trade3 pairing, plus the unlink action. Pairing entry lives here (when
+/// unlinked) and in the Projects tab.
+class _Trade3AccountTile extends StatelessWidget {
+  const _Trade3AccountTile({
+    required this.isPaired,
+    required this.isWorking,
+    required this.lastSyncedAt,
+    required this.onLink,
+    required this.onUnlink,
+  });
+
+  final bool isPaired;
+  final bool isWorking;
+  final DateTime? lastSyncedAt;
+  final VoidCallback onLink;
+  final VoidCallback onUnlink;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: (isPaired ? AppColors.statusActive : AppColors.textMuted)
+                  .withAlpha(24),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              isPaired ? Icons.link_rounded : Icons.link_off_rounded,
+              color: isPaired ? AppColors.statusActive : AppColors.textMuted,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isPaired ? 'Account linked' : 'Not linked',
+                  style: AppTextStyles.headlineMedium.copyWith(fontSize: 18),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  isPaired
+                      ? 'Projects synced${lastSyncedAt == null ? '' : ' ${formatSyncStamp(lastSyncedAt!)}'}'
+                      : 'Link to see your Trade3 projects',
+                  style: AppTextStyles.labelLarge.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          isWorking
+              ? const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : isPaired
+              ? OutlinedButton.icon(
+                  onPressed: onUnlink,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.textWarning,
+                    // The app-wide outlined button theme is full-width
+                    // (minimumSize width: infinity), which inside this Row
+                    // starves the text column to ~0 width. Size to content.
+                    minimumSize: const Size(0, 40),
+                    side: BorderSide(
+                      color: AppColors.textWarning.withAlpha(90),
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  icon: const Icon(Icons.link_off_rounded, size: 16),
+                  label: Text('UNLINK', style: AppTextStyles.buttonText),
+                )
+              : FilledButton.tonalIcon(
+                  onPressed: onLink,
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 40),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  icon: const Icon(Icons.link_rounded, size: 16),
+                  label: Text('LINK', style: AppTextStyles.buttonText),
+                ),
+        ],
+      ),
+    );
   }
 }
 

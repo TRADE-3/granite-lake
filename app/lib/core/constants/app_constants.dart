@@ -171,6 +171,24 @@ abstract final class AppConstants {
     return decoded is Map<String, dynamic> ? decoded : null;
   }
 
+  // ── Trade3 API (pairing, hierarchy sync, document pinning) ────────────────
+  // Base URL of the Trade3 backend this build talks to
+  // (design/mobile_integration.md, EP-01..EP-05). Defaults to the shared dev
+  // environment; production builds override it via --dart-define-from-file,
+  // e.g. {"GL_TRADE3_API_URL": "https://api.trade3.io"}.
+  static const String defaultTrade3ApiUrl = 'https://dev-api.trade3.io';
+  static const String _rawTrade3ApiUrl = String.fromEnvironment(
+    'GL_TRADE3_API_URL',
+    defaultValue: '',
+  );
+
+  /// The Trade3 API base URL for this build, falling back to the dev
+  /// environment when the dart-define is unset or empty.
+  static String get trade3ApiUrl {
+    final url = _rawTrade3ApiUrl.trim();
+    return url.isEmpty ? defaultTrade3ApiUrl : url;
+  }
+
   static const String defaultPhotoAttestationModule = 'photo_attestation';
   static const String defaultPhotoAttestationPackageId =
       '0xd06ff3a35bb182b5e4577440d71470373fc4c36315c27dca90c8af3e8d9367b6';

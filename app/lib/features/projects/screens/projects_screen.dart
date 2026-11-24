@@ -4,6 +4,7 @@ import '../../../app.dart';
 import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../trade3/widgets/trade3_hierarchy_section.dart';
 
 class ProjectsScreen extends StatefulWidget {
   const ProjectsScreen({super.key});
@@ -43,7 +44,8 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
   @override
   Widget build(BuildContext context) {
     final controller = GraniteLakeScope.of(context);
-    final projects = controller.projects;
+    final isPaired = controller.isTrade3Paired;
+    final projects = controller.localProjects;
     final selectedProjectId = controller.selectedProjectId;
     final captureCounts = <String, int>{};
     for (final capture in controller.attestationHistory) {
@@ -56,7 +58,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.background,
-      floatingActionButton: projects.isEmpty
+      floatingActionButton: isPaired || projects.isEmpty
           ? null
           : FloatingActionButton(
               onPressed: _showCreateProjectDialog,
@@ -92,7 +94,9 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                         ),
                         const SizedBox(height: 6),
                         Text(
-                          projects.isEmpty
+                          isPaired
+                              ? 'Tap a payment schedule to make it the active project for capture.'
+                              : projects.isEmpty
                               ? 'Create one project to unlock capture.'
                               : 'Tap a project to make it active for capture.',
                           style: AppTextStyles.bodyMedium.copyWith(
@@ -105,35 +109,47 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                 ],
               ),
               const SizedBox(height: 16),
-              Text(
-                'Registry: ${projects.length.toString().padLeft(2, '0')}',
-                style: AppTextStyles.labelMedium.copyWith(
-                  color: AppColors.textSecondary,
-                ),
-              ),
-              const SizedBox(height: 14),
               Expanded(
-                child: projects.isEmpty
-                    ? _EmptyProjectsState(
-                        onCreatePressed: _showCreateProjectDialog,
-                      )
-                    : ListView.separated(
-                        padding: const EdgeInsets.only(bottom: 32),
-                        itemCount: projects.length,
-                        separatorBuilder: (context, index) =>
-                            const SizedBox(height: 10),
-                        itemBuilder: (context, index) {
-                          final project = projects[index];
-                          final isActive =
-                              project.projectId == selectedProjectId;
-                          return _ProjectCard(
-                            project: project,
-                            captureCount: captureCounts[project.projectId] ?? 0,
-                            isActive: isActive,
-                            onTap: () => _selectProject(project.projectId),
-                          );
-                        },
+                child: ListView(
+                  padding: const EdgeInsets.only(bottom: 32),
+                  children: [
+                    const Trade3HierarchySection(),
+                    // Paired: the Trade3 payment schedules above are the
+                    // projects, so the local registry is hidden.
+                    if (!isPaired) ...[
+                      const SizedBox(height: 20),
+                      Text(
+                        'Registry: ${projects.length.toString().padLeft(2, '0')}',
+                        style: AppTextStyles.labelMedium.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
                       ),
+                      const SizedBox(height: 14),
+                      if (projects.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 24),
+                          child: _EmptyProjectsState(
+                            onCreatePressed: _showCreateProjectDialog,
+                          ),
+                        )
+                      else
+                        for (var index = 0; index < projects.length; index++)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: _ProjectCard(
+                              project: projects[index],
+                              captureCount:
+                                  captureCounts[projects[index].projectId] ?? 0,
+                              isActive:
+                                  projects[index].projectId ==
+                                  selectedProjectId,
+                              onTap: () =>
+                                  _selectProject(projects[index].projectId),
+                            ),
+                          ),
+                    ],
+                  ],
+                ),
               ),
             ],
           ),

@@ -18,12 +18,15 @@ void main() {
   });
 
   group('TimeSyncService.nowUtc', () {
-    test('tier 1: returns the trusted time and reports fresh provenance when trusted', () {
-      final result = service.nowUtc();
+    test(
+      'tier 1: returns the trusted time and reports fresh provenance when trusted',
+      () {
+        final result = service.nowUtc();
 
-      expect(result, mock.now);
-      expect(service.provenance, TimeProvenance.fresh);
-    });
+        expect(result, mock.now);
+        expect(service.provenance, TimeProvenance.fresh);
+      },
+    );
 
     test(
       'tier 2: falls back to the degraded estimate and reports stale provenance '
@@ -49,27 +52,36 @@ void main() {
         final result = service.nowUtc();
         final after = DateTime.now().toUtc();
 
-        expect(result.isAfter(before.subtract(const Duration(seconds: 1))), isTrue);
+        expect(
+          result.isAfter(before.subtract(const Duration(seconds: 1))),
+          isTrue,
+        );
         expect(result.isBefore(after.add(const Duration(seconds: 1))), isTrue);
         expect(service.provenance, TimeProvenance.neverSynced);
       },
     );
 
-    test('provenance transitions across tiers as trust state changes on the same instance', () {
-      expect(service.nowUtc(), mock.now);
-      expect(service.provenance, TimeProvenance.fresh);
+    test(
+      'provenance transitions across tiers as trust state changes on the same instance',
+      () {
+        expect(service.nowUtc(), mock.now);
+        expect(service.provenance, TimeProvenance.fresh);
 
-      mock.simulateReboot();
-      service.nowUtc();
-      expect(service.provenance, TimeProvenance.stale);
+        mock.simulateReboot();
+        service.nowUtc();
+        expect(service.provenance, TimeProvenance.stale);
 
-      mock.restoreTrust();
-      expect(service.nowUtc(), mock.now);
-      expect(service.provenance, TimeProvenance.fresh);
-    });
+        mock.restoreTrust();
+        expect(service.nowUtc(), mock.now);
+        expect(service.provenance, TimeProvenance.fresh);
+      },
+    );
 
-    test('provenance defaults to neverSynced before nowUtc has ever been called', () {
-      expect(service.provenance, TimeProvenance.neverSynced);
-    });
+    test(
+      'provenance defaults to neverSynced before nowUtc has ever been called',
+      () {
+        expect(service.provenance, TimeProvenance.neverSynced);
+      },
+    );
   });
 }

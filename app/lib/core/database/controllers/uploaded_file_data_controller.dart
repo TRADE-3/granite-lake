@@ -53,6 +53,12 @@ class UploadedFileDataController {
       'encryptedPayload': row['encrypted_payload'],
       'payloadIv': row['payload_iv'],
       'wrappedDataKey': row['wrapped_data_key'],
+      'trade3TransactionId': row['trade3_transaction_id'],
+      'trade3PaymentScheduleId': row['trade3_payment_schedule_id'],
+      'trade3UploadStatus': row['trade3_upload_status'],
+      'trade3ErrorMessage': row['trade3_error_message'],
+      'trade3DocumentId': row['trade3_document_id'],
+      'trade3IpfsCid': row['trade3_ipfs_cid'],
     };
   }
 

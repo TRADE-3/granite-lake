@@ -31,19 +31,16 @@ void main() {
       },
     );
 
-    test(
-      'an active interface but no domain to probe classifies offline - '
-      'nothing to probe means step 2 cannot confirm online',
-      () async {
-        final service = ConnectivityHeuristicService(
-          checkConnectivity: () async => [ConnectivityResult.wifi],
-        );
+    test('an active interface but no domain to probe classifies offline - '
+        'nothing to probe means step 2 cannot confirm online', () async {
+      final service = ConnectivityHeuristicService(
+        checkConnectivity: () async => [ConnectivityResult.wifi],
+      );
 
-        final result = await service.check(domain: null);
+      final result = await service.check(domain: null);
 
-        expect(result, ConnectivityClass.offline);
-      },
-    );
+      expect(result, ConnectivityClass.offline);
+    });
 
     // Regression test: on a multi-radio device, turning Wi-Fi off while
     // mobile is still active leaves connectivity_plus reporting an
@@ -153,10 +150,7 @@ void main() {
         hasInterface: true,
         success: true,
       );
-      expect(
-        service.pollInterval,
-        lessThan(const Duration(seconds: 60)),
-      );
+      expect(service.pollInterval, lessThan(const Duration(seconds: 60)));
 
       service.recordSyntheticOutcomeForTesting(
         hasInterface: false,
@@ -197,27 +191,24 @@ void main() {
       },
     );
 
-    test(
-      'Wi-Fi on, airplane mode off, no SIM - rule satisfied even though '
-      'nothing is actually reachable (a genuine dead zone, not a rule '
-      'break)',
-      () async {
-        final service = ConnectivityHeuristicService(
-          checkConnectivity: () async => [ConnectivityResult.none],
-          hasActiveSimCheck: () async => false,
-          isAirplaneModeOnCheck: () async => false,
-          isWifiRadioOnCheck: () async => true,
-          mobilePhoneStateCheck: () async =>
-              const MobilePhoneState(serviceState: null, dataEnabled: null),
-        );
+    test('Wi-Fi on, airplane mode off, no SIM - rule satisfied even though '
+        'nothing is actually reachable (a genuine dead zone, not a rule '
+        'break)', () async {
+      final service = ConnectivityHeuristicService(
+        checkConnectivity: () async => [ConnectivityResult.none],
+        hasActiveSimCheck: () async => false,
+        isAirplaneModeOnCheck: () async => false,
+        isWifiRadioOnCheck: () async => true,
+        mobilePhoneStateCheck: () async =>
+            const MobilePhoneState(serviceState: null, dataEnabled: null),
+      );
 
-        final result = await service.check(domain: 'acme.com');
+      final result = await service.check(domain: 'acme.com');
 
-        expect(result, ConnectivityClass.offline);
-        expect(service.isWifiRadioOn, isTrue);
-        expect(service.isConnectivityRuleBroken, isFalse);
-      },
-    );
+      expect(result, ConnectivityClass.offline);
+      expect(service.isWifiRadioOn, isTrue);
+      expect(service.isConnectivityRuleBroken, isFalse);
+    });
 
     test('airplane mode on is always a rule break', () async {
       final service = ConnectivityHeuristicService(
@@ -291,71 +282,62 @@ void main() {
       },
     );
 
-    test(
-      'Wi-Fi off is a rule break even with SIM present and Mobile Data '
-      'confirmed on - Wi-Fi is mandatory by rule, cellular is never a '
-      'substitute for it being off',
-      () async {
-        final service = ConnectivityHeuristicService(
-          checkConnectivity: () async => [ConnectivityResult.none],
-          hasActiveSimCheck: () async => true,
-          isAirplaneModeOnCheck: () async => false,
-          isWifiRadioOnCheck: () async => false,
-          mobilePhoneStateCheck: () async => const MobilePhoneState(
-            serviceState: 'out_of_service',
-            dataEnabled: true,
-          ),
-        );
+    test('Wi-Fi off is a rule break even with SIM present and Mobile Data '
+        'confirmed on - Wi-Fi is mandatory by rule, cellular is never a '
+        'substitute for it being off', () async {
+      final service = ConnectivityHeuristicService(
+        checkConnectivity: () async => [ConnectivityResult.none],
+        hasActiveSimCheck: () async => true,
+        isAirplaneModeOnCheck: () async => false,
+        isWifiRadioOnCheck: () async => false,
+        mobilePhoneStateCheck: () async => const MobilePhoneState(
+          serviceState: 'out_of_service',
+          dataEnabled: true,
+        ),
+      );
 
-        await service.check(domain: 'acme.com');
+      await service.check(domain: 'acme.com');
 
-        expect(service.isMobileDataEnabled, isTrue);
-        expect(service.isConnectivityRuleBroken, isTrue);
-      },
-    );
+      expect(service.isMobileDataEnabled, isTrue);
+      expect(service.isConnectivityRuleBroken, isTrue);
+    });
 
-    test(
-      'Wi-Fi on, SIM present, Mobile Data unknown (READ_PHONE_STATE not '
-      'granted) is not treated as a rule break - never over-claims a '
-      'deliberate setting from an unreadable signal',
-      () async {
-        final service = ConnectivityHeuristicService(
-          checkConnectivity: () async => [ConnectivityResult.none],
-          hasActiveSimCheck: () async => true,
-          isAirplaneModeOnCheck: () async => false,
-          isWifiRadioOnCheck: () async => true,
-          mobilePhoneStateCheck: () async =>
-              const MobilePhoneState(serviceState: null, dataEnabled: null),
-        );
+    test('Wi-Fi on, SIM present, Mobile Data unknown (READ_PHONE_STATE not '
+        'granted) is not treated as a rule break - never over-claims a '
+        'deliberate setting from an unreadable signal', () async {
+      final service = ConnectivityHeuristicService(
+        checkConnectivity: () async => [ConnectivityResult.none],
+        hasActiveSimCheck: () async => true,
+        isAirplaneModeOnCheck: () async => false,
+        isWifiRadioOnCheck: () async => true,
+        mobilePhoneStateCheck: () async =>
+            const MobilePhoneState(serviceState: null, dataEnabled: null),
+      );
 
-        await service.check(domain: 'acme.com');
+      await service.check(domain: 'acme.com');
 
-        expect(service.isMobileDataEnabled, isNull);
-        expect(service.isConnectivityRuleBroken, isFalse);
-      },
-    );
+      expect(service.isMobileDataEnabled, isNull);
+      expect(service.isConnectivityRuleBroken, isFalse);
+    });
 
-    test(
-      'a native check throwing a non-PlatformException error still lets '
-      'check() complete, failing open rather than crashing',
-      () async {
-        final service = ConnectivityHeuristicService(
-          checkConnectivity: () async => [ConnectivityResult.none],
-          hasActiveSimCheck: () async => false,
-          isAirplaneModeOnCheck: () async => false,
-          isWifiRadioOnCheck: () async =>
-              throw Exception('simulated MissingPluginException'),
-          mobilePhoneStateCheck: () async =>
-              const MobilePhoneState(serviceState: null, dataEnabled: null),
-        );
+    test('a native check throwing a non-PlatformException error still lets '
+        'check() complete, failing open rather than crashing', () async {
+      final service = ConnectivityHeuristicService(
+        checkConnectivity: () async => [ConnectivityResult.none],
+        hasActiveSimCheck: () async => false,
+        isAirplaneModeOnCheck: () async => false,
+        isWifiRadioOnCheck: () async =>
+            throw Exception('simulated MissingPluginException'),
+        mobilePhoneStateCheck: () async =>
+            const MobilePhoneState(serviceState: null, dataEnabled: null),
+      );
 
-        final result = await service.check(domain: 'acme.com');
+      final result = await service.check(domain: 'acme.com');
 
-        expect(result, ConnectivityClass.offline);
-        // Falls back to the fail-open default (true) rather than crashing
-        // or leaving the field in some undefined state.
-        expect(service.isWifiRadioOn, isTrue);
-      },
-    );
+      expect(result, ConnectivityClass.offline);
+      // Falls back to the fail-open default (true) rather than crashing
+      // or leaving the field in some undefined state.
+      expect(service.isWifiRadioOn, isTrue);
+    });
   });
 }

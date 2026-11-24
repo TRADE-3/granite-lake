@@ -107,6 +107,20 @@ The connection is secured by TLS (HTTPS). Ensure your backend is configured with
 
 The app sends `apiKey` as an `x-app-api-key` header on every OTP/UTC request, gating out opportunistic/scripted callers. This is a Phase 1, dev/staging-appropriate control, not a durable production one: any value embedded in a compiled app is extractable via decompilation or by proxying the app's own traffic, so it does not prove a request came from an unmodified, legitimate copy of the app. A decompiled build still exposes its own domain's key — the single-config change above only stops one leak from exposing every tenant's key at once. See `granite-lake-app-auth-design.md` at the repo root for the full design and the Phase 2 (device attestation + short-lived session tokens) follow-up.
 
+## Release Signing
+
+Release APKs are signed with the keystore described by `app/android/key.properties` (gitignored — see `app/android/key.properties.example` for the format and a generation command). Each developer signs with their own key: `storeFile` points at your keystore, and without a `key.properties` at all, release builds fall back to debug signing so local builds never fail on setup. Debug builds always sign with `~/.android/debug.keystore`.
+
+The signing certificate's SHA-256 fingerprint must be registered in the `assetlinks.json` served by `granite.trade3.io` for Android App Links verification to pass. Without it, the Trade3 pairing deep link opens in the browser instead of the app. When your key changes (new machine, new keystore, re-signed release), ask the backend team to add the new fingerprint — `sha256_cert_fingerprints` accepts multiple entries, so additions don't break other builds.
+
+Print your fingerprints with:
+
+```bash
+keytool -list -v -keystore app/android/trade3-release.jks -alias trade3
+```
+
+An APK signed with a different key than an installed build cannot upgrade it in place — uninstall first (which wipes the on-device wallet, SQLite data, and secure storage, so the fresh install needs on-chain re-registration and re-pairing).
+
 ## Smart Contract Integration
 
 The app integrates with the published Move module:

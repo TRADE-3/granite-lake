@@ -23,6 +23,34 @@ class ConfigDataController {
     );
   }
 
+  /// Last synced Trade3 hierarchy (JSON), kept so targets can be picked
+  /// while offline. Null when nothing has been cached.
+  Future<String?> loadTrade3HierarchyCache() {
+    return _configDao.readValue(
+      GraniteLakeDatabaseService.trade3HierarchyConfigKey,
+    );
+  }
+
+  Future<void> saveTrade3HierarchyCache(String? json) {
+    return _configDao.writeValue(
+      GraniteLakeDatabaseService.trade3HierarchyConfigKey,
+      json,
+    );
+  }
+
+  Future<String?> loadTrade3Target() {
+    return _configDao.readValue(
+      GraniteLakeDatabaseService.trade3TargetConfigKey,
+    );
+  }
+
+  Future<void> saveTrade3Target(String? json) {
+    return _configDao.writeValue(
+      GraniteLakeDatabaseService.trade3TargetConfigKey,
+      json,
+    );
+  }
+
   Future<PhotoAttestationContractConfig?>
   loadPhotoAttestationContractConfig() async {
     final raw = await _configDao.readValue(

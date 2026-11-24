@@ -16,6 +16,8 @@ class ProjectDao {
     return rows.map((row) => Map<String, dynamic>.from(row)).toList();
   }
 
+  /// Insert-or-update without `REPLACE`: replacing a parent row would delete
+  /// it first, which trips the capture tables' foreign keys.
   Future<void> upsert(Map<String, dynamic> project) async {
     final database = await _databaseService.database;
     await database.insert(
@@ -25,7 +27,13 @@ class ProjectDao {
         'title': project['title'],
         'created_at': project['createdAt'],
       },
-      conflictAlgorithm: ConflictAlgorithm.replace,
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    await database.update(
+      GraniteLakeDatabaseService.projectsTable,
+      <String, dynamic>{'title': project['title']},
+      where: 'project_id = ?',
+      whereArgs: [project['projectId']],
     );
   }
 

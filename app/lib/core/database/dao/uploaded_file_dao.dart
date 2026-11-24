@@ -60,6 +60,12 @@ class UploadedFileDao {
         'encrypted_payload': uploadedFile['encryptedPayload'],
         'payload_iv': uploadedFile['payloadIv'],
         'wrapped_data_key': uploadedFile['wrappedDataKey'],
+        'trade3_transaction_id': uploadedFile['trade3TransactionId'],
+        'trade3_payment_schedule_id': uploadedFile['trade3PaymentScheduleId'],
+        'trade3_upload_status': uploadedFile['trade3UploadStatus'],
+        'trade3_error_message': uploadedFile['trade3ErrorMessage'],
+        'trade3_document_id': uploadedFile['trade3DocumentId'],
+        'trade3_ipfs_cid': uploadedFile['trade3IpfsCid'],
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );

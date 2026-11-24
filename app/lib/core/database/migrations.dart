@@ -53,11 +53,44 @@ class Migrations {
         case 13:
           await _upgradeToVersionThirteen(db);
           break;
+        case 14:
+          await _upgradeToVersionFourteen(db);
+          break;
         default:
           throw UnsupportedError(
             'No migration registered for database version $version.',
           );
       }
+    }
+  }
+
+  static Future<void> _upgradeToVersionFourteen(Database db) async {
+    // Trade3 pinning (design/mobile_integration.md, EP-04): the hierarchy
+    // target chosen at capture time, plus the outcome of the upload that
+    // follows the Sui anchor. Status semantics: NULL = no target chosen
+    // (nothing to upload), PENDING = target chosen and upload not yet
+    // complete (retryable), UPLOADED = pinned server-side, FAILED = a
+    // definitive rejection a retry cannot fix (wrong target ids, missing
+    // permission). Kept plaintext on offline-queued rows: these never feed
+    // the signed proof bundle, unlike the v13 encrypted payload fields.
+    for (final table in [
+      GraniteLakeDatabaseService.photoCapturesTable,
+      GraniteLakeDatabaseService.uploadedFilesTable,
+    ]) {
+      await db.execute(
+        'ALTER TABLE $table ADD COLUMN trade3_transaction_id TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE $table ADD COLUMN trade3_payment_schedule_id TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE $table ADD COLUMN trade3_upload_status TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE $table ADD COLUMN trade3_error_message TEXT',
+      );
+      await db.execute('ALTER TABLE $table ADD COLUMN trade3_document_id TEXT');
+      await db.execute('ALTER TABLE $table ADD COLUMN trade3_ipfs_cid TEXT');
     }
   }
 
@@ -443,6 +476,12 @@ class Migrations {
         encrypted_payload TEXT,
         payload_iv TEXT,
         wrapped_data_key TEXT,
+        trade3_transaction_id TEXT,
+        trade3_payment_schedule_id TEXT,
+        trade3_upload_status TEXT,
+        trade3_error_message TEXT,
+        trade3_document_id TEXT,
+        trade3_ipfs_cid TEXT,
         FOREIGN KEY (project_id) REFERENCES ${GraniteLakeDatabaseService.projectsTable}(project_id)
           ON DELETE SET NULL
       )
@@ -483,6 +522,12 @@ class Migrations {
         encrypted_payload TEXT,
         payload_iv TEXT,
         wrapped_data_key TEXT,
+        trade3_transaction_id TEXT,
+        trade3_payment_schedule_id TEXT,
+        trade3_upload_status TEXT,
+        trade3_error_message TEXT,
+        trade3_document_id TEXT,
+        trade3_ipfs_cid TEXT,
         FOREIGN KEY (project_id) REFERENCES ${GraniteLakeDatabaseService.projectsTable}(project_id)
           ON DELETE SET NULL
       )

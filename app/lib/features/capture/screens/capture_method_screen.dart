@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app.dart';
 import '../../../core/router/app_router.dart';
+import '../../../core/state/granite_lake_models.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 
@@ -15,6 +16,8 @@ class CaptureMethodScreen extends StatelessWidget {
     final selectedProject = controller.selectedProject;
     final projectLabel = selectedProject == null
         ? 'UNASSIGNED'
+        : Trade3TargetSelection.isTrade3ProjectId(selectedProject.projectId)
+        ? selectedProject.title
         : selectedProject.projectId;
     // Compact phones (e.g. iPhone SE) get tighter spacing so the two method
     // cards and the back link stay comfortably reachable without relying on

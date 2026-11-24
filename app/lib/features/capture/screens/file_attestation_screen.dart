@@ -16,6 +16,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../core/utils/verified_email.dart';
 import '../../../core/utils/utils.dart';
+import '../../trade3/widgets/trade3_target_picker.dart';
 
 enum _FileFlow { selecting, review, submitting, success }
 
@@ -297,8 +298,10 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
     final projectId = controller.selectedProjectId;
     if (projectId == null || projectId.trim().isEmpty) {
       setState(() {
-        _errorMessage =
-            'Select a project before uploading a file for verification.';
+        _errorMessage = controller.isTrade3Paired
+            ? 'Select a Trade3 payment schedule before uploading a file for '
+                  'verification.'
+            : 'Select a project before uploading a file for verification.';
       });
       return;
     }
@@ -369,6 +372,9 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
       isOnline: isOnline,
       isForcedOffline: isForcedOffline,
       internetNullReason: internetNullReason,
+      trade3TransactionId: controller.selectedTrade3Target?.transactionId,
+      trade3PaymentScheduleId:
+          controller.selectedTrade3Target?.paymentScheduleId,
       onProgress: (progress) {
         unawaited(_applySubmissionProgress(progress, submissionRunId));
       },
@@ -661,7 +667,16 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _ProjectContextCard(projectId: projectId),
+        // While a Trade3 account is paired the payment schedule *is* the
+        // project, so the picker replaces the local project context card.
+        Builder(
+          builder: (context) {
+            if (!GraniteLakeScope.of(context).isTrade3Paired) {
+              return _ProjectContextCard(projectId: projectId);
+            }
+            return const Trade3TargetField();
+          },
+        ),
         const SizedBox(height: 18),
         if (selectedFile == null)
           _EmptyPickerCard(onPick: _pickFile)

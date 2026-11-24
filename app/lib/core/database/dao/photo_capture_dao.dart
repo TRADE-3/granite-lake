@@ -61,6 +61,12 @@ class PhotoCaptureDao {
         'encrypted_payload': photoCapture['encryptedPayload'],
         'payload_iv': photoCapture['payloadIv'],
         'wrapped_data_key': photoCapture['wrappedDataKey'],
+        'trade3_transaction_id': photoCapture['trade3TransactionId'],
+        'trade3_payment_schedule_id': photoCapture['trade3PaymentScheduleId'],
+        'trade3_upload_status': photoCapture['trade3UploadStatus'],
+        'trade3_error_message': photoCapture['trade3ErrorMessage'],
+        'trade3_document_id': photoCapture['trade3DocumentId'],
+        'trade3_ipfs_cid': photoCapture['trade3IpfsCid'],
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );

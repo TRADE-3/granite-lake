@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -14,6 +15,9 @@ import '../services/granite_lake_capture_workflow_service.dart';
 import '../services/photo_attestation_service.dart';
 import '../services/sponsor_attestation_service.dart';
 import '../services/granite_lake_secure_state_service.dart';
+import '../services/trade3_api_service.dart';
+import '../services/trade3_deep_link_service.dart';
+import '../services/trade3_token_store.dart';
 import '../utils/network_error_classifier.dart';
 import 'granite_lake_models.dart';
 
@@ -38,6 +42,9 @@ class GraniteLakeController extends ChangeNotifier {
     _captureWorkflowService = GraniteLakeCaptureWorkflowService();
     _photoAttestationService = PhotoAttestationService();
     _captureEncryptionService = CaptureEncryptionService();
+    _trade3TokenStore = Trade3TokenStore(storage: _storage);
+    _trade3ApiService = Trade3ApiService(tokenStore: _trade3TokenStore);
+    _trade3DeepLinkService = Trade3DeepLinkService();
   }
 
   final FlutterSecureStorage _storage;
@@ -46,6 +53,38 @@ class GraniteLakeController extends ChangeNotifier {
   late final GraniteLakeCaptureWorkflowService _captureWorkflowService;
   late final PhotoAttestationService _photoAttestationService;
   late final CaptureEncryptionService _captureEncryptionService;
+  late final Trade3TokenStore _trade3TokenStore;
+  late final Trade3ApiService _trade3ApiService;
+  late final Trade3DeepLinkService _trade3DeepLinkService;
+
+  /// Trade3 pairing/hierarchy/document-pinning API
+  /// (design/mobile_integration.md, EP-01..EP-05).
+  Trade3ApiService get trade3ApiService => _trade3ApiService;
+
+  // ── Trade3 account pairing (design/mobile_integration.md) ─────────────────
+  // EP-01 consumes a pairing code; the deep-link listener stores any arriving
+  // code as "pending" so the router can hold it through onboarding (a link
+  // can arrive mid-onboarding on a fresh install) and open /pair once
+  // registration is complete.
+  bool _isTrade3Paired = false;
+  bool _isTrade3Pairing = false;
+  String? _pendingTrade3PairingCode;
+  StreamSubscription<String>? _trade3DeepLinkSubscription;
+
+  // ── Trade3 hierarchy (EP-03) ───────────────────────────────────────────────
+  // Fetched on launch/manual sync. The last successful tree is cached in
+  // app_config (JSON) purely so a target can still be picked offline -
+  // captures are allowed offline, so the picker can't depend on a live fetch.
+  List<Trade3MasterContract>? _trade3Hierarchy;
+  bool _isSyncingTrade3Hierarchy = false;
+  String? _trade3SyncError;
+  DateTime? _trade3HierarchySyncedAt;
+
+  // ── Trade3 capture target (EP-04) ──────────────────────────────────────────
+  // The sticky hierarchy target new captures get pinned to - like the local
+  // project selection, set from the capture flow and read at persist time.
+  Trade3TargetSelection? _selectedTrade3Target;
+  final Set<String> _trade3UploadsInFlight = {};
 
   static const String _queueEncryptionLogTag = '[QueueEncryption]';
   // Offline-queue at-rest encryption (offline-capture design doc §7.3,
@@ -128,7 +167,7 @@ class GraniteLakeController extends ChangeNotifier {
   ) => _attestationVerifications[captureId];
   String? get resetNotice => _resetNotice;
   List<ProjectRecord> get projects => List.unmodifiable(_projects);
-  String? get selectedProjectId => _selectedProjectId;
+  String? get selectedProjectId => selectedProject?.projectId;
   PhotoAttestationContractConfig? get photoAttestationConfig =>
       _photoAttestationConfig;
   bool get requiresLocalDataInitialization => _requiresLocalDataInitialization;
@@ -206,9 +245,25 @@ class GraniteLakeController extends ChangeNotifier {
     }
   }
 
+  /// The project new captures are attributed to. While a Trade3 account is
+  /// paired this is the synthetic project derived from the chosen payment
+  /// schedule (null until one is chosen); otherwise it is the selected local
+  /// project. The two kinds never mix: local projects are hidden while
+  /// paired and Trade3-derived ones are hidden once unpaired.
   ProjectRecord? get selectedProject {
     final selectedProjectId = _selectedProjectId;
     if (selectedProjectId == null) {
+      return null;
+    }
+    final isTrade3Project = Trade3TargetSelection.isTrade3ProjectId(
+      selectedProjectId,
+    );
+    if (_isTrade3Paired) {
+      if (!isTrade3Project ||
+          _selectedTrade3Target?.projectId != selectedProjectId) {
+        return null;
+      }
+    } else if (isTrade3Project) {
       return null;
     }
 
@@ -220,7 +275,19 @@ class GraniteLakeController extends ChangeNotifier {
     return null;
   }
 
-  bool get hasProjects => _projects.isNotEmpty;
+  /// Locally created projects (UUID ids) - what the project dropdown and the
+  /// Projects tab list when no Trade3 account is paired.
+  List<ProjectRecord> get localProjects => _projects
+      .where(
+        (project) =>
+            !Trade3TargetSelection.isTrade3ProjectId(project.projectId),
+      )
+      .toList(growable: false);
+
+  /// Whether capture may proceed to the review step. Paired users choose
+  /// their payment schedule on the review screen, so there is nothing to
+  /// create up front.
+  bool get hasProjects => _isTrade3Paired || localProjects.isNotEmpty;
   bool get hasIdentity => _identity != null;
   bool get hasClaimedPhotoAttestationUser => _photoAttestationClaim != null;
   bool get isBiometricBound => _biometricBinding != null;
@@ -304,6 +371,15 @@ class GraniteLakeController extends ChangeNotifier {
       _photoAttestationConfig = await _dataControllers.config
           .syncPhotoAttestationContractConfig();
       await _loadDatabaseState();
+      _isTrade3Paired = await _trade3TokenStore.read() != null;
+      if (_isTrade3Paired) {
+        await _restoreTrade3Cache();
+      }
+      _reconcileSelectedProject();
+      _startTrade3DeepLinkListening();
+      if (_isTrade3Paired) {
+        unawaited(syncTrade3Hierarchy());
+      }
       unawaited(refreshWalletSuiBalance());
       unawaited(refreshSponsorStatus());
       unawaited(_backfillRegisteredEmail());
@@ -601,6 +677,12 @@ class GraniteLakeController extends ChangeNotifier {
   /// the biometric unlock via [startSession] itself, whose success already
   /// triggers this sweep.
   Future<void> retryPendingAttestations() async {
+    // The Trade3 pin sweep rides on the same triggers as the Sui queue sweep
+    // (resume, connectivity return) but has its own preconditions - it needs
+    // only the paired Trade3 tokens, never a biometric unlock - so it runs
+    // before the signing-key gate below, which would otherwise starve it on
+    // every trigger where no session is active.
+    unawaited(retryPendingTrade3Uploads());
     if (_isRetryingPendingAttestations) {
       return;
     }
@@ -1098,6 +1180,9 @@ class GraniteLakeController extends ChangeNotifier {
       biometricBinding: _biometricBinding,
       notice: notice,
     );
+    // resetApplicationState deletes its own secure-storage keys; the Trade3
+    // tokens are stored under separate keys and must be unlinked explicitly.
+    await _trade3TokenStore.clear();
     await _captureWorkflowService.clearCaptureArtifacts();
     _clearLocalBiometricSessionState(clearIdentity: true);
 
@@ -1122,6 +1207,12 @@ class GraniteLakeController extends ChangeNotifier {
     _isRefreshingWalletSuiBalance = false;
     _offlineCaptureForced = false;
     _gpsCaptureForcedNull = false;
+    _isTrade3Paired = false;
+    _trade3Hierarchy = null;
+    _trade3HierarchySyncedAt = null;
+    _trade3SyncError = null;
+    _pendingTrade3PairingCode = null;
+    _selectedTrade3Target = null;
 
     await _dataControllers.photoCapture.clear();
     await _dataControllers.uploadedFile.clear();
@@ -1192,7 +1283,7 @@ class GraniteLakeController extends ChangeNotifier {
       return;
     }
 
-    final exists = _projects.any(
+    final exists = localProjects.any(
       (project) => project.projectId == normalizedProjectId,
     );
     if (!exists) {
@@ -1259,6 +1350,8 @@ class GraniteLakeController extends ChangeNotifier {
     bool hasGps = true,
     bool isGpsForcedNull = false,
     String? gpsNullReason,
+    String? trade3TransactionId,
+    String? trade3PaymentScheduleId,
   }) async {
     final identity = _identity;
     final session = _session;
@@ -1338,6 +1431,8 @@ class GraniteLakeController extends ChangeNotifier {
       hasGps: hasGps,
       isGpsForcedNull: isGpsForcedNull,
       gpsNullReason: gpsNullReason,
+      trade3TransactionId: trade3TransactionId,
+      trade3PaymentScheduleId: trade3PaymentScheduleId,
     );
     if (!result.isSuccess || result.record == null) {
       return result;
@@ -1444,6 +1539,8 @@ class GraniteLakeController extends ChangeNotifier {
     bool isOnline = true,
     bool isForcedOffline = false,
     String? internetNullReason,
+    String? trade3TransactionId,
+    String? trade3PaymentScheduleId,
   }) async {
     final identity = _identity;
     final session = _session;
@@ -1520,6 +1617,8 @@ class GraniteLakeController extends ChangeNotifier {
       isOnline: isOnline,
       isForcedOffline: isForcedOffline,
       internetNullReason: internetNullReason,
+      trade3TransactionId: trade3TransactionId,
+      trade3PaymentScheduleId: trade3PaymentScheduleId,
     );
     if (!result.isSuccess || result.record == null) {
       return result;
@@ -1603,6 +1702,418 @@ class GraniteLakeController extends ChangeNotifier {
     return AttestationActionResult.success(record);
   }
 
+  // ── Trade3 account (design/mobile_integration.md) ─────────────────────────
+
+  /// Whether a Trade3 account is linked to this device.
+  bool get isTrade3Paired => _isTrade3Paired;
+
+  /// Whether an EP-01 pairing exchange is in flight.
+  bool get isTrade3Pairing => _isTrade3Pairing;
+
+  /// A pairing code received via deep link that has not been consumed yet.
+  /// Non-null only between the link arriving and the pairing screen opening
+  /// (the router redirects there once onboarding allows it).
+  String? get pendingTrade3PairingCode => _pendingTrade3PairingCode;
+
+  /// The user's Trade3 project tree (EP-03), or null when never synced.
+  List<Trade3MasterContract>? get trade3Hierarchy => _trade3Hierarchy;
+
+  bool get isSyncingTrade3Hierarchy => _isSyncingTrade3Hierarchy;
+
+  /// Last sync failure message, shown non-fatally next to the hierarchy.
+  String? get trade3SyncError => _trade3SyncError;
+
+  DateTime? get trade3HierarchySyncedAt => _trade3HierarchySyncedAt;
+
+  void _startTrade3DeepLinkListening() {
+    if (_trade3DeepLinkSubscription != null) {
+      return;
+    }
+    unawaited(
+      _trade3DeepLinkService.initialPairingCode().then((code) {
+        if (code != null && !_isTrade3Pairing) {
+          setPendingTrade3PairingCode(code);
+        }
+      }),
+    );
+    _trade3DeepLinkSubscription = _trade3DeepLinkService
+        .pairingCodeStream()
+        .listen(
+          (code) => setPendingTrade3PairingCode(code),
+          onError: (Object error) {
+            debugPrint('[Trade3] deep link stream error: $error');
+          },
+        );
+  }
+
+  void setPendingTrade3PairingCode(String code) {
+    final normalized = code.trim();
+    if (normalized.isEmpty) {
+      return;
+    }
+    _pendingTrade3PairingCode = normalized;
+    notifyListeners();
+  }
+
+  /// Takes the pending pairing code (if any), clearing it so the router
+  /// stops routing to /pair. Called by the pairing screen on open.
+  String? consumePendingTrade3PairingCode() {
+    final code = _pendingTrade3PairingCode;
+    if (code == null) {
+      return null;
+    }
+    _pendingTrade3PairingCode = null;
+    notifyListeners();
+    return code;
+  }
+
+  void discardPendingTrade3PairingCode() {
+    if (_pendingTrade3PairingCode != null) {
+      _pendingTrade3PairingCode = null;
+      notifyListeners();
+    }
+  }
+
+  /// EP-01: exchanges a pairing code for session tokens and links the
+  /// device to the user's Trade3 account.
+  Future<ActionResult> pairWithTrade3({required String code}) async {
+    if (_isTrade3Pairing) {
+      return const ActionResult.failure('Already linking your account.');
+    }
+    final normalizedCode = code.trim();
+    if (normalizedCode.isEmpty) {
+      return const ActionResult.failure(
+        'Enter the pairing code from your Trade3 profile.',
+      );
+    }
+
+    _isTrade3Pairing = true;
+    notifyListeners();
+    try {
+      // device_id tags the backend session with this install; the wallet
+      // address is stable per install and always exists by pairing time.
+      await _trade3ApiService.pairWithCode(
+        normalizedCode,
+        deviceId: _identity?.walletAddress,
+      );
+      _isTrade3Paired = true;
+      _pendingTrade3PairingCode = null;
+      _trade3SyncError = null;
+      _reconcileSelectedProject();
+      unawaited(syncTrade3Hierarchy());
+      return const ActionResult.success();
+    } on Trade3ApiException catch (error) {
+      return ActionResult.failure(error.userMessage);
+    } catch (error) {
+      debugPrint('[Trade3] pairWithTrade3 unexpected error: $error');
+      return const ActionResult.failure(
+        'Something went wrong while linking your Trade3 account. '
+        'Please try again.',
+      );
+    } finally {
+      _isTrade3Pairing = false;
+      notifyListeners();
+    }
+  }
+
+  /// EP-03: refreshes the Trade3 project tree. Silent failures keep the last
+  /// synced hierarchy; an expired session drops the pairing state so the
+  /// user is routed to pairing again.
+  Future<void> syncTrade3Hierarchy() async {
+    if (_isSyncingTrade3Hierarchy || !_isTrade3Paired) {
+      return;
+    }
+    _isSyncingTrade3Hierarchy = true;
+    _trade3SyncError = null;
+    notifyListeners();
+    try {
+      _trade3Hierarchy = await _trade3ApiService.syncHierarchy();
+      _trade3HierarchySyncedAt = DateTime.now().toUtc();
+      await _persistTrade3Hierarchy();
+      await _dropTrade3TargetIfMissing();
+    } on Trade3UnauthenticatedException {
+      _handleTrade3Unauthenticated();
+    } on Trade3ApiException catch (error) {
+      _trade3SyncError = error.userMessage;
+    } catch (error) {
+      debugPrint('[Trade3] syncTrade3Hierarchy unexpected error: $error');
+      _trade3SyncError =
+          "Couldn't load your Trade3 projects. Try again in a moment.";
+    } finally {
+      _isSyncingTrade3Hierarchy = false;
+      notifyListeners();
+    }
+  }
+
+  /// The Trade3 hierarchy target new captures are pinned to (EP-04), or null
+  /// when captures go to Trade3 with no target.
+  Trade3TargetSelection? get selectedTrade3Target => _selectedTrade3Target;
+
+  /// Chooses the payment schedule new captures go to. While paired this also
+  /// makes the derived `t3:` project the active one: it is upserted into the
+  /// local projects table (captures reference it by foreign key) and
+  /// persisted so the choice survives restarts. Passing null clears it.
+  Future<void> selectTrade3Target(Trade3TargetSelection? target) async {
+    _selectedTrade3Target = target;
+    if (target != null) {
+      final existing = _projects.where((p) => p.projectId == target.projectId);
+      final project = ProjectRecord(
+        projectId: target.projectId,
+        title: target.projectTitle,
+        createdAt: existing.isEmpty
+            ? DateTime.now().toUtc()
+            : existing.first.createdAt,
+      );
+      await _dataControllers.project.saveProject(project.toJson());
+      _projects = [
+        ..._projects.where((p) => p.projectId != project.projectId),
+        project,
+      ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      _selectedProjectId = project.projectId;
+    } else if (Trade3TargetSelection.isTrade3ProjectId(_selectedProjectId)) {
+      _selectedProjectId = null;
+    }
+    await _persistSelectedProject();
+    await _dataControllers.config.saveTrade3Target(
+      target == null ? null : jsonEncode(target.toJson()),
+    );
+    notifyListeners();
+  }
+
+  Future<void> _persistTrade3Hierarchy() async {
+    final hierarchy = _trade3Hierarchy;
+    await _dataControllers.config.saveTrade3HierarchyCache(
+      hierarchy == null
+          ? null
+          : jsonEncode({
+              'syncedAt': _trade3HierarchySyncedAt?.toIso8601String(),
+              'master_contracts': [for (final c in hierarchy) c.toJson()],
+            }),
+    );
+  }
+
+  Future<void> _restoreTrade3Cache() async {
+    try {
+      final rawHierarchy = await _dataControllers.config
+          .loadTrade3HierarchyCache();
+      if (rawHierarchy != null) {
+        final decoded = jsonDecode(rawHierarchy) as Map<String, dynamic>;
+        _trade3Hierarchy = Trade3MasterContract.listFromJson(
+          decoded['master_contracts'],
+        );
+        final syncedAt = decoded['syncedAt'] as String?;
+        _trade3HierarchySyncedAt = syncedAt == null
+            ? null
+            : DateTime.tryParse(syncedAt);
+      }
+      final rawTarget = await _dataControllers.config.loadTrade3Target();
+      if (rawTarget != null) {
+        final target = Trade3TargetSelection.fromJson(
+          jsonDecode(rawTarget) as Map<String, dynamic>,
+        );
+        _selectedTrade3Target = target;
+        _selectedProjectId = target.projectId;
+      }
+    } catch (error) {
+      // A corrupt cache must never block startup; the next sync rebuilds it.
+      debugPrint('[Trade3] restoring cached hierarchy failed: $error');
+    }
+  }
+
+  /// After a successful sync, forgets a stored target whose payment schedule
+  /// no longer exists in the user's tree (status is deliberately not
+  /// considered - completed schedules stay selectable).
+  Future<void> _dropTrade3TargetIfMissing() async {
+    final target = _selectedTrade3Target;
+    final hierarchy = _trade3Hierarchy;
+    if (target == null || hierarchy == null) {
+      return;
+    }
+    final stillExists = hierarchy.any(
+      (contract) =>
+          contract.id == target.masterContractId &&
+          contract.transactions.any(
+            (transaction) =>
+                transaction.id == target.transactionId &&
+                transaction.paymentSchedules.any(
+                  (schedule) => schedule.id == target.paymentScheduleId,
+                ),
+          ),
+    );
+    if (!stillExists) {
+      await selectTrade3Target(null);
+    }
+  }
+
+  /// Keeps the active project consistent with the pairing mode: paired
+  /// users only ever have a Trade3-derived project, unpaired users only a
+  /// local one. Falls back to the newest local project after unpairing.
+  void _reconcileSelectedProject() {
+    final selected = _selectedProjectId;
+    final isTrade3Project = Trade3TargetSelection.isTrade3ProjectId(selected);
+    if (_isTrade3Paired) {
+      if (!isTrade3Project) {
+        _selectedProjectId = _selectedTrade3Target?.projectId;
+      }
+      return;
+    }
+    if (isTrade3Project || selected == null) {
+      final locals = localProjects;
+      _selectedProjectId = locals.isEmpty ? null : locals.first.projectId;
+      unawaited(_persistSelectedProject());
+    }
+  }
+
+  /// EP-04: pins an anchored record's file to its chosen Trade3 payment
+  /// schedule. Fire-and-forget from the Sui success path - the capture flow
+  /// must not block on Trade3 - with [retryPendingTrade3Uploads] sweeping up
+  /// rows that stayed PENDING (network drop, expired session at the time,
+  /// offline capture whose Sui anchor only landed later).
+  Future<void> uploadRecordToTrade3(AttestationRecord record) async {
+    if (!record.hasTrade3Target ||
+        !record.isAttestationAnchored ||
+        record.trade3UploadStatus?.toUpperCase() == 'UPLOADED') {
+      return;
+    }
+    if (!_trade3UploadsInFlight.add(record.captureId)) {
+      return; // Already uploading this record.
+    }
+    try {
+      // The local file is the exact bytes that were hashed and attested -
+      // for photos that includes the GPS-EXIF strip, so Trade3's server-side
+      // hash matches the on-chain one.
+      final file = File(record.localAssetPath);
+      if (!await file.exists()) {
+        await _updateAttestationRecord(
+          record,
+          trade3UploadStatus: 'FAILED',
+          trade3ErrorMessage:
+              'The captured file is no longer on this device, so it could '
+              'not be uploaded to Trade3.',
+        );
+        notifyListeners();
+        return;
+      }
+      final bytes = await file.readAsBytes();
+      final pinned = await _trade3ApiService.uploadDocuments(
+        transactionId: record.trade3TransactionId!,
+        paymentScheduleId: record.trade3PaymentScheduleId!,
+        files: [Trade3UploadFile(filename: record.assetName, bytes: bytes)],
+      );
+      final pinnedDocument = pinned.isEmpty ? null : pinned.first;
+      await _updateAttestationRecord(
+        record,
+        trade3UploadStatus: 'UPLOADED',
+        trade3ErrorMessage: '',
+        trade3DocumentId: pinnedDocument?.id ?? '',
+        trade3IpfsCid: pinnedDocument?.ipfsCid ?? '',
+      );
+      notifyListeners();
+    } on Trade3UnauthenticatedException catch (error) {
+      // Session dead - keep the row PENDING; the sweep retries once the
+      // user re-pairs.
+      await _updateAttestationRecord(
+        record,
+        trade3UploadStatus: 'PENDING',
+        trade3ErrorMessage: error.userMessage,
+      );
+      notifyListeners();
+    } on Trade3ApiException catch (error) {
+      // Definitive rejections (400/403/404) can never succeed on retry;
+      // network-level and server-side (5xx) failures stay retryable.
+      final statusCode = error.statusCode;
+      final isDefinitive =
+          statusCode != null && statusCode >= 400 && statusCode < 500;
+      await _updateAttestationRecord(
+        record,
+        trade3UploadStatus: isDefinitive ? 'FAILED' : 'PENDING',
+        trade3ErrorMessage: error.userMessage,
+      );
+      notifyListeners();
+    } catch (error) {
+      debugPrint('[Trade3] uploadRecordToTrade3 unexpected error: $error');
+      await _updateAttestationRecord(
+        record,
+        trade3UploadStatus: 'PENDING',
+        trade3ErrorMessage:
+            'The upload to Trade3 could not be completed. It will retry '
+            'automatically.',
+      );
+      notifyListeners();
+    } finally {
+      _trade3UploadsInFlight.remove(record.captureId);
+    }
+  }
+
+  /// Retries every anchored record still waiting on its Trade3 pin. Runs on
+  /// the same triggers as the Sui queue sweep (resume, connectivity return)
+  /// but, unlike it, needs no biometric unlock - the upload uses the paired
+  /// Trade3 tokens, never the Sui signing key.
+  Future<void> retryPendingTrade3Uploads() async {
+    if (!_isTrade3Paired) {
+      return;
+    }
+    final pending = _attestationHistory
+        .where(
+          (record) =>
+              record.hasTrade3Target &&
+              record.isAttestationAnchored &&
+              record.isTrade3UploadPending &&
+              !_trade3UploadsInFlight.contains(record.captureId),
+        )
+        .toList();
+    for (final record in pending) {
+      // Sequential: each upload is a whole file, and bursts would compete
+      // with any in-flight Sui resubmission for bandwidth.
+      await uploadRecordToTrade3(record);
+    }
+  }
+
+  void _handleTrade3Unauthenticated() {
+    _isTrade3Paired = false;
+    _trade3Hierarchy = null;
+    _trade3HierarchySyncedAt = null;
+    _selectedTrade3Target = null;
+    _trade3SyncError =
+        'Your Trade3 session has ended. Pair your account again.';
+    _reconcileSelectedProject();
+    unawaited(_persistTrade3Hierarchy());
+    unawaited(_dataControllers.config.saveTrade3Target(null));
+  }
+
+  /// EP-05: revokes the session server-side and unlinks the account from
+  /// this device. An already-dead session counts as unlinked.
+  Future<ActionResult> disconnectTrade3() async {
+    try {
+      await _trade3ApiService.disconnect();
+    } on Trade3UnauthenticatedException {
+      _clearTrade3State();
+      return const ActionResult.success();
+    } on Trade3ApiException catch (error) {
+      return ActionResult.failure(error.userMessage);
+    } catch (error) {
+      debugPrint('[Trade3] disconnectTrade3 unexpected error: $error');
+      return const ActionResult.failure(
+        "Couldn't unlink your Trade3 account. Try again in a moment.",
+      );
+    }
+    _clearTrade3State();
+    return const ActionResult.success();
+  }
+
+  void _clearTrade3State() {
+    _isTrade3Paired = false;
+    _trade3Hierarchy = null;
+    _trade3HierarchySyncedAt = null;
+    _trade3SyncError = null;
+    _pendingTrade3PairingCode = null;
+    _selectedTrade3Target = null;
+    _reconcileSelectedProject();
+    unawaited(_persistTrade3Hierarchy());
+    unawaited(_dataControllers.config.saveTrade3Target(null));
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     if (identical(_current, this)) {
@@ -1610,6 +2121,7 @@ class GraniteLakeController extends ChangeNotifier {
     }
     _sessionTicker?.cancel();
     _queueUnlockTicker?.cancel();
+    unawaited(_trade3DeepLinkSubscription?.cancel());
     unawaited(_dataControllers.dispose());
     super.dispose();
   }
@@ -1787,6 +2299,12 @@ class GraniteLakeController extends ChangeNotifier {
         incrementAttempt: true,
         decryptedRecord: decryptedRecord,
       );
+      // EP-04: once the Sui anchor is confirmed, pin the same file to the
+      // record's Trade3 target. Fire-and-forget - never blocks the capture
+      // flow; failures fall to the pending sweep.
+      if (updated.hasTrade3Target && updated.isAttestationAnchored) {
+        unawaited(uploadRecordToTrade3(updated));
+      }
       final verification = submission.verification;
       if (verification != null) {
         _attestationVerifications = {
@@ -1991,6 +2509,11 @@ class GraniteLakeController extends ChangeNotifier {
         incrementAttempt: true,
         decryptedRecord: decryptedRecord,
       );
+      // EP-04: pin the now-anchored file to its Trade3 target - same
+      // fire-and-forget contract as the photo path above.
+      if (updated.hasTrade3Target && updated.isAttestationAnchored) {
+        unawaited(uploadRecordToTrade3(updated));
+      }
       final verification = submission.verification;
       if (verification != null) {
         _attestationVerifications = {
@@ -2356,6 +2879,13 @@ class GraniteLakeController extends ChangeNotifier {
     // the queue with its plaintext columns blanked. Only used here to
     // *declassify* - see the anchored check below.
     AttestationRecord? decryptedRecord,
+    // Trade3 pinning (EP-04, migrations.dart version-14): outcome updates
+    // from uploadRecordToTrade3. The target ids themselves are immutable
+    // after capture.
+    String? trade3UploadStatus,
+    String? trade3ErrorMessage,
+    String? trade3DocumentId,
+    String? trade3IpfsCid,
   }) async {
     AttestationRecord buildFrom(
       AttestationRecord plaintextSource, {
@@ -2402,6 +2932,12 @@ class GraniteLakeController extends ChangeNotifier {
         encryptedPayload: clearEncryption ? null : record.encryptedPayload,
         payloadIv: clearEncryption ? null : record.payloadIv,
         wrappedDataKey: clearEncryption ? null : record.wrappedDataKey,
+        trade3TransactionId: record.trade3TransactionId,
+        trade3PaymentScheduleId: record.trade3PaymentScheduleId,
+        trade3UploadStatus: trade3UploadStatus ?? record.trade3UploadStatus,
+        trade3ErrorMessage: trade3ErrorMessage ?? record.trade3ErrorMessage,
+        trade3DocumentId: trade3DocumentId ?? record.trade3DocumentId,
+        trade3IpfsCid: trade3IpfsCid ?? record.trade3IpfsCid,
       );
     }
 

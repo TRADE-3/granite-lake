@@ -540,6 +540,16 @@ class AttestationRecord {
     this.encryptedPayload,
     this.payloadIv,
     this.wrappedDataKey,
+    this.trade3TransactionId,
+    this.trade3PaymentScheduleId,
+    // Trade3 pinning: null when no Trade3 target was chosen at
+    // capture time; PENDING until the post-Sui upload lands; UPLOADED on
+    // success; FAILED on a definitive rejection (bad target ids, missing
+    // permission) that a retry can never fix.
+    this.trade3UploadStatus,
+    this.trade3ErrorMessage,
+    this.trade3DocumentId,
+    this.trade3IpfsCid,
   });
 
   factory AttestationRecord.fromJson(Map<String, dynamic> json) {
@@ -615,6 +625,12 @@ class AttestationRecord {
       encryptedPayload: json['encryptedPayload'] as String?,
       payloadIv: json['payloadIv'] as String?,
       wrappedDataKey: json['wrappedDataKey'] as String?,
+      trade3TransactionId: json['trade3TransactionId'] as String?,
+      trade3PaymentScheduleId: json['trade3PaymentScheduleId'] as String?,
+      trade3UploadStatus: json['trade3UploadStatus'] as String?,
+      trade3ErrorMessage: json['trade3ErrorMessage'] as String?,
+      trade3DocumentId: json['trade3DocumentId'] as String?,
+      trade3IpfsCid: json['trade3IpfsCid'] as String?,
     );
   }
 
@@ -681,6 +697,30 @@ class AttestationRecord {
 
   String get normalizedSuiSubmissionStatus =>
       suiSubmissionStatus.trim().toUpperCase();
+
+  // App-local only - never submitted on-chain. The Trade3 hierarchy target
+  // chosen at capture time plus the state of the EP-04 pin that follows the
+  // Sui anchor. Kept in plaintext columns even for offline-queued rows
+  // (unlike the Sui submission fields folded into encryptedPayload): they
+  // never feed the signed proof bundle.
+  final String? trade3TransactionId;
+  final String? trade3PaymentScheduleId;
+  final String? trade3UploadStatus;
+  final String? trade3ErrorMessage;
+  final String? trade3DocumentId;
+  final String? trade3IpfsCid;
+
+  bool get hasTrade3Target =>
+      (trade3TransactionId ?? '').trim().isNotEmpty &&
+      (trade3PaymentScheduleId ?? '').trim().isNotEmpty;
+
+  bool get isTrade3UploadPending =>
+      hasTrade3Target &&
+      (trade3UploadStatus ?? 'PENDING').toUpperCase() != 'UPLOADED' &&
+      (trade3UploadStatus ?? 'PENDING').toUpperCase() != 'FAILED';
+
+  bool get isTrade3UploadFailed =>
+      hasTrade3Target && (trade3UploadStatus ?? '').toUpperCase() == 'FAILED';
 
   bool get hasSuiTransactionDigest => suiTxDigest.trim().isNotEmpty;
 
@@ -881,6 +921,12 @@ class AttestationRecord {
       'fileExtension': fileExtension,
       'previewKind': previewKind.name,
       'storageMode': storageMode,
+      'trade3TransactionId': trade3TransactionId,
+      'trade3PaymentScheduleId': trade3PaymentScheduleId,
+      'trade3UploadStatus': trade3UploadStatus,
+      'trade3ErrorMessage': trade3ErrorMessage,
+      'trade3DocumentId': trade3DocumentId,
+      'trade3IpfsCid': trade3IpfsCid,
     };
   }
 
@@ -1018,6 +1064,12 @@ class PhotoCaptureRecord {
     this.encryptedPayload,
     this.payloadIv,
     this.wrappedDataKey,
+    this.trade3TransactionId,
+    this.trade3PaymentScheduleId,
+    this.trade3UploadStatus,
+    this.trade3ErrorMessage,
+    this.trade3DocumentId,
+    this.trade3IpfsCid,
   });
 
   factory PhotoCaptureRecord.fromJson(Map<String, dynamic> json) {
@@ -1071,6 +1123,12 @@ class PhotoCaptureRecord {
       encryptedPayload: json['encryptedPayload'] as String?,
       payloadIv: json['payloadIv'] as String?,
       wrappedDataKey: json['wrappedDataKey'] as String?,
+      trade3TransactionId: json['trade3TransactionId'] as String?,
+      trade3PaymentScheduleId: json['trade3PaymentScheduleId'] as String?,
+      trade3UploadStatus: json['trade3UploadStatus'] as String?,
+      trade3ErrorMessage: json['trade3ErrorMessage'] as String?,
+      trade3DocumentId: json['trade3DocumentId'] as String?,
+      trade3IpfsCid: json['trade3IpfsCid'] as String?,
     );
   }
 
@@ -1107,6 +1165,12 @@ class PhotoCaptureRecord {
       encryptedPayload: record.encryptedPayload,
       payloadIv: record.payloadIv,
       wrappedDataKey: record.wrappedDataKey,
+      trade3TransactionId: record.trade3TransactionId,
+      trade3PaymentScheduleId: record.trade3PaymentScheduleId,
+      trade3UploadStatus: record.trade3UploadStatus,
+      trade3ErrorMessage: record.trade3ErrorMessage,
+      trade3DocumentId: record.trade3DocumentId,
+      trade3IpfsCid: record.trade3IpfsCid,
     );
   }
 
@@ -1141,6 +1205,12 @@ class PhotoCaptureRecord {
   final String? encryptedPayload;
   final String? payloadIv;
   final String? wrappedDataKey;
+  final String? trade3TransactionId;
+  final String? trade3PaymentScheduleId;
+  final String? trade3UploadStatus;
+  final String? trade3ErrorMessage;
+  final String? trade3DocumentId;
+  final String? trade3IpfsCid;
 
   AttestationRecord toAttestationRecord() {
     return AttestationRecord(
@@ -1176,6 +1246,12 @@ class PhotoCaptureRecord {
       encryptedPayload: encryptedPayload,
       payloadIv: payloadIv,
       wrappedDataKey: wrappedDataKey,
+      trade3TransactionId: trade3TransactionId,
+      trade3PaymentScheduleId: trade3PaymentScheduleId,
+      trade3UploadStatus: trade3UploadStatus,
+      trade3ErrorMessage: trade3ErrorMessage,
+      trade3DocumentId: trade3DocumentId,
+      trade3IpfsCid: trade3IpfsCid,
     );
   }
 
@@ -1212,6 +1288,12 @@ class PhotoCaptureRecord {
       'encryptedPayload': encryptedPayload,
       'payloadIv': payloadIv,
       'wrappedDataKey': wrappedDataKey,
+      'trade3TransactionId': trade3TransactionId,
+      'trade3PaymentScheduleId': trade3PaymentScheduleId,
+      'trade3UploadStatus': trade3UploadStatus,
+      'trade3ErrorMessage': trade3ErrorMessage,
+      'trade3DocumentId': trade3DocumentId,
+      'trade3IpfsCid': trade3IpfsCid,
     };
   }
 }
@@ -1249,6 +1331,12 @@ class UploadedFileRecord {
     this.encryptedPayload,
     this.payloadIv,
     this.wrappedDataKey,
+    this.trade3TransactionId,
+    this.trade3PaymentScheduleId,
+    this.trade3UploadStatus,
+    this.trade3ErrorMessage,
+    this.trade3DocumentId,
+    this.trade3IpfsCid,
   });
 
   factory UploadedFileRecord.fromJson(Map<String, dynamic> json) {
@@ -1302,6 +1390,12 @@ class UploadedFileRecord {
       encryptedPayload: json['encryptedPayload'] as String?,
       payloadIv: json['payloadIv'] as String?,
       wrappedDataKey: json['wrappedDataKey'] as String?,
+      trade3TransactionId: json['trade3TransactionId'] as String?,
+      trade3PaymentScheduleId: json['trade3PaymentScheduleId'] as String?,
+      trade3UploadStatus: json['trade3UploadStatus'] as String?,
+      trade3ErrorMessage: json['trade3ErrorMessage'] as String?,
+      trade3DocumentId: json['trade3DocumentId'] as String?,
+      trade3IpfsCid: json['trade3IpfsCid'] as String?,
     );
   }
 
@@ -1338,6 +1432,12 @@ class UploadedFileRecord {
       encryptedPayload: record.encryptedPayload,
       payloadIv: record.payloadIv,
       wrappedDataKey: record.wrappedDataKey,
+      trade3TransactionId: record.trade3TransactionId,
+      trade3PaymentScheduleId: record.trade3PaymentScheduleId,
+      trade3UploadStatus: record.trade3UploadStatus,
+      trade3ErrorMessage: record.trade3ErrorMessage,
+      trade3DocumentId: record.trade3DocumentId,
+      trade3IpfsCid: record.trade3IpfsCid,
     );
   }
 
@@ -1372,6 +1472,12 @@ class UploadedFileRecord {
   final String? encryptedPayload;
   final String? payloadIv;
   final String? wrappedDataKey;
+  final String? trade3TransactionId;
+  final String? trade3PaymentScheduleId;
+  final String? trade3UploadStatus;
+  final String? trade3ErrorMessage;
+  final String? trade3DocumentId;
+  final String? trade3IpfsCid;
 
   AttestationRecord toAttestationRecord() {
     return AttestationRecord(
@@ -1407,6 +1513,12 @@ class UploadedFileRecord {
       encryptedPayload: encryptedPayload,
       payloadIv: payloadIv,
       wrappedDataKey: wrappedDataKey,
+      trade3TransactionId: trade3TransactionId,
+      trade3PaymentScheduleId: trade3PaymentScheduleId,
+      trade3UploadStatus: trade3UploadStatus,
+      trade3ErrorMessage: trade3ErrorMessage,
+      trade3DocumentId: trade3DocumentId,
+      trade3IpfsCid: trade3IpfsCid,
     );
   }
 
@@ -1443,6 +1555,81 @@ class UploadedFileRecord {
       'encryptedPayload': encryptedPayload,
       'payloadIv': payloadIv,
       'wrappedDataKey': wrappedDataKey,
+      'trade3TransactionId': trade3TransactionId,
+      'trade3PaymentScheduleId': trade3PaymentScheduleId,
+      'trade3UploadStatus': trade3UploadStatus,
+      'trade3ErrorMessage': trade3ErrorMessage,
+      'trade3DocumentId': trade3DocumentId,
+      'trade3IpfsCid': trade3IpfsCid,
+    };
+  }
+}
+
+/// The Trade3 hierarchy target a capture will be pinned to (EP-04): one
+/// payment schedule inside one transaction inside one master contract.
+///
+/// While a Trade3 account is paired, this selection *is* the capture's
+/// project: [projectId] is what gets attested on-chain as `project_id`
+/// (an opaque byte vector to the contract), so a verifier can trace an
+/// attestation back to the Trade3 schedule without the app. Titles ride
+/// along purely for display; the ids are what get persisted and submitted.
+class Trade3TargetSelection {
+  const Trade3TargetSelection({
+    required this.masterContractId,
+    required this.masterContractTitle,
+    required this.transactionId,
+    required this.transactionTitle,
+    required this.paymentScheduleId,
+    required this.paymentScheduleTitle,
+  });
+
+  factory Trade3TargetSelection.fromJson(Map<String, dynamic> json) {
+    return Trade3TargetSelection(
+      masterContractId: json['masterContractId'] as String? ?? '',
+      masterContractTitle: json['masterContractTitle'] as String? ?? '',
+      transactionId: json['transactionId'] as String? ?? '',
+      transactionTitle: json['transactionTitle'] as String? ?? '',
+      paymentScheduleId: json['paymentScheduleId'] as String? ?? '',
+      paymentScheduleTitle: json['paymentScheduleTitle'] as String? ?? '',
+    );
+  }
+
+  /// Prefix marking a project id derived from a Trade3 selection, as opposed
+  /// to a locally generated UUID project.
+  static const String projectIdPrefix = 't3:';
+
+  static bool isTrade3ProjectId(String? projectId) =>
+      projectId != null && projectId.startsWith(projectIdPrefix);
+
+  final String masterContractId;
+  final String masterContractTitle;
+  final String transactionId;
+  final String transactionTitle;
+  final String paymentScheduleId;
+  final String paymentScheduleTitle;
+
+  /// Deterministic on-chain project id, shaped as the `t3:` prefix followed
+  /// by the master contract, transaction and payment schedule ids joined
+  /// with colons (for example `t3:12:45:101`). Numeric Trade3 ids are only unique within one
+  /// Trade3 environment, so the full path plus the `t3:` prefix keeps these
+  /// distinct from local UUID projects.
+  String get projectId =>
+      '$projectIdPrefix$masterContractId:$transactionId:$paymentScheduleId';
+
+  /// Human-readable breadcrumb stored as the local project title.
+  String get projectTitle =>
+      '$masterContractTitle › $transactionTitle › $paymentScheduleTitle';
+
+  String get displayLabel => projectTitle;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'masterContractId': masterContractId,
+      'masterContractTitle': masterContractTitle,
+      'transactionId': transactionId,
+      'transactionTitle': transactionTitle,
+      'paymentScheduleId': paymentScheduleId,
+      'paymentScheduleTitle': paymentScheduleTitle,
     };
   }
 }

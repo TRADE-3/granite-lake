@@ -1,0 +1,22 @@
+# Copy to app/android/key.properties (gitignored) and fill in your own keystore.
+#
+# storeFile resolves relative to app/android/app/ - "../" points at app/android/
+# (this directory); an absolute path also works. Without this file, release
+# builds are signed with the local debug key instead.
+#
+# Generate a keystore:
+#   keytool -genkeypair -v -keystore ../trade3-release.jks -alias trade3 \
+#     -keyalg RSA -keysize 2048 -validity 10000 -storetype PKCS12
+#
+# Print your certificate SHA-256 (needed for deep links, see below):
+#   keytool -list -v -keystore ../trade3-release.jks -alias trade3
+#
+# The signing certificate's SHA-256 must be registered in the assetlinks.json
+# served by granite.trade3.io (ask the backend team) - otherwise Android App
+# Links verification fails and pairing links open in the browser instead of the
+# app. Debug builds are signed with ~/.android/debug.keystore; register that
+# fingerprint too if you test deep links on flutter run builds.
+storeFile=../trade3-release.jks
+storePassword=your-store-password
+keyAlias=trade3
+keyPassword=your-key-password

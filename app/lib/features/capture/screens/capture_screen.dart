@@ -18,6 +18,7 @@ import '../../../core/services/time_sync_service.dart';
 import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../trade3/widgets/trade3_target_picker.dart';
 import '../../../core/utils/verified_email.dart';
 import '../../../core/utils/location_settings.dart';
 
@@ -780,8 +781,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final selectedProject = appController.selectedProject;
     if (selectedProject == null) {
       setState(() {
-        _errorMessage =
-            'Select an active project before submitting this capture.';
+        _errorMessage = appController.isTrade3Paired
+            ? 'Select a Trade3 payment schedule before submitting this capture.'
+            : 'Select an active project before submitting this capture.';
       });
       return;
     }
@@ -878,6 +880,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
       hasGps: metadata.hasGps,
       isGpsForcedNull: metadata.isGpsForcedNull,
       gpsNullReason: needsGpsReason ? gpsReasonText : null,
+      trade3TransactionId: appController.selectedTrade3Target?.transactionId,
+      trade3PaymentScheduleId:
+          appController.selectedTrade3Target?.paymentScheduleId,
       onProgress: (progress) {
         unawaited(_applySubmissionProgress(progress, submissionRunId));
       },
@@ -1408,9 +1413,14 @@ class _CaptureScreenState extends State<CaptureScreen> {
     if (stagedImagePath == null) {
       return const SizedBox.shrink();
     }
-    final projects = appController.projects;
+    final isTrade3Paired = appController.isTrade3Paired;
+    final projects = appController.localProjects;
     final selectedProjectId = appController.selectedProjectId;
-    final hasProjects = projects.isNotEmpty;
+    // Paired users pick a Trade3 payment schedule instead of a local
+    // project; it is required, since the schedule is the capture's project.
+    final hasProjects = isTrade3Paired
+        ? appController.selectedProject != null
+        : projects.isNotEmpty;
     // Whether this staged capture needs a crew-entered reason for that axis
     // (offline-capture design doc §4b) - gates both the reason fields below
     // and the SAVE CAPTURE button, mirroring _submitCapture's own check.
@@ -1496,9 +1506,15 @@ class _CaptureScreenState extends State<CaptureScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _SectionLabel(text: 'PROJECT ASSOCIATION'),
+                        _SectionLabel(
+                          text: isTrade3Paired
+                              ? 'PROJECT ASSOCIATION · TRADE3'
+                              : 'PROJECT ASSOCIATION',
+                        ),
                         const SizedBox(height: 8),
-                        if (hasProjects)
+                        if (isTrade3Paired)
+                          const Trade3TargetField()
+                        else if (hasProjects)
                           DropdownButtonFormField<String>(
                             initialValue: selectedProjectId,
                             isExpanded: true,

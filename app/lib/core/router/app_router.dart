@@ -9,6 +9,7 @@ import '../../features/history/screens/capture_detail_screen.dart';
 import '../../features/shell/screens/main_shell.dart';
 import '../../features/system/screens/boot_screen.dart';
 import '../../features/system/screens/local_data_init_screen.dart';
+import '../../features/trade3/screens/trade3_pairing_screen.dart';
 import '../../features/onboarding/screens/biometric_setup_screen.dart';
 import '../../features/onboarding/screens/identity_setup_screen.dart';
 import '../../features/onboarding/screens/welcome_screen.dart';
@@ -26,6 +27,7 @@ abstract final class AppRoutes {
   static const String capturePhoto = '/capture/photo';
   static const String captureFile = '/capture/file';
   static const String historyDetail = '/history-detail';
+  static const String pair = '/pair';
 }
 
 GoRouter createAppRouter(GraniteLakeController controller) {
@@ -70,6 +72,16 @@ GoRouter createAppRouter(GraniteLakeController controller) {
             : AppRoutes.registration;
       }
 
+      // A Trade3 pairing code can arrive via deep link at any point of
+      // onboarding (fresh install opened straight from a QR code). It waits
+      // as "pending" until registration completes, then the pairing screen
+      // takes over; the screen consumes the code on open, so this cannot
+      // loop.
+      if (controller.pendingTrade3PairingCode != null &&
+          location != AppRoutes.pair) {
+        return AppRoutes.pair;
+      }
+
       if ((location == AppRoutes.capture ||
               location == AppRoutes.capturePhoto ||
               location == AppRoutes.captureFile) &&
@@ -108,6 +120,14 @@ GoRouter createAppRouter(GraniteLakeController controller) {
         path: AppRoutes.registration,
         pageBuilder: (context, state) =>
             const MaterialPage(child: RegistrationScreen()),
+      ),
+      GoRoute(
+        path: AppRoutes.pair,
+        pageBuilder: (context, state) => NoTransitionPage(
+          child: Trade3PairingScreen(
+            routeCode: state.uri.queryParameters['code'],
+          ),
+        ),
       ),
       GoRoute(
         path: AppRoutes.identitySetup,

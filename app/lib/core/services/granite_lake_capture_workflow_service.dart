@@ -55,6 +55,8 @@ class GraniteLakeCaptureWorkflowService {
     bool hasGps = true,
     bool isGpsForcedNull = false,
     String? gpsNullReason,
+    String? trade3TransactionId,
+    String? trade3PaymentScheduleId,
   }) async {
     var currentStage = AttestationSubmissionStage.signing;
     try {
@@ -92,6 +94,8 @@ class GraniteLakeCaptureWorkflowService {
         hasGps: hasGps,
         isGpsForcedNull: isGpsForcedNull,
         gpsNullReason: gpsNullReason,
+        trade3TransactionId: trade3TransactionId,
+        trade3PaymentScheduleId: trade3PaymentScheduleId,
       );
 
       onProgress?.call(
@@ -154,6 +158,8 @@ class GraniteLakeCaptureWorkflowService {
     bool isOnline = true,
     bool isForcedOffline = false,
     String? internetNullReason,
+    String? trade3TransactionId,
+    String? trade3PaymentScheduleId,
   }) async {
     var currentStage = AttestationSubmissionStage.signing;
     try {
@@ -192,6 +198,8 @@ class GraniteLakeCaptureWorkflowService {
           'fileSizeBytes': fileSizeBytes,
           'fileId': provisionalId,
         },
+        trade3TransactionId: trade3TransactionId,
+        trade3PaymentScheduleId: trade3PaymentScheduleId,
       );
 
       onProgress?.call(
@@ -250,6 +258,8 @@ class GraniteLakeCaptureWorkflowService {
     DateTime? capturedAtUtc,
     DateTime? submittedAtUtc,
     String? buildLabel,
+    String? trade3TransactionId,
+    String? trade3PaymentScheduleId,
     String? gpsLabel,
     String? altitudeLabel,
     String? cameraLabel,
@@ -414,6 +424,20 @@ class GraniteLakeCaptureWorkflowService {
       wrappedDataKeyBase64 = encrypted.wrappedDataKeyBase64;
     }
 
+    final normalizedTrade3TransactionId =
+        (trade3TransactionId ?? '').trim().isEmpty
+        ? null
+        : trade3TransactionId!.trim();
+    final normalizedTrade3PaymentScheduleId =
+        (trade3PaymentScheduleId ?? '').trim().isEmpty
+        ? null
+        : trade3PaymentScheduleId!.trim();
+    // A target only counts when both ids arrived; partial selections (the
+    // picker only ever completes with both) upload nothing.
+    final hasTrade3Target =
+        normalizedTrade3TransactionId != null &&
+        normalizedTrade3PaymentScheduleId != null;
+
     final record = AttestationRecord(
       captureId: captureId,
       capturedAt: capturedAt,
@@ -453,6 +477,9 @@ class GraniteLakeCaptureWorkflowService {
       encryptedPayload: encryptedPayloadBase64,
       payloadIv: payloadIvBase64,
       wrappedDataKey: wrappedDataKeyBase64,
+      trade3TransactionId: normalizedTrade3TransactionId,
+      trade3PaymentScheduleId: normalizedTrade3PaymentScheduleId,
+      trade3UploadStatus: hasTrade3Target ? 'PENDING' : null,
     );
 
     final sourceFile = File(sourcePath);
