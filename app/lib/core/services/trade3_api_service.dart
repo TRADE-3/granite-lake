@@ -249,6 +249,18 @@ class Trade3ApiException implements Exception {
   String toString() => 'Trade3ApiException: $rawMessage';
 }
 
+/// EP-04 answered 2xx, but the response doesn't prove the files were pinned
+/// as sent (wrong count, missing ids/hashes, another schedule, or a hash that
+/// differs from the local file). The server may already hold the file, so
+/// this is definitive: callers must not blindly retry the upload.
+class Trade3UploadVerificationException extends Trade3ApiException {
+  const Trade3UploadVerificationException({
+    required super.userMessage,
+    required super.rawMessage,
+    super.statusCode,
+  });
+}
+
 /// The paired Trade3 session is gone (no stored tokens, or the backend
 /// rejected a refresh). Callers treat this as "back to unpaired" — clear any
 /// cached pairing state and route the user to pairing again.
@@ -345,9 +357,9 @@ class Trade3ApiService {
   Future<List<Trade3MasterContract>> syncHierarchy() async {
     try {
       final response = await _sendAuthorized(
-        (accessToken) =>
+        (tokens) =>
             http.Request('GET', endpointUri(_hierarchyPath))
-              ..headers['Authorization'] = 'Bearer $accessToken',
+              ..headers['Authorization'] = 'Bearer ${tokens.accessToken}',
       );
       final payload = await _readJsonPayload(response);
       if (!_isSuccess(response.statusCode)) {
@@ -406,12 +418,12 @@ class Trade3ApiService {
     required List<Trade3UploadFile> files,
   }) async {
     try {
-      final response = await _sendAuthorized((accessToken) {
+      final response = await _sendAuthorized((tokens) {
         final request =
             http.MultipartRequest('POST', endpointUri(_pinDocumentsPath))
               ..fields['transaction_id'] = transactionId
               ..fields['payment_schedule_id'] = paymentScheduleId
-              ..headers['Authorization'] = 'Bearer $accessToken';
+              ..headers['Authorization'] = 'Bearer ${tokens.accessToken}';
         for (final file in files) {
           request.files.add(
             http.MultipartFile.fromBytes(
@@ -431,7 +443,11 @@ class Trade3ApiService {
           'The upload to Trade3 failed. Try again in a moment.',
         );
       }
-      return _parsePinnedDocuments(payload);
+      return _verifyPinned(
+        _parsePinnedDocuments(payload),
+        paymentScheduleId: paymentScheduleId,
+        expectedCount: files.length,
+      );
     } on Trade3ApiException {
       rethrow;
     } on FormatException catch (error) {
@@ -447,12 +463,15 @@ class Trade3ApiService {
   /// network failures keep the tokens so the user can retry.
   Future<void> disconnect() async {
     try {
-      final response = await _sendAuthorized((accessToken) {
-        // EP-05 posts JSON per the contract; no body fields are defined.
+      final response = await _sendAuthorized((tokens) {
+        // The backend rejects EP-05 with "refresh token is required" when
+        // the body omits it (the contract doc lists no body). It is the
+        // session being revoked, so send the current (possibly just
+        // rotated) refresh token alongside the bearer access token.
         final request = http.Request('POST', endpointUri(_logoutPath))
-          ..headers['Authorization'] = 'Bearer $accessToken';
+          ..headers['Authorization'] = 'Bearer ${tokens.accessToken}';
         request.headers['Content-Type'] = 'application/json; charset=utf-8';
-        request.body = jsonEncode(const <String, dynamic>{});
+        request.body = jsonEncode({'refresh_token': tokens.refreshToken});
         return request;
       });
       final payload = await _readJsonPayload(response);
@@ -481,7 +500,7 @@ class Trade3ApiService {
   /// and retrying once when it comes back 401. A 401 that survives the
   /// refresh clears the tokens — the paired session is dead.
   Future<http.StreamedResponse> _sendAuthorized(
-    http.BaseRequest Function(String accessToken) buildRequest,
+    http.BaseRequest Function(Trade3Tokens tokens) buildRequest,
   ) async {
     var tokens = await _tokenStore.read();
     if (tokens == null) {
@@ -491,13 +510,13 @@ class Trade3ApiService {
       );
     }
 
-    var response = await _httpClient.send(buildRequest(tokens.accessToken));
+    var response = await _httpClient.send(buildRequest(tokens));
     if (response.statusCode != 401) {
       return response;
     }
 
     tokens = await _refreshTokens();
-    response = await _httpClient.send(buildRequest(tokens.accessToken));
+    response = await _httpClient.send(buildRequest(tokens));
     if (response.statusCode == 401) {
       await _tokenStore.clear();
       throw const Trade3UnauthenticatedException(
@@ -604,6 +623,55 @@ class Trade3ApiService {
       );
     }
     return _mapList(documentsNode, Trade3PinnedDocument.fromJson);
+  }
+
+  /// A 2xx from EP-04 only means the request was accepted. Confirms the
+  /// response accounts for every file sent: one record each, with an id and
+  /// hash, filed under the requested payment schedule.
+  List<Trade3PinnedDocument> _verifyPinned(
+    List<Trade3PinnedDocument> pinned, {
+    required String paymentScheduleId,
+    required int expectedCount,
+  }) {
+    Trade3UploadVerificationException failure(String detail) {
+      return Trade3UploadVerificationException(
+        userMessage:
+            'Trade3 did not confirm the upload. Check the payment schedule '
+            'in Trade3 before trying again.',
+        rawMessage: 'EP-04 response failed verification: $detail',
+      );
+    }
+
+    if (pinned.length != expectedCount) {
+      throw failure('expected $expectedCount documents, got ${pinned.length}.');
+    }
+    for (final document in pinned) {
+      if (document.id.isEmpty) {
+        throw failure('a pinned document has no id.');
+      }
+      if (document.documentHash.isEmpty) {
+        throw failure('document ${document.id} has no document_hash.');
+      }
+      if (document.paymentScheduleId != paymentScheduleId) {
+        throw failure(
+          'document ${document.id} was filed under schedule '
+          '"${document.paymentScheduleId}", not "$paymentScheduleId".',
+        );
+      }
+    }
+    return pinned;
+  }
+
+  /// Compares a hash reported by Trade3 with the local SHA-256 (hex, any
+  /// case, optional `0x` prefix).
+  static bool hashesMatch(String remote, String local) {
+    String normalize(String value) {
+      final lower = value.trim().toLowerCase();
+      return lower.startsWith('0x') ? lower.substring(2) : lower;
+    }
+
+    final normalizedRemote = normalize(remote);
+    return normalizedRemote.isNotEmpty && normalizedRemote == normalize(local);
   }
 
   static bool _isSuccess(int statusCode) =>

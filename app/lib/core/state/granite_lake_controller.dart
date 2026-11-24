@@ -2000,13 +2000,31 @@ class GraniteLakeController extends ChangeNotifier {
         paymentScheduleId: record.trade3PaymentScheduleId!,
         files: [Trade3UploadFile(filename: record.assetName, bytes: bytes)],
       );
-      final pinnedDocument = pinned.isEmpty ? null : pinned.first;
+      // One file went up, so exactly one record came back (verified by the
+      // service). The server's hash must be the hash of the file we anchored
+      // on Sui - otherwise "uploaded" would not mean "the same bytes".
+      final pinnedDocument = pinned.single;
+      if (!Trade3ApiService.hashesMatch(
+        pinnedDocument.documentHash,
+        record.contentSha256,
+      )) {
+        await _updateAttestationRecord(
+          record,
+          trade3UploadStatus: 'FAILED',
+          trade3ErrorMessage:
+              'Trade3 stored this file under a different hash than the one '
+              'recorded on-chain, so the upload was not accepted as verified.',
+          trade3DocumentId: pinnedDocument.id,
+        );
+        notifyListeners();
+        return;
+      }
       await _updateAttestationRecord(
         record,
         trade3UploadStatus: 'UPLOADED',
         trade3ErrorMessage: '',
-        trade3DocumentId: pinnedDocument?.id ?? '',
-        trade3IpfsCid: pinnedDocument?.ipfsCid ?? '',
+        trade3DocumentId: pinnedDocument.id,
+        trade3IpfsCid: pinnedDocument.ipfsCid,
       );
       notifyListeners();
     } on Trade3UnauthenticatedException catch (error) {
@@ -2015,6 +2033,15 @@ class GraniteLakeController extends ChangeNotifier {
       await _updateAttestationRecord(
         record,
         trade3UploadStatus: 'PENDING',
+        trade3ErrorMessage: error.userMessage,
+      );
+      notifyListeners();
+    } on Trade3UploadVerificationException catch (error) {
+      // Accepted by the server but not confirmed - it may already hold the
+      // file, so retrying blindly could duplicate it.
+      await _updateAttestationRecord(
+        record,
+        trade3UploadStatus: 'FAILED',
         trade3ErrorMessage: error.userMessage,
       );
       notifyListeners();

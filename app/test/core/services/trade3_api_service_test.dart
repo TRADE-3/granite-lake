@@ -359,6 +359,7 @@ void main() {
               'document_hash':
                   'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
             },
+            {'id': 611, 'payment_schedule_id': 101, 'document_hash': 'ab12'},
           ],
         });
       });
@@ -376,11 +377,11 @@ void main() {
         ],
       );
 
-      expect(pinned, hasLength(1));
-      expect(pinned.single.id, '610');
-      expect(pinned.single.paymentScheduleId, '101');
+      expect(pinned, hasLength(2));
+      expect(pinned.first.id, '610');
+      expect(pinned.first.paymentScheduleId, '101');
       expect(
-        pinned.single.documentHash,
+        pinned.first.documentHash,
         'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
       );
     });
@@ -399,6 +400,7 @@ void main() {
                   'id': '${uploads.length * 10 + i}',
                   'payment_schedule_id':
                       multipart.fields['payment_schedule_id'],
+                  'document_hash': 'h${uploads.length}_$i',
                   'file_name': 'p$i.jpg',
                   'is_verified_by_granite': true,
                 },
@@ -437,6 +439,88 @@ void main() {
     );
   });
 
+  group('uploadDocuments response verification', () {
+    Future<Object?> upload(Map<String, dynamic> body) async {
+      final h = _harness((request) async => _jsonResponse(body));
+      h.store.tokens = const Trade3Tokens(
+        accessToken: 'a1',
+        refreshToken: 'r1',
+      );
+      try {
+        return await h.service.uploadDocuments(
+          transactionId: '45',
+          paymentScheduleId: '101',
+          files: const [
+            Trade3UploadFile(filename: 'p.jpg', bytes: [1]),
+          ],
+        );
+      } catch (error) {
+        return error;
+      }
+    }
+
+    Map<String, dynamic> doc({
+      Object? id = 610,
+      Object? schedule = 101,
+      Object? hash = 'ab12',
+    }) => {'id': id, 'payment_schedule_id': schedule, 'document_hash': hash};
+
+    test('accepts one complete record per file', () async {
+      final result = await upload({
+        'documents': [doc()],
+      });
+      expect(result, isA<List<Trade3PinnedDocument>>());
+    });
+
+    test('rejects an empty documents list', () async {
+      expect(
+        await upload({'documents': <Object>[]}),
+        isA<Trade3UploadVerificationException>(),
+      );
+    });
+
+    test('rejects fewer records than files', () async {
+      final h = _harness(
+        (request) async => _jsonResponse({
+          'documents': [doc()],
+        }),
+      );
+      h.store.tokens = const Trade3Tokens(
+        accessToken: 'a1',
+        refreshToken: 'r1',
+      );
+      await expectLater(
+        h.service.uploadDocuments(
+          transactionId: '45',
+          paymentScheduleId: '101',
+          files: const [
+            Trade3UploadFile(filename: 'a.jpg', bytes: [1]),
+            Trade3UploadFile(filename: 'b.jpg', bytes: [2]),
+          ],
+        ),
+        throwsA(isA<Trade3UploadVerificationException>()),
+      );
+    });
+
+    test('rejects a record with no id, no hash, or another schedule', () async {
+      for (final bad in [doc(id: ''), doc(hash: ''), doc(schedule: 999)]) {
+        expect(
+          await upload({
+            'documents': [bad],
+          }),
+          isA<Trade3UploadVerificationException>(),
+        );
+      }
+    });
+
+    test('hashesMatch ignores case, whitespace and a 0x prefix', () {
+      expect(Trade3ApiService.hashesMatch('0xABCD', 'abcd'), isTrue);
+      expect(Trade3ApiService.hashesMatch(' abcd ', 'ABCD'), isTrue);
+      expect(Trade3ApiService.hashesMatch('abcd', 'abce'), isFalse);
+      expect(Trade3ApiService.hashesMatch('', ''), isFalse);
+    });
+  });
+
   group('disconnect (EP-05)', () {
     test('clears tokens after a successful logout', () async {
       final h = _harness(
@@ -451,6 +535,26 @@ void main() {
 
       expect(h.client.requestedPaths, ['/api/auth/logout']);
       expect(h.store.tokens, isNull);
+    });
+
+    test('sends the refresh token in the logout body', () async {
+      Map<String, dynamic>? body;
+      String? auth;
+      final h = _harness((request) async {
+        final plain = request as http.Request;
+        auth = plain.headers['Authorization'];
+        body = jsonDecode(plain.body) as Map<String, dynamic>;
+        return _jsonResponse({'message': 'Logged out'});
+      });
+      h.store.tokens = const Trade3Tokens(
+        accessToken: 'a1',
+        refreshToken: 'r1',
+      );
+
+      await h.service.disconnect();
+
+      expect(auth, 'Bearer a1');
+      expect(body, {'refresh_token': 'r1'});
     });
 
     test('treats an already-dead session as unlinked locally', () async {
