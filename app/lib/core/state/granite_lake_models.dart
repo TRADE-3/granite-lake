@@ -33,6 +33,7 @@ enum AttestationSubmissionStage {
   signing,
   savingLocalRecord,
   submittingToChain,
+  uploadingToTrade3,
   refreshingHistory,
 }
 

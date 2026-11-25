@@ -14,6 +14,15 @@ class ProjectsScreen extends StatefulWidget {
 }
 
 class _ProjectsScreenState extends State<ProjectsScreen> {
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
   Future<void> _showCreateProjectDialog() async {
     final created = await showDialog<bool>(
       context: context,
@@ -56,6 +65,20 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
       captureCounts[projectId] = (captureCounts[projectId] ?? 0) + 1;
     }
 
+    // The bar only appears when there is something to search; a stale query
+    // must not keep filtering once it is hidden.
+    final canSearch = isPaired
+        ? controller.trade3Hierarchy?.isNotEmpty ?? false
+        : projects.isNotEmpty;
+    final query = canSearch ? _searchQuery : '';
+    final visibleProjects = projects
+        .where(
+          (project) =>
+              project.title.toLowerCase().contains(query) ||
+              project.projectId.toLowerCase().contains(query),
+        )
+        .toList();
+
     return Scaffold(
       backgroundColor: AppColors.background,
       floatingActionButton: isPaired || projects.isEmpty
@@ -71,49 +94,82 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'ASSIGNED OPERATIONS REGISTRY',
-                          style: AppTextStyles.labelMedium.copyWith(
-                            color: AppColors.textSecondary,
-                            letterSpacing: 1.1,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Projects',
-                          style: AppTextStyles.displayMedium.copyWith(
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          isPaired
-                              ? 'Tap a payment schedule to make it the active project for capture.'
-                              : projects.isEmpty
-                              ? 'Create one project to unlock capture.'
-                              : 'Tap a project to make it active for capture.',
-                          style: AppTextStyles.bodyMedium.copyWith(
-                            color: AppColors.textSecondary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+              Text(
+                'Projects',
+                style: AppTextStyles.displayMedium.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                isPaired
+                    ? 'Tap a payment schedule to make it the active project for capture.'
+                    : projects.isEmpty
+                    ? 'Create one project to unlock capture.'
+                    : 'Tap a project to make it active for capture.',
+                style: AppTextStyles.bodyMedium.copyWith(
+                  color: AppColors.textSecondary,
+                  height: 1.4,
+                ),
               ),
               const SizedBox(height: 16),
+              if (canSearch) ...[
+                TextField(
+                  controller: _searchController,
+                  onChanged: (value) {
+                    setState(() => _searchQuery = value.trim().toLowerCase());
+                  },
+                  textInputAction: TextInputAction.search,
+                  style: AppTextStyles.bodyMedium.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Search projects',
+                    hintStyle: AppTextStyles.bodyMedium.copyWith(
+                      color: AppColors.textMuted,
+                    ),
+                    prefixIcon: Icon(
+                      Icons.search_rounded,
+                      color: AppColors.textSecondary,
+                    ),
+                    suffixIcon: _searchQuery.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Clear search',
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _searchQuery = '');
+                            },
+                            icon: Icon(
+                              Icons.close_rounded,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                    filled: true,
+                    fillColor: AppColors.surface,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 14,
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: AppColors.borderActive),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: AppColors.primary),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+              ],
               Expanded(
                 child: ListView(
                   padding: const EdgeInsets.only(bottom: 32),
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.onDrag,
                   children: [
-                    const Trade3HierarchySection(),
+                    Trade3HierarchySection(query: query),
                     // Paired: the Trade3 payment schedules above are the
                     // projects, so the local registry is hidden.
                     if (!isPaired) ...[
@@ -132,19 +188,23 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                             onCreatePressed: _showCreateProjectDialog,
                           ),
                         )
+                      else if (visibleProjects.isEmpty)
+                        Text(
+                          'No projects match your search.',
+                          style: AppTextStyles.bodyMedium.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                        )
                       else
-                        for (var index = 0; index < projects.length; index++)
+                        for (final project in visibleProjects)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 10),
                             child: _ProjectCard(
-                              project: projects[index],
+                              project: project,
                               captureCount:
-                                  captureCounts[projects[index].projectId] ?? 0,
-                              isActive:
-                                  projects[index].projectId ==
-                                  selectedProjectId,
-                              onTap: () =>
-                                  _selectProject(projects[index].projectId),
+                                  captureCounts[project.projectId] ?? 0,
+                              isActive: project.projectId == selectedProjectId,
+                              onTap: () => _selectProject(project.projectId),
                             ),
                           ),
                     ],
@@ -299,64 +359,47 @@ class _ProjectCard extends StatelessWidget {
               color: isActive ? AppColors.statusActive : AppColors.borderActive,
             ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
             children: [
-              Row(
-                children: [
-                  Text(
-                    isActive ? 'ACTIVE' : 'STANDBY',
-                    style: AppTextStyles.labelMedium.copyWith(
-                      color: isActive
-                          ? AppColors.statusActive
-                          : AppColors.textSecondary,
-                      letterSpacing: 1.0,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      project.projectId,
-                      style: AppTextStyles.labelSmall.copyWith(
-                        color: AppColors.textSecondary,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      project.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppTextStyles.headlineMedium.copyWith(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        height: 1.3,
                       ),
                     ),
-                  ),
-                  Icon(
-                    isActive
-                        ? Icons.radio_button_checked_rounded
-                        : Icons.radio_button_unchecked_rounded,
-                    color: isActive
-                        ? AppColors.statusActive
-                        : AppColors.textMuted,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                project.title,
-                style: AppTextStyles.headlineMedium.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '$captureCount captures',
+                    const SizedBox(height: 6),
+                    Text(
+                      project.projectId,
+                      style: AppTextStyles.labelSmall.copyWith(
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '$captureCount ${captureCount == 1 ? 'capture' : 'captures'}'
+                      ' · ${_formatProjectDate(project.createdAt)}',
                       style: AppTextStyles.bodySmall.copyWith(
                         color: AppColors.textSecondary,
                       ),
                     ),
-                  ),
-                  Text(
-                    _formatProjectDate(project.createdAt),
-                    style: AppTextStyles.bodySmall.copyWith(
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Icon(
+                isActive
+                    ? Icons.radio_button_checked_rounded
+                    : Icons.radio_button_unchecked_rounded,
+                color: isActive ? AppColors.statusActive : AppColors.textMuted,
+                semanticLabel: isActive ? 'Active project' : 'Not active',
               ),
             ],
           ),

@@ -14,7 +14,10 @@ import '../../../core/state/granite_lake_controller.dart';
 /// demand (the last sync is cached for offline use). Tapping a payment
 /// schedule makes it the active project for capture.
 class Trade3HierarchySection extends StatelessWidget {
-  const Trade3HierarchySection({super.key});
+  const Trade3HierarchySection({super.key, this.query = ''});
+
+  /// Lower-cased search text; empty shows the whole tree.
+  final String query;
 
   @override
   Widget build(BuildContext context) {
@@ -26,30 +29,39 @@ class Trade3HierarchySection extends StatelessWidget {
       return const _LinkAccountCard();
     }
 
+    final matches = [
+      for (final contract in hierarchy ?? const <Trade3MasterContract>[])
+        ?_ContractMatch.of(contract, query),
+    ];
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
             Expanded(
-              child: Text(
-                'TRADE3 PROJECTS',
-                style: AppTextStyles.labelMedium.copyWith(
-                  color: AppColors.textSecondary,
-                  letterSpacing: 1.1,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'TRADE3 PROJECTS',
+                    style: AppTextStyles.labelMedium.copyWith(
+                      color: AppColors.textSecondary,
+                      letterSpacing: 1.1,
+                    ),
+                  ),
+                  if (controller.trade3HierarchySyncedAt != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      'Synced ${formatSyncStamp(controller.trade3HierarchySyncedAt!)}',
+                      style: AppTextStyles.labelSmall.copyWith(
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
-            if (controller.trade3HierarchySyncedAt != null)
-              Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: Text(
-                  'Synced ${formatSyncStamp(controller.trade3HierarchySyncedAt!)}',
-                  style: AppTextStyles.labelSmall.copyWith(
-                    color: AppColors.textMuted,
-                  ),
-                ),
-              ),
             isSyncing
                 ? const SizedBox(
                     width: 20,
@@ -73,19 +85,80 @@ class Trade3HierarchySection extends StatelessWidget {
         ],
         if (hierarchy == null || hierarchy.isEmpty)
           _EmptyHierarchyState(isFirstSync: hierarchy == null)
+        else if (matches.isEmpty)
+          Text(
+            'No projects match your search.',
+            style: AppTextStyles.bodyMedium.copyWith(
+              color: AppColors.textSecondary,
+            ),
+          )
         else
-          ...List.generate(hierarchy.length, (index) {
-            return Padding(
+          for (var index = 0; index < matches.length; index++)
+            Padding(
               padding: EdgeInsets.only(
-                bottom: index == hierarchy.length - 1 ? 0 : 10,
+                bottom: index == matches.length - 1 ? 0 : 10,
               ),
-              child: _MasterContractCard(contract: hierarchy[index]),
-            );
-          }),
+              child: _MasterContractCard(
+                // Keyed on search mode so cards re-apply their default
+                // expansion when a search starts or ends.
+                key: ValueKey((matches[index].contract.id, query.isEmpty)),
+                match: matches[index],
+              ),
+            ),
       ],
     );
   }
 }
+
+/// A contract narrowed to what matches the search. A hit on a parent keeps all
+/// of its children; a hit on a child keeps just that branch and expands to it.
+class _ContractMatch {
+  const _ContractMatch(this.contract, this.transactions, this.expand);
+
+  final Trade3MasterContract contract;
+  final List<_TransactionMatch> transactions;
+  final bool expand;
+
+  static _ContractMatch? of(Trade3MasterContract contract, String query) {
+    final selfMatches =
+        query.isEmpty ||
+        contract.title.toLowerCase().contains(query) ||
+        contract.reference.toLowerCase().contains(query);
+    final transactions = <_TransactionMatch>[];
+    for (final transaction in contract.transactions) {
+      final keepAll =
+          selfMatches || transaction.title.toLowerCase().contains(query);
+      final schedules = keepAll
+          ? transaction.paymentSchedules
+          : transaction.paymentSchedules
+                .where((s) => s.title.toLowerCase().contains(query))
+                .toList();
+      if (keepAll || schedules.isNotEmpty) {
+        transactions.add(
+          _TransactionMatch(transaction, schedules, expand: !keepAll),
+        );
+      }
+    }
+    if (!selfMatches && transactions.isEmpty) {
+      return null;
+    }
+    return _ContractMatch(contract, transactions, !selfMatches);
+  }
+}
+
+class _TransactionMatch {
+  const _TransactionMatch(
+    this.transaction,
+    this.schedules, {
+    required this.expand,
+  });
+
+  final Trade3Transaction transaction;
+  final List<Trade3PaymentSchedule> schedules;
+  final bool expand;
+}
+
+String _count(int count, String noun) => '$count $noun${count == 1 ? '' : 's'}';
 
 class _LinkAccountCard extends StatelessWidget {
   const _LinkAccountCard();
@@ -239,20 +312,20 @@ class _EmptyHierarchyState extends StatelessWidget {
 }
 
 class _MasterContractCard extends StatefulWidget {
-  const _MasterContractCard({required this.contract});
+  const _MasterContractCard({super.key, required this.match});
 
-  final Trade3MasterContract contract;
+  final _ContractMatch match;
 
   @override
   State<_MasterContractCard> createState() => _MasterContractCardState();
 }
 
 class _MasterContractCardState extends State<_MasterContractCard> {
-  bool _expanded = false;
+  late bool _expanded = widget.match.expand;
 
   @override
   Widget build(BuildContext context) {
-    final contract = widget.contract;
+    final contract = widget.match.contract;
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
@@ -264,7 +337,7 @@ class _MasterContractCardState extends State<_MasterContractCard> {
           _ExpandableHeader(
             title: contract.title,
             caption: contract.reference.isEmpty
-                ? '${contract.transactions.length} transactions'
+                ? _count(contract.transactions.length, 'transaction')
                 : contract.reference,
             status: contract.status,
             expanded: _expanded,
@@ -275,10 +348,11 @@ class _MasterContractCardState extends State<_MasterContractCard> {
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
               child: Column(
                 children: [
-                  for (var i = 0; i < contract.transactions.length; i++)
+                  for (final match in widget.match.transactions)
                     _TransactionCard(
+                      key: ValueKey(match.transaction.id),
                       contract: contract,
-                      transaction: contract.transactions[i],
+                      match: match,
                     ),
                 ],
               ),
@@ -290,21 +364,25 @@ class _MasterContractCardState extends State<_MasterContractCard> {
 }
 
 class _TransactionCard extends StatefulWidget {
-  const _TransactionCard({required this.contract, required this.transaction});
+  const _TransactionCard({
+    super.key,
+    required this.contract,
+    required this.match,
+  });
 
   final Trade3MasterContract contract;
-  final Trade3Transaction transaction;
+  final _TransactionMatch match;
 
   @override
   State<_TransactionCard> createState() => _TransactionCardState();
 }
 
 class _TransactionCardState extends State<_TransactionCard> {
-  bool _expanded = false;
+  late bool _expanded = widget.match.expand;
 
   @override
   Widget build(BuildContext context) {
-    final transaction = widget.transaction;
+    final transaction = widget.match.transaction;
     return Container(
       margin: const EdgeInsets.only(top: 10),
       decoration: BoxDecoration(
@@ -316,7 +394,10 @@ class _TransactionCardState extends State<_TransactionCard> {
         children: [
           _ExpandableHeader(
             title: transaction.title,
-            caption: '${transaction.paymentSchedules.length} payment schedules',
+            caption: _count(
+              transaction.paymentSchedules.length,
+              'payment schedule',
+            ),
             status: transaction.status,
             expanded: _expanded,
             dense: true,
@@ -327,11 +408,12 @@ class _TransactionCardState extends State<_TransactionCard> {
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
               child: Column(
                 children: [
-                  for (var i = 0; i < transaction.paymentSchedules.length; i++)
+                  for (final schedule in widget.match.schedules)
                     _PaymentScheduleTile(
+                      key: ValueKey(schedule.id),
                       contract: widget.contract,
                       transaction: transaction,
-                      schedule: transaction.paymentSchedules[i],
+                      schedule: schedule,
                     ),
                 ],
               ),
@@ -344,6 +426,7 @@ class _TransactionCardState extends State<_TransactionCard> {
 
 class _PaymentScheduleTile extends StatefulWidget {
   const _PaymentScheduleTile({
+    super.key,
     required this.contract,
     required this.transaction,
     required this.schedule,
@@ -414,7 +497,7 @@ class _PaymentScheduleTileState extends State<_PaymentScheduleTile> {
             onTap: () => _select(context, controller),
             borderRadius: BorderRadius.circular(8),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
               child: Row(
                 children: [
                   Icon(
@@ -452,7 +535,7 @@ class _PaymentScheduleTileState extends State<_PaymentScheduleTile> {
                         child: Row(
                           children: [
                             Text(
-                              '${schedule.documents.length} docs',
+                              _count(schedule.documents.length, 'doc'),
                               style: AppTextStyles.labelSmall.copyWith(
                                 color: AppColors.textMuted,
                               ),
@@ -540,7 +623,7 @@ class _ExpandableHeader extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
         child: Row(
           children: [
             Expanded(
@@ -549,42 +632,70 @@ class _ExpandableHeader extends StatelessWidget {
                 children: [
                   Text(
                     title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                     style:
                         (dense
                                 ? AppTextStyles.labelLarge
                                 : AppTextStyles.headlineMedium)
                             .copyWith(
                               color: AppColors.textPrimary,
-                              fontSize: dense ? 14 : 17,
+                              fontSize: dense ? 14 : 16,
                               fontWeight: FontWeight.w700,
+                              height: 1.3,
                             ),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    caption,
-                    style: AppTextStyles.labelSmall.copyWith(
-                      color: AppColors.textMuted,
-                    ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      if (status.isNotEmpty) _StatusChip(status: status),
+                      Text(
+                        caption,
+                        style: AppTextStyles.labelSmall.copyWith(
+                          color: AppColors.textMuted,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
             const SizedBox(width: 8),
-            if (status.isNotEmpty)
-              Text(
-                status.toUpperCase(),
-                style: AppTextStyles.labelSmall.copyWith(
-                  color: status.toUpperCase() == 'COMPLETED'
-                      ? AppColors.textMuted
-                      : AppColors.statusActive,
-                  letterSpacing: 0.8,
-                ),
-              ),
             Icon(
               expanded ? Icons.expand_less_rounded : Icons.expand_more_rounded,
               color: AppColors.textSecondary,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StatusChip extends StatelessWidget {
+  const _StatusChip({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = status.toUpperCase() == 'COMPLETED'
+        ? AppColors.textMuted
+        : AppColors.statusActive;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withAlpha(24),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        status.toUpperCase().replaceAll('_', ' '),
+        style: AppTextStyles.labelSmall.copyWith(
+          color: color,
+          letterSpacing: 0.6,
         ),
       ),
     );

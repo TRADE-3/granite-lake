@@ -84,7 +84,8 @@ class GraniteLakeController extends ChangeNotifier {
   // The sticky hierarchy target new captures get pinned to - like the local
   // project selection, set from the capture flow and read at persist time.
   Trade3TargetSelection? _selectedTrade3Target;
-  final Set<String> _trade3UploadsInFlight = {};
+  final Map<String, Future<void>> _trade3UploadsInFlight = {};
+  bool _trade3ResyncRequested = false;
 
   static const String _queueEncryptionLogTag = '[QueueEncryption]';
   // Offline-queue at-rest encryption (offline-capture design doc §7.3,
@@ -1490,6 +1491,7 @@ class GraniteLakeController extends ChangeNotifier {
             : 'Verification record accepted.',
       ),
     );
+    final pinnedRecord = await _uploadToTrade3WithProgress(record, onProgress);
     onProgress?.call(
       const AttestationSubmissionProgress(
         stage: AttestationSubmissionStage.refreshingHistory,
@@ -1497,8 +1499,8 @@ class GraniteLakeController extends ChangeNotifier {
         message: 'Updating your records.',
       ),
     );
-    final photoRecord = PhotoCaptureRecord.fromAttestationRecord(record);
-    _lastAttestation = record;
+    final photoRecord = PhotoCaptureRecord.fromAttestationRecord(pinnedRecord);
+    _lastAttestation = pinnedRecord;
     _lastPhotoCapture = photoRecord;
     _photoCaptureHistory = [
       photoRecord,
@@ -1523,7 +1525,7 @@ class GraniteLakeController extends ChangeNotifier {
         message: 'Local history updated.',
       ),
     );
-    return AttestationActionResult.success(record);
+    return AttestationActionResult.success(pinnedRecord);
   }
 
   Future<AttestationActionResult> persistFileWithMetadata({
@@ -1670,6 +1672,7 @@ class GraniteLakeController extends ChangeNotifier {
             : 'File verification record accepted.',
       ),
     );
+    final pinnedRecord = await _uploadToTrade3WithProgress(record, onProgress);
     onProgress?.call(
       const AttestationSubmissionProgress(
         stage: AttestationSubmissionStage.refreshingHistory,
@@ -1677,8 +1680,8 @@ class GraniteLakeController extends ChangeNotifier {
         message: 'Updating your records.',
       ),
     );
-    final uploadedFile = UploadedFileRecord.fromAttestationRecord(record);
-    _lastAttestation = record;
+    final uploadedFile = UploadedFileRecord.fromAttestationRecord(pinnedRecord);
+    _lastAttestation = pinnedRecord;
     _lastUploadedFile = uploadedFile;
     _uploadedFileHistory = [
       uploadedFile,
@@ -1703,7 +1706,7 @@ class GraniteLakeController extends ChangeNotifier {
         message: 'Local history updated.',
       ),
     );
-    return AttestationActionResult.success(record);
+    return AttestationActionResult.success(pinnedRecord);
   }
 
   // ── Trade3 account (design/mobile_integration.md) ─────────────────────────
@@ -1847,6 +1850,72 @@ class GraniteLakeController extends ChangeNotifier {
       _isSyncingTrade3Hierarchy = false;
       notifyListeners();
     }
+    if (_trade3ResyncRequested) {
+      _trade3ResyncRequested = false;
+      await syncTrade3Hierarchy();
+    }
+  }
+
+  /// Like [syncTrade3Hierarchy], but if a sync is already running it queues
+  /// another one, since the running one may predate the latest upload.
+  Future<void> _resyncTrade3Hierarchy() async {
+    if (_isSyncingTrade3Hierarchy) {
+      _trade3ResyncRequested = true;
+      return;
+    }
+    await syncTrade3Hierarchy();
+  }
+
+  /// Runs the Trade3 pin as a visible submission step and returns the record
+  /// with its upload outcome. A slow upload keeps going in the background.
+  Future<AttestationRecord> _uploadToTrade3WithProgress(
+    AttestationRecord record,
+    void Function(AttestationSubmissionProgress progress)? onProgress,
+  ) async {
+    // Nothing to pin yet: queued or failed on-chain rows are uploaded by the
+    // existing sweep once they anchor.
+    if (!record.hasTrade3Target || !record.isAttestationAnchored) {
+      return record;
+    }
+    void report(AttestationSubmissionStageState state, String message) {
+      onProgress?.call(
+        AttestationSubmissionProgress(
+          stage: AttestationSubmissionStage.uploadingToTrade3,
+          state: state,
+          message: message,
+        ),
+      );
+    }
+
+    // The chain step already started this upload and it may even have
+    // finished, so always work from the stored record: passing the stale one
+    // would pin the same file twice.
+    AttestationRecord stored() => _attestationHistory.firstWhere(
+      (item) => item.captureId == record.captureId,
+      orElse: () => record,
+    );
+    report(AttestationSubmissionStageState.active, 'Sending to Trade3.');
+    try {
+      await uploadRecordToTrade3(stored()).timeout(const Duration(seconds: 45));
+    } on TimeoutException {
+      report(
+        AttestationSubmissionStageState.pending,
+        'Still sending to Trade3 - it will finish in the background.',
+      );
+    } catch (error) {
+      // The Sui anchor already succeeded; never fail the submission here.
+      debugPrint('[Trade3] upload step failed: $error');
+    }
+    final latest = stored();
+    if (latest.trade3UploadStatus?.toUpperCase() == 'UPLOADED') {
+      report(AttestationSubmissionStageState.completed, 'Sent to Trade3.');
+    } else if ((latest.trade3ErrorMessage ?? '').isNotEmpty) {
+      report(
+        AttestationSubmissionStageState.failed,
+        latest.trade3ErrorMessage!,
+      );
+    }
+    return latest;
   }
 
   /// The Trade3 hierarchy target new captures are pinned to (EP-04), or null
@@ -1973,14 +2042,23 @@ class GraniteLakeController extends ChangeNotifier {
   /// must not block on Trade3 - with [retryPendingTrade3Uploads] sweeping up
   /// rows that stayed PENDING (network drop, expired session at the time,
   /// offline capture whose Sui anchor only landed later).
-  Future<void> uploadRecordToTrade3(AttestationRecord record) async {
+  Future<void> uploadRecordToTrade3(AttestationRecord record) {
+    final inFlight = _trade3UploadsInFlight[record.captureId];
+    if (inFlight != null) {
+      return inFlight;
+    }
+    final upload = _performTrade3Upload(record).whenComplete(() {
+      _trade3UploadsInFlight.remove(record.captureId);
+    });
+    _trade3UploadsInFlight[record.captureId] = upload;
+    return upload;
+  }
+
+  Future<void> _performTrade3Upload(AttestationRecord record) async {
     if (!record.hasTrade3Target ||
         !record.isAttestationAnchored ||
         record.trade3UploadStatus?.toUpperCase() == 'UPLOADED') {
       return;
-    }
-    if (!_trade3UploadsInFlight.add(record.captureId)) {
-      return; // Already uploading this record.
     }
     try {
       // The local file is the exact bytes that were hashed and attested -
@@ -2031,6 +2109,8 @@ class GraniteLakeController extends ChangeNotifier {
         trade3IpfsCid: pinnedDocument.ipfsCid,
       );
       notifyListeners();
+      // So the new document shows up under its payment schedule.
+      unawaited(_resyncTrade3Hierarchy());
     } on Trade3UnauthenticatedException catch (error) {
       // Session dead - keep the row PENDING; the sweep retries once the
       // user re-pairs.
@@ -2071,8 +2151,6 @@ class GraniteLakeController extends ChangeNotifier {
             'automatically.',
       );
       notifyListeners();
-    } finally {
-      _trade3UploadsInFlight.remove(record.captureId);
     }
   }
 
@@ -2090,7 +2168,7 @@ class GraniteLakeController extends ChangeNotifier {
               record.hasTrade3Target &&
               record.isAttestationAnchored &&
               record.isTrade3UploadPending &&
-              !_trade3UploadsInFlight.contains(record.captureId),
+              !_trade3UploadsInFlight.containsKey(record.captureId),
         )
         .toList();
     for (final record in pending) {

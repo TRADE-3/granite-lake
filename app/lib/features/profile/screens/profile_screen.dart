@@ -489,7 +489,7 @@ class _Trade3AccountTile extends StatelessWidget {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : isPaired
-              ? OutlinedButton.icon(
+              ? OutlinedButton(
                   onPressed: onUnlink,
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.textWarning,
@@ -497,13 +497,28 @@ class _Trade3AccountTile extends StatelessWidget {
                     // (minimumSize width: infinity), which inside this Row
                     // starves the text column to ~0 width. Size to content.
                     minimumSize: const Size(0, 40),
+                    // Equal sides keep the icon and label centred.
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
                     side: BorderSide(
                       color: AppColors.textWarning.withAlpha(90),
                     ),
                     visualDensity: VisualDensity.compact,
                   ),
-                  icon: const Icon(Icons.link_off_rounded, size: 16),
-                  label: Text('UNLINK', style: AppTextStyles.buttonText),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.link_off_rounded, size: 16),
+                      const SizedBox(width: 6),
+                      Text(
+                        'UNLINK',
+                        style: AppTextStyles.buttonText.copyWith(
+                          fontSize: 12,
+                          letterSpacing: 0.4,
+                          color: AppColors.textWarning,
+                        ),
+                      ),
+                    ],
+                  ),
                 )
               : FilledButton.tonalIcon(
                   onPressed: onLink,

@@ -142,6 +142,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
   final TextEditingController _gpsReasonController = TextEditingController();
   String _selectedTag = 'STRUCTURAL';
   int _submissionStep = 0;
+  bool _showTrade3Step = false;
   AttestationSubmissionStage? _activeSubmissionStage;
   // Set once, when a submission run starts, from that capture's own
   // isOnline/isForcedOffline (offline-capture design doc §4) - the
@@ -826,6 +827,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
           !metadata.isOnline || metadata.isForcedOffline;
       _isCapturing = true;
       _errorMessage = null;
+      _showTrade3Step = appController.selectedTrade3Target != null;
       _flow = _CaptureFlow.submitting;
     });
     final submissionRunId = ++_submissionRunId;
@@ -934,8 +936,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
       _stagedMetadata = null;
     });
 
-    final shouldPauseForFailure = result.record!.normalizedSuiSubmissionStatus
-        .startsWith('FAILED');
+    final shouldPauseForFailure =
+        result.record!.normalizedSuiSubmissionStatus.startsWith('FAILED') ||
+        result.record!.isTrade3UploadFailed;
     await Future<void>.delayed(
       Duration(milliseconds: shouldPauseForFailure ? 1600 : 900),
     );
@@ -1899,6 +1902,19 @@ class _CaptureScreenState extends State<CaptureScreen> {
                     _submissionStageStates[AttestationSubmissionStage
                         .submittingToChain]!,
               ),
+              if (_showTrade3Step)
+                _SubmissionStep(
+                  title: 'Sending To Trade3',
+                  value: _submissionStageValue(
+                    AttestationSubmissionStage.uploadingToTrade3,
+                    activeLabel: 'Uploading the capture to your Trade3 project',
+                    completeLabel: 'Capture added to your Trade3 project',
+                    failedLabel: 'Trade3 upload did not complete',
+                  ),
+                  state:
+                      _submissionStageStates[AttestationSubmissionStage
+                          .uploadingToTrade3]!,
+                ),
               _SubmissionStep(
                 title: 'Refreshing Device History',
                 value: _submissionStageValue(
@@ -1982,6 +1998,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
                   Text(
                     hasSubmissionFailure
                         ? 'Verification needs attention'
+                        : record.trade3UploadStatus?.toUpperCase() == 'UPLOADED'
+                        ? 'Verified, stored and sent to Trade3'
+                        : record.hasTrade3Target
+                        ? 'Verified and stored. Not yet on Trade3.'
                         : 'Capture details verified and stored',
                     style: AppTextStyles.labelMedium.copyWith(
                       color: AppColors.textSecondary,
@@ -2472,6 +2492,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final hasFailure = _submissionStageStates.values.contains(
       AttestationSubmissionStageState.failed,
     );
+    if (_submissionStageStates[AttestationSubmissionStage.uploadingToTrade3] ==
+        AttestationSubmissionStageState.failed) {
+      return 'Trade3 Upload Needs Attention';
+    }
     if (hasFailure) {
       return 'Capture Submission Needs Attention';
     }
@@ -2482,6 +2506,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
         _isQueuedOfflineSubmission
             ? 'Queuing For Later Submission'
             : 'Submitting For Verification',
+      AttestationSubmissionStage.uploadingToTrade3 => 'Sending To Trade3',
       AttestationSubmissionStage.refreshingHistory =>
         'Updating Capture History',
     };

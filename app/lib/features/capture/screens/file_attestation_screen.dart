@@ -80,6 +80,7 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
   final TextEditingController _noteController = TextEditingController();
   _FileFlow _flow = _FileFlow.selecting;
   int _submissionRunId = 0;
+  bool _showTrade3Step = false;
   Future<void> _submissionProgressQueue = Future<void>.value();
   _SelectedFileSnapshot? _selectedFile;
   AttestationRecord? _submittedRecord;
@@ -342,6 +343,7 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
       _resetSubmissionProgress();
       _flow = _FileFlow.submitting;
       _errorMessage = null;
+      _showTrade3Step = controller.selectedTrade3Target != null;
       _submissionMessage = 'HASHING_LOCAL_FILE';
     });
 
@@ -401,8 +403,9 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
     await _submissionProgressQueue;
     _submissionRunId++;
     final submittedRecord = _resolveSubmittedRecord(controller, result.record!);
-    final shouldPauseForFailure = submittedRecord.normalizedSuiSubmissionStatus
-        .startsWith('FAILED');
+    final shouldPauseForFailure =
+        submittedRecord.normalizedSuiSubmissionStatus.startsWith('FAILED') ||
+        submittedRecord.isTrade3UploadFailed;
     await Future<void>.delayed(
       Duration(milliseconds: shouldPauseForFailure ? 1600 : 900),
     );
@@ -638,6 +641,20 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                             _stageStates[AttestationSubmissionStage
                                 .submittingToChain]!,
                       ),
+                      if (_showTrade3Step)
+                        _SubmissionStep(
+                          title: 'Sending To Trade3',
+                          value: _submissionStageValue(
+                            AttestationSubmissionStage.uploadingToTrade3,
+                            activeLabel:
+                                'Uploading the file to your Trade3 project',
+                            completeLabel: 'File added to your Trade3 project',
+                            failedLabel: 'Trade3 upload did not complete',
+                          ),
+                          state:
+                              _stageStates[AttestationSubmissionStage
+                                  .uploadingToTrade3]!,
+                        ),
                       _SubmissionStep(
                         title: 'Refreshing Device History',
                         value: _submissionStageValue(
@@ -790,7 +807,10 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                _LogPanel(stageStates: _stageStates),
+                _LogPanel(
+                  stageStates: _stageStates,
+                  showTrade3Step: _showTrade3Step,
+                ),
               ],
             ),
           ),
@@ -881,7 +901,11 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'File details verified and stored',
+                  record.trade3UploadStatus?.toUpperCase() == 'UPLOADED'
+                      ? 'Verified, stored and sent to Trade3'
+                      : record.hasTrade3Target
+                      ? 'Verified and stored. Not yet on Trade3.'
+                      : 'File details verified and stored',
                   style: AppTextStyles.labelMedium.copyWith(
                     color: AppColors.textSecondary,
                   ),
@@ -1018,6 +1042,10 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
     final hasFailure = _stageStates.values.contains(
       AttestationSubmissionStageState.failed,
     );
+    if (_stageStates[AttestationSubmissionStage.uploadingToTrade3] ==
+        AttestationSubmissionStageState.failed) {
+      return 'Trade3 Upload Needs Attention';
+    }
     if (hasFailure) {
       return 'File Submission Needs Attention';
     }
@@ -1026,6 +1054,7 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
       AttestationSubmissionStage.savingLocalRecord => 'Saving Local Record',
       AttestationSubmissionStage.submittingToChain =>
         'Submitting For Verification',
+      AttestationSubmissionStage.uploadingToTrade3 => 'Sending To Trade3',
       AttestationSubmissionStage.refreshingHistory => 'Updating File History',
     };
   }
@@ -1683,7 +1712,9 @@ String _middleEllipsis(String value, {int keepStart = 14, int keepEnd = 12}) {
 }
 
 class _LogPanel extends StatelessWidget {
-  const _LogPanel({required this.stageStates});
+  const _LogPanel({required this.stageStates, required this.showTrade3Step});
+
+  final bool showTrade3Step;
 
   final Map<AttestationSubmissionStage, AttestationSubmissionStageState>
   stageStates;
@@ -1691,49 +1722,62 @@ class _LogPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Column(
-      children: AttestationSubmissionStage.values.map((stage) {
-        final state =
-            stageStates[stage] ?? AttestationSubmissionStageState.pending;
-        final status = switch (state) {
-          AttestationSubmissionStageState.pending => 'PENDING',
-          AttestationSubmissionStageState.active => 'ACTIVE',
-          AttestationSubmissionStageState.completed => 'OK',
-          AttestationSubmissionStageState.failed => 'FAILED',
-        };
-        final accent = switch (state) {
-          AttestationSubmissionStageState.completed => AppColors.statusActive,
-          AttestationSubmissionStageState.active => AppColors.primary,
-          AttestationSubmissionStageState.failed => AppColors.statusError,
-          AttestationSubmissionStageState.pending => AppColors.textSecondary,
-        };
+      children: AttestationSubmissionStage.values
+          .where(
+            (stage) =>
+                showTrade3Step ||
+                stage != AttestationSubmissionStage.uploadingToTrade3,
+          )
+          .map((stage) {
+            final state =
+                stageStates[stage] ?? AttestationSubmissionStageState.pending;
+            final status = switch (state) {
+              AttestationSubmissionStageState.pending => 'PENDING',
+              AttestationSubmissionStageState.active => 'ACTIVE',
+              AttestationSubmissionStageState.completed => 'OK',
+              AttestationSubmissionStageState.failed => 'FAILED',
+            };
+            final accent = switch (state) {
+              AttestationSubmissionStageState.completed =>
+                AppColors.statusActive,
+              AttestationSubmissionStageState.active => AppColors.primary,
+              AttestationSubmissionStageState.failed => AppColors.statusError,
+              AttestationSubmissionStageState.pending =>
+                AppColors.textSecondary,
+            };
 
-        return Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-          decoration: BoxDecoration(
-            color: AppColors.surfaceElevated,
-            border: Border.all(color: AppColors.borderActive),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.fiber_manual_record_rounded, size: 10, color: accent),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  stage.name.toUpperCase(),
-                  style: AppTextStyles.labelMedium.copyWith(
-                    color: AppColors.textPrimary,
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceElevated,
+                border: Border.all(color: AppColors.borderActive),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.fiber_manual_record_rounded,
+                    size: 10,
+                    color: accent,
                   ),
-                ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      stage.name.toUpperCase(),
+                      style: AppTextStyles.labelMedium.copyWith(
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    status,
+                    style: AppTextStyles.labelSmall.copyWith(color: accent),
+                  ),
+                ],
               ),
-              Text(
-                status,
-                style: AppTextStyles.labelSmall.copyWith(color: accent),
-              ),
-            ],
-          ),
-        );
-      }).toList(),
+            );
+          })
+          .toList(),
     );
   }
 }
