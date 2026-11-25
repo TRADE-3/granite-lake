@@ -55,6 +55,7 @@ class GraniteLakeCaptureWorkflowService {
     bool hasGps = true,
     bool isGpsForcedNull = false,
     String? gpsNullReason,
+    String? trade3MasterContractId,
     String? trade3TransactionId,
     String? trade3PaymentScheduleId,
   }) async {
@@ -94,6 +95,7 @@ class GraniteLakeCaptureWorkflowService {
         hasGps: hasGps,
         isGpsForcedNull: isGpsForcedNull,
         gpsNullReason: gpsNullReason,
+        trade3MasterContractId: trade3MasterContractId,
         trade3TransactionId: trade3TransactionId,
         trade3PaymentScheduleId: trade3PaymentScheduleId,
       );
@@ -158,6 +160,7 @@ class GraniteLakeCaptureWorkflowService {
     bool isOnline = true,
     bool isForcedOffline = false,
     String? internetNullReason,
+    String? trade3MasterContractId,
     String? trade3TransactionId,
     String? trade3PaymentScheduleId,
   }) async {
@@ -198,6 +201,7 @@ class GraniteLakeCaptureWorkflowService {
           'fileSizeBytes': fileSizeBytes,
           'fileId': provisionalId,
         },
+        trade3MasterContractId: trade3MasterContractId,
         trade3TransactionId: trade3TransactionId,
         trade3PaymentScheduleId: trade3PaymentScheduleId,
       );
@@ -258,6 +262,7 @@ class GraniteLakeCaptureWorkflowService {
     DateTime? capturedAtUtc,
     DateTime? submittedAtUtc,
     String? buildLabel,
+    String? trade3MasterContractId,
     String? trade3TransactionId,
     String? trade3PaymentScheduleId,
     String? gpsLabel,
@@ -275,13 +280,35 @@ class GraniteLakeCaptureWorkflowService {
   }) async {
     final capturedAt = capturedAtUtc?.toUtc() ?? DateTime.now().toUtc();
     final captureId = forcedRecordId ?? '${capturedAt.microsecondsSinceEpoch}';
+    final normalizedTrade3MasterContractId = _normalizeOptionalId(
+      trade3MasterContractId,
+    );
+    final normalizedTrade3TransactionId = _normalizeOptionalId(
+      trade3TransactionId,
+    );
+    final normalizedTrade3PaymentScheduleId = _normalizeOptionalId(
+      trade3PaymentScheduleId,
+    );
+    // A target only counts when both ids arrived; partial selections (the
+    // picker only ever completes with both) upload nothing.
+    final hasTrade3Target =
+        normalizedTrade3TransactionId != null &&
+        normalizedTrade3PaymentScheduleId != null;
     final documentsDirectory = await getApplicationDocumentsDirectory();
     final captureDirectory = Directory(
       '${documentsDirectory.path}/${AppConstants.captureDirectoryName}/$captureId',
     );
     await captureDirectory.create(recursive: true);
 
-    final safeFileName = _safeFileName(sourceFileName, assetType: assetType);
+    final evidenceName = evidenceFileName(
+      projectId: projectId,
+      capturedAt: capturedAt,
+      trade3MasterContractId: normalizedTrade3MasterContractId,
+      trade3TransactionId: normalizedTrade3TransactionId,
+      trade3PaymentScheduleId: normalizedTrade3PaymentScheduleId,
+      sourceFileName: sourceFileName,
+    );
+    final safeFileName = _safeFileName(evidenceName);
     final destinationImagePath = '${captureDirectory.path}/$safeFileName';
     final destinationImageFile = await File(
       sourcePath,
@@ -424,20 +451,6 @@ class GraniteLakeCaptureWorkflowService {
       wrappedDataKeyBase64 = encrypted.wrappedDataKeyBase64;
     }
 
-    final normalizedTrade3TransactionId =
-        (trade3TransactionId ?? '').trim().isEmpty
-        ? null
-        : trade3TransactionId!.trim();
-    final normalizedTrade3PaymentScheduleId =
-        (trade3PaymentScheduleId ?? '').trim().isEmpty
-        ? null
-        : trade3PaymentScheduleId!.trim();
-    // A target only counts when both ids arrived; partial selections (the
-    // picker only ever completes with both) upload nothing.
-    final hasTrade3Target =
-        normalizedTrade3TransactionId != null &&
-        normalizedTrade3PaymentScheduleId != null;
-
     final record = AttestationRecord(
       captureId: captureId,
       capturedAt: capturedAt,
@@ -522,19 +535,40 @@ class GraniteLakeCaptureWorkflowService {
     return buffer.toString();
   }
 
-  String _safeFileName(
-    String fileName, {
-    required AttestationAssetType assetType,
+  /// The name every captured asset is stored and uploaded under:
+  /// `evidence_<projectId>_<capturedAt-ms>` for local projects, or
+  /// `tr3_evidence_<masterContractId>_<transactionId>_<paymentScheduleId>_<capturedAt-ms>`
+  /// for captures pinned to a Trade3 payment schedule. The original file's
+  /// extension is preserved so previews and file-type detection keep working.
+  static String evidenceFileName({
+    required String? projectId,
+    required DateTime capturedAt,
+    String? trade3MasterContractId,
+    String? trade3TransactionId,
+    String? trade3PaymentScheduleId,
+    required String sourceFileName,
   }) {
-    final sanitized = path
-        .basename(fileName)
-        .replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '_');
-    if (sanitized.isNotEmpty) {
-      return sanitized;
+    final extension = path.extension(sourceFileName);
+    final timestampMs = capturedAt.millisecondsSinceEpoch;
+    final contractId = _normalizeOptionalId(trade3MasterContractId);
+    final transactionId = _normalizeOptionalId(trade3TransactionId);
+    final scheduleId = _normalizeOptionalId(trade3PaymentScheduleId);
+    if (transactionId != null && scheduleId != null) {
+      final idParts = [?contractId, transactionId, scheduleId];
+      return 'tr3_evidence_${idParts.join('_')}_$timestampMs$extension';
     }
-    return assetType == AttestationAssetType.file
-        ? 'uploaded_asset'
-        : 'capture.jpg';
+    final normalizedProjectId = _normalizeOptionalId(projectId);
+    return 'evidence_${normalizedProjectId ?? 'unassigned'}'
+        '_$timestampMs$extension';
+  }
+
+  static String? _normalizeOptionalId(String? value) {
+    final normalized = value?.trim() ?? '';
+    return normalized.isEmpty ? null : normalized;
+  }
+
+  String _safeFileName(String fileName) {
+    return path.basename(fileName).replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '_');
   }
 
   AttestationPreviewKind _previewKindFor({

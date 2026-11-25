@@ -880,6 +880,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
       hasGps: metadata.hasGps,
       isGpsForcedNull: metadata.isGpsForcedNull,
       gpsNullReason: needsGpsReason ? gpsReasonText : null,
+      trade3MasterContractId:
+          appController.selectedTrade3Target?.masterContractId,
       trade3TransactionId: appController.selectedTrade3Target?.transactionId,
       trade3PaymentScheduleId:
           appController.selectedTrade3Target?.paymentScheduleId,

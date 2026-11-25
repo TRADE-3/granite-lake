@@ -1350,6 +1350,7 @@ class GraniteLakeController extends ChangeNotifier {
     bool hasGps = true,
     bool isGpsForcedNull = false,
     String? gpsNullReason,
+    String? trade3MasterContractId,
     String? trade3TransactionId,
     String? trade3PaymentScheduleId,
   }) async {
@@ -1431,6 +1432,7 @@ class GraniteLakeController extends ChangeNotifier {
       hasGps: hasGps,
       isGpsForcedNull: isGpsForcedNull,
       gpsNullReason: gpsNullReason,
+      trade3MasterContractId: trade3MasterContractId,
       trade3TransactionId: trade3TransactionId,
       trade3PaymentScheduleId: trade3PaymentScheduleId,
     );
@@ -1539,6 +1541,7 @@ class GraniteLakeController extends ChangeNotifier {
     bool isOnline = true,
     bool isForcedOffline = false,
     String? internetNullReason,
+    String? trade3MasterContractId,
     String? trade3TransactionId,
     String? trade3PaymentScheduleId,
   }) async {
@@ -1617,6 +1620,7 @@ class GraniteLakeController extends ChangeNotifier {
       isOnline: isOnline,
       isForcedOffline: isForcedOffline,
       internetNullReason: internetNullReason,
+      trade3MasterContractId: trade3MasterContractId,
       trade3TransactionId: trade3TransactionId,
       trade3PaymentScheduleId: trade3PaymentScheduleId,
     );

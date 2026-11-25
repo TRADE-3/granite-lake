@@ -372,6 +372,7 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
       isOnline: isOnline,
       isForcedOffline: isForcedOffline,
       internetNullReason: internetNullReason,
+      trade3MasterContractId: controller.selectedTrade3Target?.masterContractId,
       trade3TransactionId: controller.selectedTrade3Target?.transactionId,
       trade3PaymentScheduleId:
           controller.selectedTrade3Target?.paymentScheduleId,
