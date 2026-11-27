@@ -337,6 +337,10 @@ class GraniteLakeController extends ChangeNotifier {
   /// False only when Trade3 has said the user may not deposit documents.
   bool get canSelectTrade3Target => _trade3CanDeposit != false;
 
+  /// A paired user needs a payment schedule to submit, so without the right
+  /// to choose one, capturing is pointless.
+  bool get isDepositBlocked => isTrade3Paired && !canSelectTrade3Target;
+
   bool get isOfflineCaptureForced => _offlineCaptureForced;
   bool get isGpsCaptureForcedNull => _gpsCaptureForcedNull;
 

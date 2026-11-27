@@ -21,6 +21,7 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../trade3/widgets/trade3_target_picker.dart';
 import '../../../core/utils/verified_email.dart';
 import '../../../core/utils/location_settings.dart';
+import '../../trade3/widgets/deposit_rights_notice.dart';
 
 enum _CaptureFlow { live, review, submitting, success }
 
@@ -782,7 +783,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final selectedProject = appController.selectedProject;
     if (selectedProject == null) {
       setState(() {
-        _errorMessage = appController.isTrade3Paired
+        _errorMessage = appController.isDepositBlocked
+            ? GraniteLakeController.depositRightsMessage
+            : appController.isTrade3Paired
             ? 'Select a Trade3 payment schedule before submitting this capture.'
             : 'Select an active project before submitting this capture.';
       });
@@ -1128,6 +1131,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final canCapture =
         !_isPreparing &&
         !_isCapturing &&
+        !appController.isDepositBlocked &&
         !_isMockLocationDetected &&
         (_hasGpsFix || appController.isGpsCaptureForcedNull) &&
         (_hasNetworkConnectivity || appController.isOfflineCaptureForced);
@@ -1334,6 +1338,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
   // to its own status line, rather than as a separate, unlabeled icon
   // elsewhere on screen (offline-capture design doc §4/§4a).
   Widget _buildReadinessCard(GraniteLakeController appController) {
+    // Nothing else matters while the user cannot submit.
+    if (appController.isDepositBlocked) {
+      return const Padding(
+        padding: EdgeInsets.only(bottom: 10),
+        child: DepositRightsNotice(),
+      );
+    }
     if (_isMockLocationDetected) {
       return Padding(
         padding: const EdgeInsets.only(bottom: 10),
@@ -1433,6 +1444,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
         metadata != null && _needsInternetReason(metadata);
     final needsGpsReason = metadata != null && _needsGpsReason(metadata);
     final canSubmit =
+        !appController.isDepositBlocked &&
         hasProjects &&
         (!needsInternetReason ||
             _internetReasonController.text.trim().isNotEmpty) &&

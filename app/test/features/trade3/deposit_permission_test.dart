@@ -3,11 +3,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:granite_lake/app.dart';
 import 'package:granite_lake/core/state/granite_lake_controller.dart';
 import 'package:granite_lake/features/trade3/widgets/trade3_target_picker.dart';
+import 'package:granite_lake/features/capture/screens/file_attestation_screen.dart';
+import 'package:granite_lake/features/trade3/widgets/deposit_rights_notice.dart';
 
 class _Controller extends GraniteLakeController {
-  _Controller({required this.canDeposit});
+  _Controller({required this.canDeposit, this.paired = false});
 
   final bool canDeposit;
+  final bool paired;
+
+  @override
+  bool get isTrade3Paired => paired;
 
   @override
   bool get canSelectTrade3Target => canDeposit;
@@ -46,6 +52,37 @@ void main() {
     await tester.tap(find.byType(Trade3TargetField));
     await tester.pumpAndSettle();
     expect(find.text(pickerTitle), findsOneWidget);
+  });
+
+  testWidgets('the file screen warns and disables choosing a file', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      GraniteLakeScope(
+        controller: _Controller(canDeposit: false, paired: true),
+        child: const MaterialApp(home: FileAttestationScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(DepositRightsNotice), findsOneWidget);
+    final button = tester.widget<ButtonStyleButton>(
+      find.ancestor(
+        of: find.text('CHOOSE_FILE'),
+        matching: find.byWidgetPredicate((w) => w is ButtonStyleButton),
+      ),
+    );
+    expect(button.onPressed, isNull);
+  });
+
+  test('only a paired user without the right is blocked', () {
+    expect(_Controller(canDeposit: false, paired: true).isDepositBlocked, true);
+    expect(_Controller(canDeposit: true, paired: true).isDepositBlocked, false);
+    // An unpaired (older) install uses local projects and is unaffected.
+    expect(
+      _Controller(canDeposit: false, paired: false).isDepositBlocked,
+      false,
+    );
   });
 
   test('without the deposit right, a selection is ignored', () async {

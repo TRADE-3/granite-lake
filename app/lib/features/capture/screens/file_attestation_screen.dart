@@ -17,6 +17,7 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../../core/utils/verified_email.dart';
 import '../../../core/utils/utils.dart';
 import '../../trade3/widgets/trade3_target_picker.dart';
+import '../../trade3/widgets/deposit_rights_notice.dart';
 
 enum _FileFlow { selecting, review, submitting, success }
 
@@ -100,7 +101,10 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_pickFile(autoExitOnCancel: true));
+      // Don't open the file chooser for someone who cannot submit.
+      if (mounted && !GraniteLakeScope.of(context).isDepositBlocked) {
+        unawaited(_pickFile(autoExitOnCancel: true));
+      }
     });
   }
 
@@ -299,7 +303,9 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
     final projectId = controller.selectedProjectId;
     if (projectId == null || projectId.trim().isEmpty) {
       setState(() {
-        _errorMessage = controller.isTrade3Paired
+        _errorMessage = controller.isDepositBlocked
+            ? GraniteLakeController.depositRightsMessage
+            : controller.isTrade3Paired
             ? 'Select a Trade3 payment schedule before uploading a file for '
                   'verification.'
             : 'Select a project before uploading a file for verification.';
@@ -465,8 +471,10 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
         child: AnimatedSwitcher(
           duration: const Duration(milliseconds: 250),
           child: switch (_flow) {
-            _FileFlow.selecting => _buildSelectingScreen(),
-            _FileFlow.review => _buildReviewScreen(
+            // Blocked users get no file chooser, so don't wait for one.
+            _FileFlow.selecting when !controller.isDepositBlocked =>
+              _buildSelectingScreen(),
+            _FileFlow.selecting || _FileFlow.review => _buildReviewScreen(
               projectId: selectedProject?.projectId ?? 'UNASSIGNED',
               walletTag: walletTag,
             ),
@@ -682,6 +690,7 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
 
   Widget _buildReview({required String projectId, required String walletTag}) {
     final selectedFile = _selectedFile;
+    final isDepositBlocked = GraniteLakeScope.of(context).isDepositBlocked;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -696,8 +705,12 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
           },
         ),
         const SizedBox(height: 18),
+        if (isDepositBlocked) ...[
+          const DepositRightsNotice(),
+          const SizedBox(height: 18),
+        ],
         if (selectedFile == null)
-          _EmptyPickerCard(onPick: _pickFile)
+          _EmptyPickerCard(onPick: isDepositBlocked ? null : _pickFile)
         else ...[
           _SectionLabel(
             title: 'Selected File',
@@ -828,7 +841,9 @@ class _FileAttestationScreenState extends State<FileAttestationScreen> {
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: _flow == _FileFlow.submitting ? null : _submit,
+              onPressed: isDepositBlocked || _flow == _FileFlow.submitting
+                  ? null
+                  : _submit,
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primary,
                 foregroundColor: AppColors.actionText,
@@ -1346,7 +1361,8 @@ class _Header extends StatelessWidget {
 class _EmptyPickerCard extends StatelessWidget {
   const _EmptyPickerCard({required this.onPick});
 
-  final Future<void> Function({bool autoExitOnCancel}) onPick;
+  /// Null disables the button.
+  final Future<void> Function({bool autoExitOnCancel})? onPick;
 
   @override
   Widget build(BuildContext context) {
@@ -1374,7 +1390,7 @@ class _EmptyPickerCard extends StatelessWidget {
           ),
           const SizedBox(height: 18),
           ElevatedButton.icon(
-            onPressed: () => onPick(),
+            onPressed: onPick == null ? null : () => onPick!(),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,
