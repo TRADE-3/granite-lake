@@ -84,6 +84,10 @@ class GraniteLakeSecureStateService {
   static const _biometricGatePayloadKey = 'biometric_gate_payload';
   static const _sessionKey = 'session_record';
   static const _resetNoticeKey = 'reset_notice';
+  // Set while a newly created ID's recovery key has not been confirmed saved.
+  static const _recoveryKeyPendingKey = 'recovery_key_save_pending';
+  // Set when the identity came from a recovery key: history can be restored.
+  static const _walletImportedKey = 'wallet_imported';
   // Offline-queue at-rest encryption (§7.3, per the user's explicit ask):
   // the raw Sui private key, wrapped with the same RSA capture-wrap public
   // key that wraps each queued row's AES data key
@@ -247,6 +251,9 @@ class GraniteLakeSecureStateService {
         createdAt: DateTime.now().toUtc(),
       );
 
+      // Written first, so an interrupted setup cannot lose the requirement.
+      await _storage.write(key: _recoveryKeyPendingKey, value: 'true');
+      await _storage.delete(key: _walletImportedKey);
       await _storage.write(
         key: _identityKey,
         value: jsonEncode(identity.toJson()),
@@ -255,6 +262,90 @@ class GraniteLakeSecureStateService {
     } catch (error) {
       return SecureOperationResult<IdentityRecord>.failure(
         'Identity generation failed: $error',
+      );
+    }
+  }
+
+  /// Restores an identity from its recovery key (the `suiprivkey1...` value).
+  /// The key itself never appears in an error message.
+  Future<SecureOperationResult<IdentityRecord>> importIdentity(
+    String recoveryKey,
+  ) async {
+    final SuiED25519PrivateKey privateKey;
+    try {
+      // It is shown in groups and may be typed from paper.
+      privateKey = _restoreSuiPrivateKey(
+        recoveryKey.replaceAll(RegExp(r'\s'), '').toLowerCase(),
+      );
+    } catch (_) {
+      return const SecureOperationResult<IdentityRecord>.failure(
+        "That doesn't look like a valid recovery key.",
+      );
+    }
+
+    try {
+      final account = SuiEd25519Account(privateKey);
+      final identity = IdentityRecord(
+        walletAddress: account.toAddress().toString(),
+        publicKeyHex: account.publicKey.publicKey.toHex(),
+        suiPrivateKey: privateKey.toSuiPrivateKey(),
+        createdAt: DateTime.now().toUtc(),
+      );
+      await _storage.write(
+        key: _identityKey,
+        value: jsonEncode(identity.toJson()),
+      );
+      // Whoever imports a key already has it.
+      await confirmRecoveryKeySaved();
+      await _storage.write(key: _walletImportedKey, value: 'true');
+      return SecureOperationResult<IdentityRecord>.success(identity);
+    } catch (_) {
+      return const SecureOperationResult<IdentityRecord>.failure(
+        'The recovery key could not be saved on this device.',
+      );
+    }
+  }
+
+  Future<bool> wasWalletImported() async =>
+      await _storage.read(key: _walletImportedKey) == 'true';
+
+  Future<bool> isRecoveryKeySavePending() async =>
+      await _storage.read(key: _recoveryKeyPendingKey) == 'true';
+
+  Future<void> confirmRecoveryKeySaved() =>
+      _storage.delete(key: _recoveryKeyPendingKey);
+
+  /// Unlocks the biometric gate and returns the recovery key. Always prompts,
+  /// even during a session, and starts no session of its own.
+  Future<SecureOperationResult<String>> revealRecoveryKey({
+    required BiometricBindingRecord? biometricBinding,
+    required BiometricGatePayload? biometricGatePayload,
+  }) async {
+    if (biometricBinding == null ||
+        !biometricBinding.hasGateAlias ||
+        biometricGatePayload == null) {
+      return const SecureOperationResult<String>.failure(
+        'Protect your secure ID with biometrics first.',
+      );
+    }
+
+    try {
+      final bundleJson = await _unlockBiometricGate(
+        biometricBinding.gateAlias,
+        biometricGatePayload,
+        promptTitle: 'Show recovery key',
+        promptSubtitle: 'Verify biometrics to see your recovery key.',
+      );
+      final bundle = _ProtectedIdentityKeyBundle.fromJson(
+        jsonDecode(bundleJson) as Map<String, dynamic>,
+      );
+      return SecureOperationResult<String>.success(bundle.suiPrivateKey);
+    } on _BiometricGateException catch (error) {
+      return SecureOperationResult<String>.failure(error.message);
+    } catch (_) {
+      // Never echo the error: it could quote the decrypted bundle.
+      return const SecureOperationResult<String>.failure(
+        'Your recovery key could not be read.',
       );
     }
   }
@@ -459,6 +550,7 @@ class GraniteLakeSecureStateService {
     await _storage.delete(key: _queueWrappedSigningKeyKey);
     if (clearProtectedIdentity) {
       await _storage.delete(key: _identityKey);
+      await _storage.delete(key: _walletImportedKey);
     }
   }
 
@@ -483,6 +575,8 @@ class GraniteLakeSecureStateService {
     await _storage.delete(key: _biometricGatePayloadKey);
     await _storage.delete(key: _sessionKey);
     await _storage.delete(key: _queueWrappedSigningKeyKey);
+    await _storage.delete(key: _recoveryKeyPendingKey);
+    await _storage.delete(key: _walletImportedKey);
     await _storage.write(key: _resetNoticeKey, value: notice);
   }
 

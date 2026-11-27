@@ -149,7 +149,13 @@ class _GraniteLakeAppState extends State<GraniteLakeApp>
     if (state == AppLifecycleState.resumed) {
       // Sponsorship can be switched on/off per domain at any time.
       unawaited(_controller.refreshSponsorStatus());
-      unawaited(_controller.retryPendingAttestations());
+      // The session may have expired or been revoked while away; check
+      // before sending anything queued.
+      unawaited(
+        _controller.checkGlSession().then(
+          (_) => _controller.retryPendingAttestations(),
+        ),
+      );
     }
   }
 

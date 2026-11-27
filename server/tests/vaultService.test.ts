@@ -49,6 +49,13 @@ const env = {
   SPONSOR_LEAK_CHECK_INTERVAL_MS: 900_000,
   SPONSOR_COIN_SWEEP_MIN_MIST: 100_000_000n,
   SPONSOR_TOPUP_MAX_PER_DAY_MIST: 10_000_000_000n,
+  TRADE3_API_URL: undefined,
+  REGISTRY_DOMAIN: "domain_demo",
+  GL_JWT_SECRET: undefined,
+  GL_ACCESS_TOKEN_TTL: 900,
+  GL_REFRESH_TOKEN_TTL: 15_552_000,
+  OTP_ENABLED: true,
+  AUTH_REQUIRE_USER_TOKEN: false,
   DATABASE_URL: "postgres://postgres:postgres@db:5432/development_domain_demo_granite_lake",
 } satisfies AppEnv;
 

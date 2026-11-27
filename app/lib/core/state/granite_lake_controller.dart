@@ -11,9 +11,12 @@ import '../database/granite_lake_data_controllers.dart';
 import '../constants/app_constants.dart';
 import '../services/attestation_transaction_builder.dart';
 import '../services/capture_encryption_service.dart';
+import '../services/gl_session_service.dart';
 import '../services/granite_lake_capture_workflow_service.dart';
 import '../services/photo_attestation_service.dart';
+import '../services/restore_service.dart';
 import '../services/sponsor_attestation_service.dart';
+import '../services/time_sync_service.dart';
 import '../services/granite_lake_secure_state_service.dart';
 import '../services/trade3_api_service.dart';
 import '../services/trade3_deep_link_service.dart';
@@ -45,7 +48,17 @@ class GraniteLakeController extends ChangeNotifier {
     _trade3TokenStore = Trade3TokenStore(storage: _storage);
     _trade3ApiService = Trade3ApiService(tokenStore: _trade3TokenStore);
     _trade3DeepLinkService = Trade3DeepLinkService();
+    _glSession.onSessionEnded = () => _endTrade3Link(GlLinkState.expired);
   }
+
+  /// Shown wherever attestation is blocked by an ended Trade3 link.
+  static const String relinkMessage = 'Scan the Trade3 QR code to continue.';
+  static const String depositRightsMessage =
+      'Insufficient rights, contact your company admin.';
+
+  final GlSessionService _glSession = GlSessionService.shared;
+  GlLinkState _glLinkState = GlLinkState.never;
+  bool? _trade3CanDeposit;
 
   final FlutterSecureStorage _storage;
   final GraniteLakeDataControllers _dataControllers;
@@ -314,6 +327,16 @@ class GraniteLakeController extends ChangeNotifier {
 
   bool get queueUnlockNeeded => pendingAttestationCount > 0 && !isQueueUnlocked;
 
+  /// True after an unlink or an expired session, until the next QR scan.
+  bool get isAttestationBlocked => _glLinkState.blocksAttestation;
+
+  String get attestationBlockedReason => _glLinkState == GlLinkState.expired
+      ? 'Your Trade3 session has expired. $relinkMessage'
+      : 'Your Trade3 account is not linked. $relinkMessage';
+
+  /// False only when Trade3 has said the user may not deposit documents.
+  bool get canSelectTrade3Target => _trade3CanDeposit != false;
+
   bool get isOfflineCaptureForced => _offlineCaptureForced;
   bool get isGpsCaptureForcedNull => _gpsCaptureForcedNull;
 
@@ -357,6 +380,9 @@ class GraniteLakeController extends ChangeNotifier {
     try {
       final secureState = await _secureStateService.loadPersistedState();
       _applySecureInitializationState(secureState);
+      _isRecoveryKeySavePending = await _secureStateService
+          .isRecoveryKeySavePending();
+      _wasWalletImported = await _secureStateService.wasWalletImported();
       // Backfill for installs that registered before
       // claimPhotoAttestationUser() started capturing this (or hit a
       // transient device_info_plus failure at that moment) - an already
@@ -372,9 +398,19 @@ class GraniteLakeController extends ChangeNotifier {
       _photoAttestationConfig = await _dataControllers.config
           .syncPhotoAttestationContractConfig();
       await _loadDatabaseState();
+      // An import linked before the flag existed.
+      if (_wasWalletImported &&
+          _employee != null &&
+          !_employee!.walletRestored) {
+        await _dataControllers.employee.markWalletRestored();
+        await _reloadEmployee();
+      }
+      _glLinkState = await _glSession.store.readLinkState();
       _isTrade3Paired = await _trade3TokenStore.read() != null;
       if (_isTrade3Paired) {
         await _restoreTrade3Cache();
+        _trade3CanDeposit = await _dataControllers.config
+            .loadTrade3CanDeposit();
       }
       _reconcileSelectedProject();
       _startTrade3DeepLinkListening();
@@ -384,6 +420,7 @@ class GraniteLakeController extends ChangeNotifier {
       unawaited(refreshWalletSuiBalance());
       unawaited(refreshSponsorStatus());
       unawaited(_backfillRegisteredEmail());
+      unawaited(checkGlSession());
     } catch (error) {
       _initializationError = 'Application initialization failed: $error';
     } finally {
@@ -431,6 +468,8 @@ class GraniteLakeController extends ChangeNotifier {
 
     try {
       _identity = result.data;
+      _wasWalletImported = false;
+      _isRecoveryKeySavePending = true;
       notifyListeners();
       return const ActionResult.success();
     } catch (error) {
@@ -438,150 +477,64 @@ class GraniteLakeController extends ChangeNotifier {
     }
   }
 
-  Future<SecureOperationResult<PhotoAttestationOtpRequestResult>>
-  requestPhotoAttestationOtp({
-    required String domain,
-    required String userEmail,
-  }) async {
-    final normalizedDomain = domain.trim();
-    final normalizedUserEmail = userEmail.trim();
-    if (normalizedDomain.isEmpty || normalizedUserEmail.isEmpty) {
-      return const SecureOperationResult.failure(
-        'Company domain and user email are required.',
-      );
+  /// Restores the identity from a recovery key, on a device with none yet.
+  Future<ActionResult> importIdentity(String recoveryKey) async {
+    if (_identity != null) {
+      return const ActionResult.failure('This device already has a secure ID.');
     }
-
-    // The OTP request binds the device wallet to the session server-side,
-    // so the identity has to exist before the OTP is requested.
-    final identity = _identity;
-    if (identity == null) {
-      return const SecureOperationResult.failure(
-        'Create the local Sui identity before requesting an OTP.',
-      );
+    final result = await _secureStateService.importIdentity(recoveryKey);
+    if (!result.isSuccess || result.data == null) {
+      return _toActionResult(result);
     }
-
-    try {
-      final result = await _photoAttestationService.requestUserOtp(
-        domain: normalizedDomain,
-        userEmail: normalizedUserEmail,
-        walletAddress: identity.walletAddress,
-      );
-      return SecureOperationResult.success(result);
-    } on PhotoAttestationException catch (error) {
-      return SecureOperationResult.failure(error.userMessage);
-    } catch (error) {
-      debugPrint('[OTP] requestPhotoAttestationOtp unexpected error: $error');
-      return const SecureOperationResult.failure(
-        'Something went wrong while requesting the OTP. Please try again.',
-      );
-    }
+    _identity = result.data;
+    _isRecoveryKeySavePending = false;
+    _wasWalletImported = true;
+    notifyListeners();
+    return const ActionResult.success();
   }
 
-  Future<ActionResult> claimPhotoAttestationUser({
-    required String domain,
-    required String userId,
-    required String otp,
-    required String walletNonce,
-    String userEmail = '',
-  }) async {
-    final identity = _identity;
-    final config = _photoAttestationConfig;
-    if (identity == null) {
-      return const ActionResult.failure(
-        'Create your secure ID before registering your account.',
-      );
-    }
-    if (config == null || !config.isComplete) {
-      return const ActionResult.failure(
-        'Contract config is incomplete. Set RPC URL, package id, registry id, and module name first.',
-      );
-    }
+  bool _isRecoveryKeySavePending = false;
+  bool _wasWalletImported = false;
+  bool _isRestoringFiles = false;
 
-    final normalizedDomain = domain.trim();
-    final normalizedUserId = userId.trim();
-    final normalizedOtp = otp.trim();
-    final normalizedWalletNonce = walletNonce.trim();
-    if (normalizedDomain.isEmpty ||
-        normalizedUserId.isEmpty ||
-        normalizedOtp.isEmpty ||
-        normalizedWalletNonce.isEmpty) {
-      return const ActionResult.failure(
-        'Company domain and one-time code are required.',
-      );
-    }
+  /// Offered for an imported wallet until a restore has succeeded once.
+  bool get canRestoreFiles =>
+      _hasCompletedRegistration &&
+      (_employee?.walletRestored ?? false) &&
+      !_employee!.filesRestored;
 
-    // Proving wallet possession needs the raw signing key. Biometrics are
-    // bound before registration runs (see F-09), which strips that key out
-    // of the in-memory identity, so unlock it the same way the capture flow
-    // does rather than reading it off `identity`. Registration itself has
-    // no use for a standing session afterward, so only start one here if
-    // none is already active, and tear back down whatever this call started
-    // once the signature has been produced - the signing key only needs to
-    // exist for the moment it's used.
-    final hadActiveSessionBeforeClaim = hasActiveSession;
-    if (!hadActiveSessionBeforeClaim) {
-      final sessionResult = await startSession(
-        promptTitle: 'Confirm your identity',
-        promptSubtitle: 'Verify biometrics to complete registration.',
-      );
-      if (!sessionResult.isSuccess) {
-        return sessionResult;
-      }
-    }
-    final sessionSigningKey = _sessionSigningKey;
-    if (sessionSigningKey == null) {
-      return const ActionResult.failure(
-        'Your secure signing key is locked. Start a new session.',
-      );
-    }
+  /// Onboarding cannot continue until a newly created ID's recovery key has
+  /// been confirmed saved.
+  bool get mustSaveRecoveryKey =>
+      !_hasCompletedRegistration && _isRecoveryKeySavePending;
 
-    try {
-      final claim = await _photoAttestationService.claimUserWithOtp(
-        identity: identity,
-        signingKey: sessionSigningKey,
-        config: config,
-        input: PhotoAttestationClaimInput(
-          domain: normalizedDomain,
-          userId: normalizedUserId,
-          otp: normalizedOtp,
-          walletNonce: normalizedWalletNonce,
-          userEmail: userEmail.trim().toLowerCase(),
-        ),
-      );
-      await _dataControllers.config.savePhotoAttestationClaim(claim);
-      await _dataControllers.employee.saveClaimedEmployee(
-        employeeId: normalizedUserId,
-        companyDomain: normalizedDomain,
-        walletAddress: identity.walletAddress,
-      );
-      _photoAttestationClaim = claim;
-      _employee = EmployeeRecord.fromJson(
-        (await _dataControllers.employee.loadPrimaryEmployee())!,
-      );
-      _hasCompletedRegistration = true;
-      _resetNotice = null;
-      // Captures and persists the real device model/OS/timestamp now that
-      // registration has actually completed - re-reading loadPersistedState()
-      // here was a no-op, since nothing in this (current) registration flow
-      // ever wrote a device registration record for it to find.
-      _deviceRegistration ??= await _secureStateService
-          .storeDeviceRegistration();
-      unawaited(refreshWalletSuiBalance(force: true));
-      unawaited(refreshSponsorStatus());
-      notifyListeners();
-      return const ActionResult.success();
-    } on PhotoAttestationException catch (error) {
-      return ActionResult.failure(error.userMessage);
-    } catch (error) {
-      debugPrint('[OTP] claimPhotoAttestationUser unexpected error: $error');
-      return const ActionResult.failure(
-        'Something went wrong while verifying your OTP. Please try again.',
-      );
-    } finally {
-      if (!hadActiveSessionBeforeClaim) {
-        await endSession();
-      }
+  Future<void> confirmRecoveryKeySaved() async {
+    await _secureStateService.confirmRecoveryKeySaved();
+    _isRecoveryKeySavePending = false;
+    notifyListeners();
+  }
+
+  Future<SecureOperationResult<String>> revealRecoveryKey() {
+    return _secureStateService.revealRecoveryKey(
+      biometricBinding: _biometricBinding,
+      biometricGatePayload: _biometricGatePayload,
+    );
+  }
+
+  /// Removes an ID that is not registered yet, so another can be restored from
+  /// its recovery key. Does nothing once an account is registered.
+  Future<void> discardUnregisteredIdentity() async {
+    if (_hasCompletedRegistration || _isTrade3Pairing) {
+      return;
     }
+    await _secureStateService.clearBiometricBindingAndSession(
+      biometricBinding: _biometricBinding,
+      clearProtectedIdentity: true,
+    );
+    _clearLocalBiometricSessionState(clearIdentity: true);
+    _isRecoveryKeySavePending = false;
+    _wasWalletImported = false;
+    notifyListeners();
   }
 
   Future<ActionResult> updatePhotoAttestationConfig({
@@ -683,6 +636,9 @@ class GraniteLakeController extends ChangeNotifier {
     // only the paired Trade3 tokens, never a biometric unlock - so it runs
     // before the signing-key gate below, which would otherwise starve it on
     // every trigger where no session is active.
+    if (isAttestationBlocked) {
+      return;
+    }
     unawaited(retryPendingTrade3Uploads());
     if (_isRetryingPendingAttestations) {
       return;
@@ -849,6 +805,9 @@ class GraniteLakeController extends ChangeNotifier {
     // rows - observed on-device as two interleaved "unlock_requested"
     // calls racing a single BiometricPrompt/CryptoObject, which is not a
     // supported usage and produces spurious native failures.
+    if (isAttestationBlocked) {
+      return ActionResult.failure(attestationBlockedReason);
+    }
     if (_isUnlockingQueueForSubmission) {
       return const ActionResult.success();
     }
@@ -1184,8 +1143,13 @@ class GraniteLakeController extends ChangeNotifier {
     // resetApplicationState deletes its own secure-storage keys; the Trade3
     // tokens are stored under separate keys and must be unlinked explicitly.
     await _trade3TokenStore.clear();
+    await _glSession.store.clear();
+    _glLinkState = GlLinkState.never;
+    _trade3CanDeposit = null;
     await _captureWorkflowService.clearCaptureArtifacts();
     _clearLocalBiometricSessionState(clearIdentity: true);
+    _isRecoveryKeySavePending = false;
+    _wasWalletImported = false;
 
     _hasCompletedRegistration = false;
     _deviceRegistration = null;
@@ -1355,6 +1319,10 @@ class GraniteLakeController extends ChangeNotifier {
     String? trade3TransactionId,
     String? trade3PaymentScheduleId,
   }) async {
+    await _endExpiredSession();
+    if (isAttestationBlocked) {
+      return AttestationActionResult.failure(attestationBlockedReason);
+    }
     final identity = _identity;
     final session = _session;
     final sessionSigningKey = _sessionSigningKey;
@@ -1547,6 +1515,10 @@ class GraniteLakeController extends ChangeNotifier {
     String? trade3TransactionId,
     String? trade3PaymentScheduleId,
   }) async {
+    await _endExpiredSession();
+    if (isAttestationBlocked) {
+      return AttestationActionResult.failure(attestationBlockedReason);
+    }
     final identity = _identity;
     final session = _session;
     final sessionSigningKey = _sessionSigningKey;
@@ -1781,8 +1753,9 @@ class GraniteLakeController extends ChangeNotifier {
     }
   }
 
-  /// EP-01: exchanges a pairing code for session tokens and links the
-  /// device to the user's Trade3 account.
+  /// Links this device from a Trade3 QR/pairing code: pairs with Trade3
+  /// (EP-01), then signs in to the GL server with the Trade3 token and a
+  /// wallet signature. Used for onboarding and to relink.
   Future<ActionResult> pairWithTrade3({required String code}) async {
     if (_isTrade3Pairing) {
       return const ActionResult.failure('Already linking your account.');
@@ -1793,23 +1766,103 @@ class GraniteLakeController extends ChangeNotifier {
         'Enter the pairing code from your Trade3 profile.',
       );
     }
+    final identity = _identity;
+    final config = _photoAttestationConfig;
+    if (identity == null) {
+      return const ActionResult.failure(
+        'Create your secure ID before linking your account.',
+      );
+    }
+    if (config == null || !config.isComplete) {
+      return const ActionResult.failure(
+        'The app is not set up correctly. Reinstall it and try again.',
+      );
+    }
+    // The domain used to reach the server: the one this build is for.
+    final domain =
+        _photoAttestationClaim?.domain ??
+        AppConstants.otpBackendDomain ??
+        (AppConstants.otpBackendDevFallbacksEnabled ? 'localhost' : null);
+    if (domain == null) {
+      return const ActionResult.failure(
+        "This app build isn't connected to an organisation.",
+      );
+    }
 
     _isTrade3Pairing = true;
     notifyListeners();
+    final hadActiveSession = hasActiveSession;
+    var pairedWithTrade3 = false;
+    var linked = false;
+    // Pairing replaces the stored Trade3 tokens; keep them in case it fails.
+    final previousTrade3Tokens = await _trade3TokenStore.read();
+    final previousGlSession = await _glSession.store.read();
+    var signedInToGl = false;
     try {
+      // Unlock before spending the single-use pairing code.
+      if (!hadActiveSession) {
+        final unlock = await startSession(
+          promptTitle: 'Confirm your identity',
+          promptSubtitle: 'Verify biometrics to link your account.',
+        );
+        if (!unlock.isSuccess) {
+          return unlock;
+        }
+      }
+      final signingKey = _sessionSigningKey;
+      if (signingKey == null) {
+        return const ActionResult.failure(
+          'Your secure signing key is locked. Try again.',
+        );
+      }
+
       // device_id tags the backend session with this install; the wallet
       // address is stable per install and always exists by pairing time.
-      await _trade3ApiService.pairWithCode(
+      final trade3Tokens = await _trade3ApiService.pairWithCode(
         normalizedCode,
-        deviceId: _identity?.walletAddress,
+        deviceId: identity.walletAddress,
       );
+      pairedWithTrade3 = true;
+
+      final wallet = identity.walletAddress.toLowerCase();
+      final nonce = await _glSession.requestChallenge(
+        domain: domain,
+        userWallet: wallet,
+      );
+      final signature = SuiEd25519Account(signingKey)
+          .signPersonalMessage(utf8.encode('auth:$wallet:$nonce'))
+          .toVariantBcsBase64();
+      final result = await _glSession.exchange(
+        domain: domain,
+        userWallet: wallet,
+        nonce: nonce,
+        signature: signature,
+        trade3AccessToken: trade3Tokens.accessToken,
+      );
+      signedInToGl = true;
+      await _storeRegistration(domain, identity, config, result);
+      linked = true;
+
+      _glLinkState = GlLinkState.linked;
       _isTrade3Paired = true;
       _pendingTrade3PairingCode = null;
       _trade3SyncError = null;
       _reconcileSelectedProject();
       unawaited(syncTrade3Hierarchy());
+      unawaited(refreshWalletSuiBalance(force: true));
+      unawaited(refreshSponsorStatus());
+      // Anything that waited while unlinked.
+      if (hadActiveSession) {
+        unawaited(retryPendingAttestations());
+      } else {
+        unawaited(retryPendingTrade3Uploads());
+      }
       return const ActionResult.success();
     } on Trade3ApiException catch (error) {
+      return ActionResult.failure(error.userMessage);
+    } on GlSessionException catch (error) {
+      return ActionResult.failure(error.userMessage);
+    } on PhotoAttestationException catch (error) {
       return ActionResult.failure(error.userMessage);
     } catch (error) {
       debugPrint('[Trade3] pairWithTrade3 unexpected error: $error');
@@ -1818,8 +1871,150 @@ class GraniteLakeController extends ChangeNotifier {
         'Please try again.',
       );
     } finally {
+      // Half-linked is not a state: drop the Trade3 session again.
+      if (pairedWithTrade3 && !linked) {
+        if (signedInToGl) {
+          // Give up the new GL session and put the link state back, so a
+          // failed relink cannot lift a block.
+          await _glSession.store.markUnlinked(_glLinkState);
+          if (previousGlSession != null) {
+            await _glSession.store.save(previousGlSession);
+          }
+          unawaited(_glSession.flushPendingRevoke(domain: domain));
+        }
+        await _dropTrade3Session();
+        if (previousTrade3Tokens != null) {
+          await _trade3TokenStore.save(previousTrade3Tokens);
+        }
+        _isTrade3Paired = previousTrade3Tokens != null;
+      }
+      if (!hadActiveSession) {
+        await endSession();
+      }
       _isTrade3Pairing = false;
       notifyListeners();
+    }
+  }
+
+  Future<void> _storeRegistration(
+    String domain,
+    IdentityRecord identity,
+    PhotoAttestationContractConfig config,
+    GlExchangeResult result,
+  ) async {
+    final userCapObjectId = await _photoAttestationService
+        .resolveUserCapObjectId(
+          config: config,
+          walletAddress: identity.walletAddress,
+          preferredObjectId: result.userCapId,
+          claimTxDigest: result.txDigest,
+        );
+    final claim = PhotoAttestationClaimRecord(
+      domain: domain,
+      userId: result.userId,
+      userCapObjectId: userCapObjectId,
+      claimTxDigest: result.txDigest,
+      claimedAt: _photoAttestationClaim?.claimedAt ?? DateTime.now().toUtc(),
+      userEmail: result.userEmail.toLowerCase(),
+    );
+    await _dataControllers.employee.saveClaimedEmployee(
+      employeeId: result.userId,
+      companyDomain: domain,
+      tenantName: result.domain,
+      walletAddress: identity.walletAddress,
+      profile: result.profile,
+      walletRestored: _wasWalletImported,
+    );
+    // Saved last: its presence is what marks registration complete.
+    await _dataControllers.config.savePhotoAttestationClaim(claim);
+    _photoAttestationClaim = claim;
+    await _reloadEmployee();
+    _hasCompletedRegistration = true;
+    _resetNotice = null;
+    _deviceRegistration ??= await _secureStateService.storeDeviceRegistration();
+  }
+
+  Future<void> _reloadEmployee() async {
+    final row = await _dataControllers.employee.loadPrimaryEmployee();
+    _employee = row == null ? null : EmployeeRecord.fromJson(row);
+  }
+
+  /// Ends an expired GL session and notices a revoked one. Run on launch and
+  /// resume.
+  Future<void> checkGlSession() async {
+    final domain = _photoAttestationClaim?.domain;
+    if (domain == null) {
+      return;
+    }
+    try {
+      await _glSession.checkSession(
+        domain: domain,
+        nowUtc: TimeSyncService().nowUtc(),
+      );
+    } catch (error) {
+      debugPrint('[GL] session check failed: $error');
+    }
+  }
+
+  /// Local check only (no network), so it works offline and costs a capture
+  /// nothing.
+  Future<void> _endExpiredSession() async {
+    try {
+      await _glSession.endIfExpired(TimeSyncService().nowUtc());
+    } catch (error) {
+      debugPrint('[GL] expiry check failed: $error');
+    }
+  }
+
+  /// Reads company, role and deposit permission again, so changes made in
+  /// Trade3 are picked up. Best effort: the last known values stay.
+  Future<void> refreshTrade3Profile() async {
+    try {
+      final profile = await _trade3ApiService.fetchProfile();
+      // Ignore a profile that isn't for the account stored here.
+      final stored = _employee?.trade3UserId ?? '';
+      if (stored.isNotEmpty && stored != profile.userId) {
+        return;
+      }
+      if (await _dataControllers.employee.updateTrade3Profile(profile)) {
+        await _reloadEmployee();
+      }
+      await _applyDepositPermission(profile.canDepositDocuments);
+      notifyListeners();
+    } on Trade3UnauthenticatedException {
+      await _handleTrade3Unauthenticated();
+    } catch (error) {
+      debugPrint('[Trade3] profile refresh failed: $error');
+    }
+  }
+
+  Future<void> _applyDepositPermission(bool? canDeposit) async {
+    if (canDeposit == null) {
+      return;
+    }
+    _trade3CanDeposit = canDeposit;
+    await _dataControllers.config.saveTrade3CanDeposit(canDeposit);
+    if (!canDeposit) {
+      await selectTrade3Target(null);
+      return;
+    }
+    // The right was granted (back): retry uploads it had refused.
+    final refused = _attestationHistory
+        .where(
+          (record) =>
+              record.trade3UploadStatus?.toUpperCase() == 'FAILED' &&
+              record.trade3ErrorMessage == depositRightsMessage,
+        )
+        .toList();
+    for (final record in refused) {
+      await _updateAttestationRecord(
+        record,
+        trade3UploadStatus: 'PENDING',
+        trade3ErrorMessage: '',
+      );
+    }
+    if (refused.isNotEmpty) {
+      unawaited(retryPendingTrade3Uploads());
     }
   }
 
@@ -1833,13 +2028,14 @@ class GraniteLakeController extends ChangeNotifier {
     _isSyncingTrade3Hierarchy = true;
     _trade3SyncError = null;
     notifyListeners();
+    unawaited(refreshTrade3Profile());
     try {
       _trade3Hierarchy = await _trade3ApiService.syncHierarchy();
       _trade3HierarchySyncedAt = DateTime.now().toUtc();
       await _persistTrade3Hierarchy();
       await _dropTrade3TargetIfMissing();
     } on Trade3UnauthenticatedException {
-      _handleTrade3Unauthenticated();
+      await _handleTrade3Unauthenticated();
     } on Trade3ApiException catch (error) {
       _trade3SyncError = error.userMessage;
     } catch (error) {
@@ -1927,6 +2123,9 @@ class GraniteLakeController extends ChangeNotifier {
   /// local projects table (captures reference it by foreign key) and
   /// persisted so the choice survives restarts. Passing null clears it.
   Future<void> selectTrade3Target(Trade3TargetSelection? target) async {
+    if (target != null && !canSelectTrade3Target) {
+      return;
+    }
     _selectedTrade3Target = target;
     if (target != null) {
       final existing = _projects.where((p) => p.projectId == target.projectId);
@@ -2119,6 +2318,7 @@ class GraniteLakeController extends ChangeNotifier {
         trade3UploadStatus: 'PENDING',
         trade3ErrorMessage: error.userMessage,
       );
+      await _handleTrade3Unauthenticated();
       notifyListeners();
     } on Trade3UploadVerificationException catch (error) {
       // Accepted by the server but not confirmed - it may already hold the
@@ -2130,6 +2330,20 @@ class GraniteLakeController extends ChangeNotifier {
       );
       notifyListeners();
     } on Trade3ApiException catch (error) {
+      // Trade3 refuses /pin without the deposit right. Ask again, since it
+      // may have been removed after the capture.
+      if (error.statusCode != null) {
+        await refreshTrade3Profile();
+        if (!canSelectTrade3Target) {
+          await _updateAttestationRecord(
+            record,
+            trade3UploadStatus: 'FAILED',
+            trade3ErrorMessage: depositRightsMessage,
+          );
+          notifyListeners();
+          return;
+        }
+      }
       // Definitive rejections (400/403/404) can never succeed on retry;
       // network-level and server-side (5xx) failures stay retryable.
       final statusCode = error.statusCode;
@@ -2178,7 +2392,15 @@ class GraniteLakeController extends ChangeNotifier {
     }
   }
 
-  void _handleTrade3Unauthenticated() {
+  /// A dead Trade3 session ends the GL one too. An install that never linked
+  /// to GL (registered by OTP) just goes back to unpaired, as before.
+  Future<void> _handleTrade3Unauthenticated() async {
+    if (_glLinkState == GlLinkState.linked) {
+      await _endTrade3Link(GlLinkState.expired);
+      _trade3SyncError = attestationBlockedReason;
+      notifyListeners();
+      return;
+    }
     _isTrade3Paired = false;
     _trade3Hierarchy = null;
     _trade3HierarchySyncedAt = null;
@@ -2190,24 +2412,144 @@ class GraniteLakeController extends ChangeNotifier {
     unawaited(_dataControllers.config.saveTrade3Target(null));
   }
 
-  /// EP-05: revokes the session server-side and unlinks the account from
-  /// this device. An already-dead session counts as unlinked.
-  Future<ActionResult> disconnectTrade3() async {
+  /// Rebuilds history for this wallet from its on-chain attestations and the
+  /// documents Trade3 pinned through Granite. Files themselves are not
+  /// restored: Trade3 offers no download.
+  Future<ActionResult> restoreFiles() async {
+    if (_isRestoringFiles) {
+      return const ActionResult.failure('Already restoring.');
+    }
+    final identity = _identity;
+    final config = _photoAttestationConfig;
+    if (identity == null || config == null || !_hasCompletedRegistration) {
+      return const ActionResult.failure('Link your account first.');
+    }
+    if (isAttestationBlocked || !_isTrade3Paired) {
+      return const ActionResult.failure(relinkMessage);
+    }
+
+    _isRestoringFiles = true;
     try {
-      await _trade3ApiService.disconnect();
+      final contracts = await _trade3ApiService.syncHierarchy();
+      final events = await _photoAttestationService.listAttestationEvents(
+        config: config,
+        walletAddress: identity.walletAddress,
+      );
+      final plan = buildRestorePlan(
+        contracts: contracts,
+        events: events,
+        walletAddress: identity.walletAddress,
+        publicKeyHex: identity.publicKeyHex,
+        existingHashes: {
+          for (final record in _attestationHistory) record.contentSha256,
+        },
+        now: DateTime.now().toUtc(),
+      );
+      await _saveRestored(plan);
+      // Success counts even with nothing to restore.
+      await _dataControllers.employee.markFilesRestored();
+      await _reloadEmployee();
+      return ActionResult.successWithMessage(_restoreSummary(plan));
     } on Trade3UnauthenticatedException {
-      _clearTrade3State();
-      return const ActionResult.success();
+      await _handleTrade3Unauthenticated();
+      return const ActionResult.failure(relinkMessage);
     } on Trade3ApiException catch (error) {
       return ActionResult.failure(error.userMessage);
     } catch (error) {
-      debugPrint('[Trade3] disconnectTrade3 unexpected error: $error');
+      debugPrint('[Restore] failed: $error');
       return const ActionResult.failure(
-        "Couldn't unlink your Trade3 account. Try again in a moment.",
+        "Couldn't restore your files. Check your connection and try again.",
       );
+    } finally {
+      _isRestoringFiles = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _saveRestored(RestorePlan plan) async {
+    // Projects first: history rows reference them.
+    for (final project in plan.projects) {
+      if (_projects.any((item) => item.projectId == project.projectId)) {
+        continue;
+      }
+      await _dataControllers.project.saveProject(project.toJson());
+      _projects = [..._projects, project]
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    }
+    for (final record in plan.records) {
+      if (record.isFile) {
+        final file = UploadedFileRecord.fromAttestationRecord(record);
+        await _dataControllers.uploadedFile.saveUploadedFile(file.toJson());
+        _uploadedFileHistory = [..._uploadedFileHistory, file]
+          ..sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
+      } else {
+        final photo = PhotoCaptureRecord.fromAttestationRecord(record);
+        await _dataControllers.photoCapture.savePhotoCapture(photo.toJson());
+        _photoCaptureHistory = [..._photoCaptureHistory, photo]
+          ..sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
+      }
+    }
+    _syncAttestationHistory();
+    _attestationVerifications = {
+      ..._attestationVerifications,
+      for (final record in plan.records)
+        record.captureId: _seedVerificationFor(record),
+    };
+    notifyListeners();
+    // One at a time, in the background: there can be many.
+    unawaited(() async {
+      for (final record in plan.records) {
+        await verifyAttestationOnChain(record);
+      }
+    }());
+  }
+
+  String _restoreSummary(RestorePlan plan) {
+    final restored = plan.records.length;
+    return [
+      restored == 0
+          ? 'Nothing new to restore.'
+          : 'Restored $restored ${restored == 1 ? 'record' : 'records'}.',
+      if (plan.alreadyOnDevice > 0)
+        '${plan.alreadyOnDevice} already on this phone.',
+      if (plan.notAttestedByThisWallet > 0)
+        '${plan.notAttestedByThisWallet} Trade3 files have no record for this '
+            'secure ID.',
+      if (restored > 0) 'The files themselves cannot be downloaded yet.',
+    ].join(' ');
+  }
+
+  /// Unlinks Trade3 and the GL server. Takes effect on this device at once,
+  /// even offline; attestation stays blocked until the next QR scan.
+  Future<ActionResult> disconnectTrade3() async {
+    await _endTrade3Link(GlLinkState.unlinkedByUser);
+    return const ActionResult.success();
+  }
+
+  Future<void> _endTrade3Link(GlLinkState reason) async {
+    // Already blocked: keep the first reason.
+    if (!isAttestationBlocked) {
+      _glLinkState = reason;
+      await _glSession.store.markUnlinked(reason);
     }
     _clearTrade3State();
-    return const ActionResult.success();
+    _lockQueue(reason: 'trade3_unlinked');
+    await _dropTrade3Session();
+    final domain = _photoAttestationClaim?.domain;
+    if (domain != null) {
+      unawaited(_glSession.flushPendingRevoke(domain: domain));
+    }
+    notifyListeners();
+  }
+
+  /// EP-05 where possible, then forget the tokens regardless.
+  Future<void> _dropTrade3Session() async {
+    try {
+      await _trade3ApiService.disconnect().timeout(const Duration(seconds: 10));
+    } catch (error) {
+      debugPrint('[Trade3] logout failed: ${error.runtimeType}');
+    }
+    await _trade3TokenStore.clear();
   }
 
   void _clearTrade3State() {
@@ -2217,9 +2559,11 @@ class GraniteLakeController extends ChangeNotifier {
     _trade3SyncError = null;
     _pendingTrade3PairingCode = null;
     _selectedTrade3Target = null;
+    _trade3CanDeposit = null;
     _reconcileSelectedProject();
     unawaited(_persistTrade3Hierarchy());
     unawaited(_dataControllers.config.saveTrade3Target(null));
+    unawaited(_dataControllers.config.saveTrade3CanDeposit(null));
     notifyListeners();
   }
 
@@ -3047,6 +3391,7 @@ class GraniteLakeController extends ChangeNotifier {
         trade3ErrorMessage: trade3ErrorMessage ?? record.trade3ErrorMessage,
         trade3DocumentId: trade3DocumentId ?? record.trade3DocumentId,
         trade3IpfsCid: trade3IpfsCid ?? record.trade3IpfsCid,
+        isRestored: record.isRestored,
       );
     }
 

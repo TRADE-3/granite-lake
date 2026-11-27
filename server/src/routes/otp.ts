@@ -12,6 +12,7 @@ import {
 } from "../db/repositories.js";
 import { VaultConnectionError } from "../services/VaultService.js";
 import { requireAppApiKey } from "../utils/auth.js";
+import { checkOwnUserToken } from "../utils/userAuth.js";
 import { otpRequestLimiter, otpVerifyLimiter, resetAllRateLimiters } from "../utils/rateLimit.js";
 
 // Export for testing
@@ -35,6 +36,14 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", async (request, reply) => {
     if (!requireAppApiKey(request, reply)) {
       return;
+    }
+  });
+
+  // New registrations by OTP can be switched off once apps use Trade3.
+  app.addHook("onRequest", async (request, reply) => {
+    const route = request.routeOptions.url;
+    if (!env.OTP_ENABLED && (route === "/otp/request" || route === "/otp/verify")) {
+      return reply.status(403).send({ error: "otp_disabled", message: "OTP registration is turned off." });
     }
   });
 
@@ -138,7 +147,7 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
-  app.get("/otp/:userId", async (request, reply) => {
+  app.get("/otp/:userId", { preHandler: checkOwnUserToken }, async (request, reply) => {
     const userId = z
       .string()
       .min(1)
@@ -172,7 +181,7 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
   // that the shared app API key plus a known userId is not enough to disable
   // someone else's account: (1) request a single-use challenge, (2) send a
   // signature over it from the wallet registered for that user.
-  app.post("/otp/:userId/deactivate/challenge", async (request, reply) => {
+  app.post("/otp/:userId/deactivate/challenge", { preHandler: checkOwnUserToken }, async (request, reply) => {
     const userId = z
       .string()
       .min(1)
@@ -190,7 +199,7 @@ export const otpRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ userId, ...challenge });
   });
 
-  app.patch("/otp/:userId/deactivate", async (request, reply) => {
+  app.patch("/otp/:userId/deactivate", { preHandler: checkOwnUserToken }, async (request, reply) => {
     const userId = z
       .string()
       .min(1)

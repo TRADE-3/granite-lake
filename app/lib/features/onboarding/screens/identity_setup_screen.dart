@@ -21,6 +21,34 @@ class _IdentitySetupScreenState extends State<IdentitySetupScreen> {
   bool _isGenerating = false;
   String? _errorMessage;
 
+  Future<void> _importRecoveryKey() async {
+    final recoveryKey = await showDialog<String>(
+      context: context,
+      builder: (_) => const _RecoveryKeyDialog(),
+    );
+    if (recoveryKey == null || recoveryKey.trim().isEmpty || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _isGenerating = true;
+      _errorMessage = null;
+    });
+    final result = await GraniteLakeScope.of(
+      context,
+    ).importIdentity(recoveryKey);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isGenerating = false;
+      _errorMessage = result.isSuccess ? null : result.message;
+    });
+    if (result.isSuccess) {
+      context.go(AppRoutes.biometricSetup);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = GraniteLakeScope.of(context);
@@ -213,6 +241,23 @@ class _IdentitySetupScreenState extends State<IdentitySetupScreen> {
                               ),
                             ),
 
+                            if (identity == null) ...[
+                              const SizedBox(height: 8),
+                              Center(
+                                child: TextButton(
+                                  onPressed: _isGenerating
+                                      ? null
+                                      : _importRecoveryKey,
+                                  child: Text(
+                                    'I HAVE A RECOVERY KEY',
+                                    style: AppTextStyles.buttonText.copyWith(
+                                      color: AppColors.textSecondary,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+
                             if (_errorMessage != null) ...[
                               const SizedBox(height: 12),
                               Text(
@@ -247,6 +292,62 @@ class _IdentitySetupScreenState extends State<IdentitySetupScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _RecoveryKeyDialog extends StatefulWidget {
+  const _RecoveryKeyDialog();
+
+  @override
+  State<_RecoveryKeyDialog> createState() => _RecoveryKeyDialogState();
+}
+
+class _RecoveryKeyDialogState extends State<_RecoveryKeyDialog> {
+  final _controller = TextEditingController();
+  bool _isHidden = true;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AppColors.surfaceElevated,
+      title: const Text('Enter your recovery key'),
+      // Obscured, with keyboard learning off: this key controls the account.
+      content: TextField(
+        controller: _controller,
+        obscureText: _isHidden,
+        autocorrect: false,
+        enableSuggestions: false,
+        enableIMEPersonalizedLearning: false,
+        decoration: InputDecoration(
+          hintText: 'Recovery key',
+          suffixIcon: IconButton(
+            onPressed: () => setState(() => _isHidden = !_isHidden),
+            icon: Icon(
+              _isHidden
+                  ? Icons.visibility_outlined
+                  : Icons.visibility_off_outlined,
+            ),
+            tooltip: _isHidden ? 'Show' : 'Hide',
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('CANCEL'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text),
+          child: const Text('RESTORE'),
+        ),
+      ],
     );
   }
 }

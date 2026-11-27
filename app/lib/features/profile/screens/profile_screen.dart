@@ -64,7 +64,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ? 'Pending registration'
         : _formatDateTime(deviceRegistration.registeredAt);
     final tenantName = employee?.tenantName ?? _tenantName;
-    final userEmail = controller.photoAttestationClaim?.userEmail ?? '';
+    final userEmail = (employee?.email.isNotEmpty ?? false)
+        ? employee!.email
+        : controller.photoAttestationClaim?.userEmail ?? '';
+    final trade3Details = _trade3Details(employee);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
@@ -113,6 +116,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     controller.refreshWalletSuiBalance(force: true),
               ),
             ),
+          ],
+          if (trade3Details.isNotEmpty) ...[
+            const SizedBox(height: 22),
+            const _SectionLabel('Trade3 Profile'),
+            const SizedBox(height: 10),
+            _Panel(child: _KeyValueGrid(items: trade3Details)),
           ],
           const SizedBox(height: 22),
           const _SectionLabel('Session Protocol'),
@@ -163,6 +172,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
             child: _ThemePreferenceTile(
               isDarkMode: controller.isDarkMode,
               onToggle: controller.toggleTheme,
+            ),
+          ),
+          const SizedBox(height: 22),
+          const _SectionLabel('Recovery Key'),
+          const SizedBox(height: 10),
+          _Panel(
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.key_rounded, color: AppColors.statusEncrypt),
+              title: const Text('Save your recovery key'),
+              subtitle: const Text('Needed to get back in after a reinstall'),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () => GoRouter.of(context).push(AppRoutes.recoveryKey),
             ),
           ),
           const SizedBox(height: 22),
@@ -269,6 +291,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  /// Rows with no value (an account that never linked Trade3) are left out.
+  List<_KeyValueItem> _trade3Details(EmployeeRecord? employee) {
+    if (employee == null || employee.trade3UserId.isEmpty) {
+      return const [];
+    }
+    final role = employee.role.replaceAll('_', ' ').toLowerCase();
+    return [
+      for (final (label, value) in [
+        ('Name', employee.fullName),
+        ('Email', employee.email),
+        ('User ID', employee.trade3UserId),
+        ('Company', employee.companyName),
+        ('Role', role.isEmpty ? '' : role[0].toUpperCase() + role.substring(1)),
+        ('Position', employee.position),
+      ])
+        if (value.isNotEmpty) _KeyValueItem(label: label, value: value),
+    ];
+  }
+
   Future<void> _confirmDeleteAccount(GraniteLakeController controller) async {
     // Defensive re-check: the button itself is disabled while any
     // submission is pending (see _DangerZoneCard), but this guards the
@@ -365,8 +406,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ],
           ),
           content: Text(
-            'This removes the link between this device and your Trade3 account. '
-            'You can pair again anytime with a new code from your Trade3 profile.',
+            'You will not be able to capture or verify anything until you scan '
+            'a new Trade3 QR code. Your history and files stay on this phone.',
             style: AppTextStyles.bodyMedium.copyWith(
               color: AppColors.textSecondary,
               height: 1.5,

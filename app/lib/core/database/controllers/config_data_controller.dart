@@ -44,6 +44,21 @@ class ConfigDataController {
     );
   }
 
+  /// Null when Trade3 has not said.
+  Future<bool?> loadTrade3CanDeposit() async {
+    final raw = await _configDao.readValue(
+      GraniteLakeDatabaseService.trade3CanDepositConfigKey,
+    );
+    return raw == null || raw.isEmpty ? null : raw == 'true';
+  }
+
+  Future<void> saveTrade3CanDeposit(bool? value) {
+    return _configDao.writeValue(
+      GraniteLakeDatabaseService.trade3CanDepositConfigKey,
+      value?.toString(),
+    );
+  }
+
   Future<void> saveTrade3Target(String? json) {
     return _configDao.writeValue(
       GraniteLakeDatabaseService.trade3TargetConfigKey,

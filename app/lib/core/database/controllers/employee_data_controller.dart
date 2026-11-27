@@ -1,3 +1,4 @@
+import '../../services/gl_session_service.dart' show Trade3Profile;
 import '../dao/employee_dao.dart';
 
 class EmployeeDataController {
@@ -32,32 +33,79 @@ class EmployeeDataController {
     });
   }
 
+  /// Stores a registration. [tenantName] is the registry domain the account
+  /// attests under; [companyDomain] is the domain used to reach the server.
   Future<void> saveClaimedEmployee({
     required String employeeId,
     required String companyDomain,
+    required String tenantName,
     required String walletAddress,
+    required Trade3Profile profile,
+    bool walletRestored = false,
   }) async {
     final normalizedEmployeeId = employeeId.trim();
-    final normalizedDomain = companyDomain.trim();
     final existing = await _employeeDao.fetchPrimaryEmployee();
     final now = DateTime.now().toUtc().toIso8601String();
     final createdAt = existing?['created_at'] as String? ?? now;
-    final fullName = existing?['full_name'] as String? ?? 'Field Operator';
-    final role = existing?['role'] as String? ?? 'Inspector';
 
     await _employeeDao.deleteAll();
     await _employeeDao.upsert(<String, dynamic>{
       'employee_id': normalizedEmployeeId,
-      'full_name': fullName,
-      'role': role,
-      'tenant_name': normalizedDomain,
-      'company_domain': normalizedDomain,
+      'tenant_name': tenantName.trim(),
+      'company_domain': companyDomain.trim(),
       'initials': _initialsForEmployeeId(normalizedEmployeeId),
       'is_placeholder': 0,
       'created_at': createdAt,
       'updated_at': now,
       'wallet_address': walletAddress,
+      ..._profileColumns(profile),
+      // Kept across a relink: restoring is offered once per wallet.
+      'wallet_restored': walletRestored ? 1 : existing?['wallet_restored'] ?? 0,
+      'files_restored': existing?['files_restored'] ?? 0,
     });
+  }
+
+  Future<void> markWalletRestored() => _setFlag('wallet_restored');
+
+  Future<void> markFilesRestored() => _setFlag('files_restored');
+
+  Future<void> _setFlag(String column) async {
+    final existing = await _employeeDao.fetchPrimaryEmployee();
+    if (existing == null) {
+      return;
+    }
+    await _employeeDao.upsert(<String, dynamic>{
+      ...existing,
+      column: 1,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    });
+  }
+
+  /// Applies a newer Trade3 profile, only for the account already stored.
+  /// Returns false if it belongs to someone else.
+  Future<bool> updateTrade3Profile(Trade3Profile profile) async {
+    final existing = await _employeeDao.fetchPrimaryEmployee();
+    if (existing == null || existing['trade3_user_id'] != profile.userId) {
+      return false;
+    }
+    await _employeeDao.upsert(<String, dynamic>{
+      ...existing,
+      ..._profileColumns(profile),
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    });
+    return true;
+  }
+
+  Map<String, dynamic> _profileColumns(Trade3Profile profile) {
+    return <String, dynamic>{
+      'full_name': profile.name,
+      'role': profile.role,
+      'email': profile.email,
+      'trade3_user_id': profile.userId,
+      'company_name': profile.companyName,
+      'trade3_company_id': profile.companyId,
+      'position': profile.position,
+    };
   }
 
   Future<void> clear() {
@@ -80,6 +128,12 @@ class EmployeeDataController {
       'updatedAt': row['updated_at'],
       'isPlaceholder': (row['is_placeholder'] as int? ?? 0) == 1,
       'walletAddress': row['wallet_address'] as String? ?? '',
+      'email': row['email'] as String? ?? '',
+      'trade3UserId': row['trade3_user_id'] as String? ?? '',
+      'companyName': row['company_name'] as String? ?? '',
+      'position': row['position'] as String? ?? '',
+      'walletRestored': (row['wallet_restored'] as int? ?? 0) == 1,
+      'filesRestored': (row['files_restored'] as int? ?? 0) == 1,
     };
   }
 

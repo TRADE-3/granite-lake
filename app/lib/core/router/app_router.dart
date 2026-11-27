@@ -6,6 +6,7 @@ import '../../features/capture/screens/capture_screen.dart';
 import '../../features/capture/screens/capture_method_screen.dart';
 import '../../features/capture/screens/file_attestation_screen.dart';
 import '../../features/history/screens/capture_detail_screen.dart';
+import '../../features/profile/screens/recovery_key_screen.dart';
 import '../../features/shell/screens/main_shell.dart';
 import '../../features/system/screens/boot_screen.dart';
 import '../../features/system/screens/local_data_init_screen.dart';
@@ -13,13 +14,11 @@ import '../../features/trade3/screens/trade3_pairing_screen.dart';
 import '../../features/onboarding/screens/biometric_setup_screen.dart';
 import '../../features/onboarding/screens/identity_setup_screen.dart';
 import '../../features/onboarding/screens/welcome_screen.dart';
-import '../../features/onboarding/screens/registration_screen.dart';
 
 abstract final class AppRoutes {
   static const String boot = '/boot';
   static const String localDataInit = '/local-data-init';
   static const String welcome = '/';
-  static const String registration = '/registration';
   static const String identitySetup = '/identity-setup';
   static const String biometricSetup = '/biometric-setup';
   static const String dashboard = '/dashboard';
@@ -28,6 +27,7 @@ abstract final class AppRoutes {
   static const String captureFile = '/capture/file';
   static const String historyDetail = '/history-detail';
   static const String pair = '/pair';
+  static const String recoveryKey = '/recovery-key';
 }
 
 GoRouter createAppRouter(GraniteLakeController controller) {
@@ -66,26 +66,33 @@ GoRouter createAppRouter(GraniteLakeController controller) {
             : AppRoutes.biometricSetup;
       }
 
+      // Linking Trade3 is how an account is registered.
+      if (controller.mustSaveRecoveryKey) {
+        return location == AppRoutes.recoveryKey ? null : AppRoutes.recoveryKey;
+      }
       if (!controller.hasCompletedRegistration) {
-        return location == AppRoutes.registration
+        return location == AppRoutes.pair || location == AppRoutes.recoveryKey
             ? null
-            : AppRoutes.registration;
+            : AppRoutes.pair;
       }
 
       // A Trade3 pairing code can arrive via deep link at any point of
       // onboarding (fresh install opened straight from a QR code). It waits
-      // as "pending" until registration completes, then the pairing screen
-      // takes over; the screen consumes the code on open, so this cannot
-      // loop.
+      // as "pending" until the pairing screen takes over; the screen consumes
+      // it, so this cannot loop.
       if (controller.pendingTrade3PairingCode != null &&
           location != AppRoutes.pair) {
         return AppRoutes.pair;
       }
 
-      if ((location == AppRoutes.capture ||
-              location == AppRoutes.capturePhoto ||
-              location == AppRoutes.captureFile) &&
-          !controller.hasActiveSession) {
+      final isCaptureRoute =
+          location == AppRoutes.capture ||
+          location == AppRoutes.capturePhoto ||
+          location == AppRoutes.captureFile;
+      if (isCaptureRoute && controller.isAttestationBlocked) {
+        return AppRoutes.pair;
+      }
+      if (isCaptureRoute && !controller.hasActiveSession) {
         return AppRoutes.dashboard;
       }
 
@@ -93,8 +100,7 @@ GoRouter createAppRouter(GraniteLakeController controller) {
           location == AppRoutes.localDataInit ||
           location == AppRoutes.welcome ||
           location == AppRoutes.identitySetup ||
-          location == AppRoutes.biometricSetup ||
-          location == AppRoutes.registration) {
+          location == AppRoutes.biometricSetup) {
         return AppRoutes.dashboard;
       }
 
@@ -117,17 +123,17 @@ GoRouter createAppRouter(GraniteLakeController controller) {
             const NoTransitionPage(child: WelcomeScreen()),
       ),
       GoRoute(
-        path: AppRoutes.registration,
-        pageBuilder: (context, state) =>
-            const MaterialPage(child: RegistrationScreen()),
-      ),
-      GoRoute(
         path: AppRoutes.pair,
         pageBuilder: (context, state) => NoTransitionPage(
           child: Trade3PairingScreen(
             routeCode: state.uri.queryParameters['code'],
           ),
         ),
+      ),
+      GoRoute(
+        path: AppRoutes.recoveryKey,
+        pageBuilder: (context, state) =>
+            const MaterialPage(child: RecoveryKeyScreen()),
       ),
       GoRoute(
         path: AppRoutes.identitySetup,

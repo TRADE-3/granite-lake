@@ -14,47 +14,14 @@ import '../utils/utils.dart';
 import 'attestation_transaction_builder.dart';
 import 'sponsor_attestation_service.dart';
 import 'sui_graphql_service.dart';
+import 'gl_session_service.dart';
+import 'restore_service.dart';
 
 class _GraphQlCoin {
   const _GraphQlCoin({required this.object, required this.balance});
 
   final SuiGraphQlObject object;
   final BigInt balance;
-}
-
-class PhotoAttestationClaimInput {
-  const PhotoAttestationClaimInput({
-    required this.domain,
-    required this.userId,
-    required this.otp,
-    required this.walletNonce,
-    this.userEmail = '',
-  });
-
-  final String domain;
-  final String userId;
-  final String otp;
-  final String userEmail;
-
-  // Server-issued nonce this claim's wallet must sign to prove possession of
-  // its private key before the backend binds it to the OTP session.
-  final String walletNonce;
-}
-
-class PhotoAttestationOtpRequestResult {
-  const PhotoAttestationOtpRequestResult({
-    required this.userId,
-    required this.domain,
-    required this.userEmail,
-    required this.expiresAt,
-    required this.walletNonce,
-  });
-
-  final String userId;
-  final String domain;
-  final String userEmail;
-  final DateTime expiresAt;
-  final String walletNonce;
 }
 
 class PhotoAttestationSubmissionResult {
@@ -378,6 +345,18 @@ class PhotoAttestationService {
   // address (sui::clock::Clock, id 0x6).
   static const String _suiClockObjectId = '0x6';
 
+  /// Every photo and file this wallet has attested.
+  Future<List<AttestationEvent>> listAttestationEvents({
+    required PhotoAttestationContractConfig config,
+    required String walletAddress,
+  }) {
+    return _graphQlService.listAttestationEvents(
+      config.rpcUrl,
+      module: '${config.packageId}::${config.moduleName}',
+      sender: walletAddress,
+    );
+  }
+
   Future<BigInt> getWalletSuiBalanceMist({
     required PhotoAttestationContractConfig config,
     required String walletAddress,
@@ -388,151 +367,19 @@ class PhotoAttestationService {
     );
   }
 
-  Future<PhotoAttestationOtpRequestResult> requestUserOtp({
-    required String domain,
-    required String userEmail,
-    required String walletAddress,
-  }) async {
-    try {
-      final backendConfig = await AppUtils.resolveOtpBackendConfig(
-        domain: domain,
-      );
-
-      final uri = AppUtils.otpBackendUri(backendConfig.url, 'otp/request');
-      final response = await _httpClient.post(
-        uri,
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-          AppUtils.appApiKeyHeader: backendConfig.apiKey,
-        },
-        body: jsonEncode({
-          'domain': domain,
-          'user_email': userEmail,
-          'user_wallet': walletAddress,
-        }),
-      );
-      final payload = _decodeJsonPayload(response.body);
-
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        final message = _readBackendMessage(payload) ?? 'OTP request failed.';
-        throw PhotoAttestationException(
-          userMessage: message,
-          rawMessage: message,
-        );
-      }
-
-      final userId = (payload['userId'] as String? ?? '').trim();
-      final expiresAt = (payload['expiresAt'] as String? ?? '').trim();
-      final walletNonce = (payload['walletNonce'] as String? ?? '').trim();
-      if (userId.isEmpty || expiresAt.isEmpty || walletNonce.isEmpty) {
-        throw const FormatException(
-          'OTP request response is missing userId, expiresAt, or walletNonce.',
-        );
-      }
-
-      return PhotoAttestationOtpRequestResult(
-        userId: userId,
-        domain: (payload['domain'] as String? ?? domain).trim(),
-        userEmail: (payload['userEmail'] as String? ?? userEmail).trim(),
-        expiresAt: DateTime.parse(expiresAt).toUtc(),
-        walletNonce: walletNonce,
-      );
-    } catch (error) {
-      throw PhotoAttestationException.fromError(error, operation: 'claim');
-    }
-  }
-
-  Future<PhotoAttestationClaimRecord> claimUserWithOtp({
-    required IdentityRecord identity,
-    required SuiED25519PrivateKey signingKey,
+  /// The wallet's UserCap, preferring the one the server named.
+  Future<String> resolveUserCapObjectId({
     required PhotoAttestationContractConfig config,
-    required PhotoAttestationClaimInput input,
+    required String walletAddress,
+    required String preferredObjectId,
+    required String claimTxDigest,
   }) async {
     try {
-      final backendConfig = await AppUtils.resolveOtpBackendConfig(
-        domain: input.domain,
-      );
-
-      // Prove possession of the wallet's private key by signing the
-      // server-issued nonce for this OTP session (see F-03). Without this,
-      // the backend has nothing binding the claimed userWallet to whoever
-      // is making the request. identity.privateKey is unavailable here:
-      // biometrics are bound before registration runs (see F-09), which
-      // strips the raw key from the in-memory identity, so the caller must
-      // supply an unlocked session signing key instead.
-      final account = SuiEd25519Account(signingKey);
-      final nonceBytes = base64Decode(input.walletNonce);
-      final walletSignature = account
-          .signPersonalMessage(nonceBytes)
-          .toVariantBcsBase64();
-
-      final uri = AppUtils.otpBackendUri(backendConfig.url, 'otp/verify');
-      final response = await _httpClient.post(
-        uri,
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-          AppUtils.appApiKeyHeader: backendConfig.apiKey,
-        },
-        body: jsonEncode({
-          'userId': input.userId,
-          'otp': input.otp,
-          'domain': input.domain,
-          'userWallet': identity.walletAddress,
-          'userWalletSignature': walletSignature,
-        }),
-      );
-      final payload = _decodeJsonPayload(response.body);
-
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        final message = _otpVerifyFailureMessage(
-          payload,
-          statusCode: response.statusCode,
-          uri: uri,
-        );
-        throw PhotoAttestationException(
-          userMessage: message,
-          rawMessage: message,
-        );
-      }
-
-      final status = (payload['status'] as String? ?? '').trim().toLowerCase();
-      if (status.isNotEmpty && status != 'completed') {
-        throw PhotoAttestationException(
-          userMessage:
-              'OTP verification is not complete yet. Current backend status: $status.',
-          rawMessage: 'Unexpected backend OTP verification status: $status',
-        );
-      }
-
-      final backendUserCapObjectId = _readStringPayloadField(payload, const [
-        'userCapId',
-        'user_cap_id',
-        'userCapObjectId',
-        'user_cap_object_id',
-        'objectId',
-        'object_id',
-      ]);
-      final claimTxDigest = _readStringPayloadField(payload, const [
-        'txDigest',
-        'tx_digest',
-        'claimTxDigest',
-        'claim_tx_digest',
-        'digest',
-      ]);
-      final userCapObjectId = await _resolveOwnedUserCapObjectId(
+      return await _resolveOwnedUserCapObjectId(
         config: config,
-        walletAddress: identity.walletAddress,
-        preferredObjectId: backendUserCapObjectId,
+        walletAddress: walletAddress,
+        preferredObjectId: preferredObjectId,
         claimTxDigest: claimTxDigest,
-      );
-
-      return PhotoAttestationClaimRecord(
-        domain: input.domain,
-        userId: input.userId,
-        userCapObjectId: userCapObjectId,
-        claimTxDigest: claimTxDigest,
-        claimedAt: DateTime.now().toUtc(),
-        userEmail: input.userEmail,
       );
     } catch (error) {
       throw PhotoAttestationException.fromError(error, operation: 'claim');
@@ -562,9 +409,12 @@ class PhotoAttestationService {
       backendConfig.url,
       'otp/${Uri.encodeComponent(userId)}',
     );
-    final response = await _httpClient.get(
-      uri,
-      headers: {AppUtils.appApiKeyHeader: backendConfig.apiKey},
+    final response = await GlSessionService.shared.send(
+      domain: domain,
+      request: (auth) => _httpClient.get(
+        uri,
+        headers: {AppUtils.appApiKeyHeader: backendConfig.apiKey, ...auth},
+      ),
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       return null;
@@ -587,17 +437,30 @@ class PhotoAttestationService {
       AppUtils.appApiKeyHeader: backendConfig.apiKey,
     };
 
-    final challengeResponse = await _httpClient
-        .post(
-          AppUtils.otpBackendUri(
-            backendConfig.url,
-            'otp/$userId/deactivate/challenge',
-          ),
-          headers: headers,
-          body: jsonEncode(const <String, dynamic>{}),
-        )
-        .timeout(_deactivationRequestTimeout);
+    final challengeResponse = await GlSessionService.shared.send(
+      domain: domain,
+      request: (auth) => _httpClient
+          .post(
+            AppUtils.otpBackendUri(
+              backendConfig.url,
+              'otp/$userId/deactivate/challenge',
+            ),
+            headers: {...headers, ...auth},
+            body: jsonEncode(const <String, dynamic>{}),
+          )
+          .timeout(_deactivationRequestTimeout),
+    );
     final challengePayload = _decodeJsonPayload(challengeResponse.body);
+    // The server only deactivates a signed-in account.
+    if (challengeResponse.statusCode == 401 &&
+        challengePayload['error'] == 'invalid_token') {
+      const message =
+          'Scan the Trade3 QR code first, then delete your account.';
+      throw const PhotoAttestationException(
+        userMessage: message,
+        rawMessage: message,
+      );
+    }
     if (challengeResponse.statusCode < 200 ||
         challengeResponse.statusCode >= 300) {
       final message =
@@ -618,13 +481,16 @@ class PhotoAttestationService {
     final signature = SuiEd25519Account(signingKey)
         .signPersonalMessage(utf8.encode('deactivate:$userId:$nonce'))
         .toVariantBcsBase64();
-    final response = await _httpClient
-        .patch(
-          AppUtils.otpBackendUri(backendConfig.url, 'otp/$userId/deactivate'),
-          headers: headers,
-          body: jsonEncode({'userWalletSignature': signature}),
-        )
-        .timeout(_deactivationRequestTimeout);
+    final response = await GlSessionService.shared.send(
+      domain: domain,
+      request: (auth) => _httpClient
+          .patch(
+            AppUtils.otpBackendUri(backendConfig.url, 'otp/$userId/deactivate'),
+            headers: {...headers, ...auth},
+            body: jsonEncode({'userWalletSignature': signature}),
+          )
+          .timeout(_deactivationRequestTimeout),
+    );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final payload = _decodeJsonPayload(response.body);
@@ -1382,31 +1248,6 @@ class PhotoAttestationService {
     }
   }
 
-  String _readStringPayloadField(
-    Map<String, dynamic> payload,
-    List<String> keys,
-  ) {
-    for (final key in keys) {
-      final value = payload[key];
-      if (value is String && value.trim().isNotEmpty) {
-        return value.trim();
-      }
-    }
-
-    final nested = payload['data'];
-    if (nested is Map) {
-      final nestedMap = Map<String, dynamic>.from(nested);
-      for (final key in keys) {
-        final value = nestedMap[key];
-        if (value is String && value.trim().isNotEmpty) {
-          return value.trim();
-        }
-      }
-    }
-
-    return '';
-  }
-
   Future<SuiTransactionDataV1> _prepareTransaction(
     String graphqlUrl,
     SuiTransactionDataV1 tx,
@@ -1920,26 +1761,6 @@ class PhotoAttestationService {
       return message;
     }
     return null;
-  }
-
-  String _otpVerifyFailureMessage(
-    Map<String, dynamic> payload, {
-    required int statusCode,
-    required Uri uri,
-  }) {
-    final backendMessage = _readBackendMessage(payload);
-    final backendError = (payload['error'] as String?)?.trim();
-
-    if (statusCode == 404) {
-      if (backendError == 'not_found' && backendMessage != null) {
-        return 'OTP session was not found. Request a new OTP and try again.';
-      }
-
-      final targetHint = kDebugMode ? ' URL: $uri' : '';
-      return 'The OTP verification endpoint was not found on the configured backend. Check that GL_OTP_BACKEND_CONFIG points to the Trade3 API for this domain and that the latest API is deployed.$targetHint';
-    }
-
-    return backendMessage ?? 'OTP verification failed.';
   }
 
   bool _addressesMatch(String? left, String? right) {

@@ -67,6 +67,7 @@ class PhotoCaptureDao {
         'trade3_error_message': photoCapture['trade3ErrorMessage'],
         'trade3_document_id': photoCapture['trade3DocumentId'],
         'trade3_ipfs_cid': photoCapture['trade3IpfsCid'],
+        'is_restored': (photoCapture['isRestored'] as bool? ?? false) ? 1 : 0,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );

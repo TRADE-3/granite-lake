@@ -6,6 +6,7 @@ import { Transaction } from "@mysten/sui/transactions";
 import { GrpcTransport } from "@protobuf-ts/grpc-transport";
 import { ChannelCredentials } from "@grpc/grpc-js";
 import type { AppEnv } from "../config/env.js";
+import { UserCapBcs } from "../utils/userCap.js";
 import { resolveSecretValue } from "./VaultService.js";
 
 export type AddUserResult = {
@@ -85,7 +86,10 @@ async function withNetworkRetry<T>(fn: () => Promise<T>, attempts = 3, baseDelay
 
 // Convertit l'URL Alchemy classique en hôte TCP requis par grpc-js (hote:port)
 function formatGrpcHost(rawUrl: string): string {
-  let host = rawUrl.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  let host = rawUrl
+    .trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "");
   if (!host.includes(":")) {
     host += ":443";
   }
@@ -191,6 +195,33 @@ export class SuiService {
       txDigest: digest,
       userCapId,
     };
+  }
+
+  /** The UserCap a wallet already holds for a domain, with the transaction that last touched it. */
+  async findUserCap(params: { domain: string; userWallet: string }): Promise<AddUserResult | null> {
+    let cursor: string | null = null;
+
+    do {
+      const page: any = await this.client.core.listOwnedObjects({
+        owner: params.userWallet,
+        type: `${this.appEnv.SUI_PACKAGE_ID}::${this.appEnv.SUI_MODULE}::UserCap`,
+        include: { content: true, previousTransaction: true },
+        cursor,
+      });
+
+      for (const object of page.objects) {
+        const cap = UserCapBcs.parse(object.content);
+        const domain = Buffer.from(cap.domain).toString("utf8").toLowerCase();
+
+        if (domain === params.domain.toLowerCase() && object.previousTransaction) {
+          return { userCapId: object.objectId, txDigest: object.previousTransaction };
+        }
+      }
+
+      cursor = page.hasNextPage ? page.cursor : null;
+    } while (cursor);
+
+    return null;
   }
 
   async disableUser(params: { domain: string; userWallet: string }): Promise<string> {

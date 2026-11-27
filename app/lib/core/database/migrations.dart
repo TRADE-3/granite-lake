@@ -56,11 +56,66 @@ class Migrations {
         case 14:
           await _upgradeToVersionFourteen(db);
           break;
+        case 15:
+          await _upgradeToVersionFifteen(db);
+          break;
+        case 16:
+          await _upgradeToVersionSixteen(db);
+          break;
+        case 17:
+          await _upgradeToVersionSeventeen(db);
+          break;
         default:
           throw UnsupportedError(
             'No migration registered for database version $version.',
           );
       }
+    }
+  }
+
+  // Whether the wallet came from a recovery key, and whether its files have
+  // been restored since (the restore action is offered only until then).
+  static Future<void> _upgradeToVersionSeventeen(Database db) async {
+    for (final column in ['wallet_restored', 'files_restored']) {
+      await db.execute(
+        'ALTER TABLE ${GraniteLakeDatabaseService.employeesTable} '
+        'ADD COLUMN $column INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+  }
+
+  // Marks history rebuilt after a wallet import (the file is not on-device).
+  static Future<void> _upgradeToVersionSixteen(Database db) async {
+    for (final table in [
+      GraniteLakeDatabaseService.photoCapturesTable,
+      GraniteLakeDatabaseService.uploadedFilesTable,
+    ]) {
+      // The version 8 upgrade creates these tables in their current shape.
+      final columns = await db.rawQuery('PRAGMA table_info($table)');
+      if (columns.any((column) => column['name'] == 'is_restored')) {
+        continue;
+      }
+      await db.execute(
+        'ALTER TABLE $table ADD COLUMN is_restored INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+  }
+
+  // Trade3 profile details shown on the Profile screen.
+  static const List<String> _trade3ProfileColumns = [
+    'email',
+    'trade3_user_id',
+    'company_name',
+    'trade3_company_id',
+    'position',
+  ];
+
+  static Future<void> _upgradeToVersionFifteen(Database db) async {
+    for (final column in _trade3ProfileColumns) {
+      await db.execute(
+        'ALTER TABLE ${GraniteLakeDatabaseService.employeesTable} '
+        "ADD COLUMN $column TEXT NOT NULL DEFAULT ''",
+      );
     }
   }
 
@@ -106,7 +161,14 @@ class Migrations {
         is_placeholder INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        wallet_address TEXT NOT NULL DEFAULT ''
+        wallet_address TEXT NOT NULL DEFAULT '',
+        email TEXT NOT NULL DEFAULT '',
+        trade3_user_id TEXT NOT NULL DEFAULT '',
+        company_name TEXT NOT NULL DEFAULT '',
+        trade3_company_id TEXT NOT NULL DEFAULT '',
+        position TEXT NOT NULL DEFAULT '',
+        wallet_restored INTEGER NOT NULL DEFAULT 0,
+        files_restored INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -482,6 +544,7 @@ class Migrations {
         trade3_error_message TEXT,
         trade3_document_id TEXT,
         trade3_ipfs_cid TEXT,
+        is_restored INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (project_id) REFERENCES ${GraniteLakeDatabaseService.projectsTable}(project_id)
           ON DELETE SET NULL
       )
@@ -528,6 +591,7 @@ class Migrations {
         trade3_error_message TEXT,
         trade3_document_id TEXT,
         trade3_ipfs_cid TEXT,
+        is_restored INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (project_id) REFERENCES ${GraniteLakeDatabaseService.projectsTable}(project_id)
           ON DELETE SET NULL
       )

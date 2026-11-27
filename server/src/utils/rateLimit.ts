@@ -78,6 +78,9 @@ export const otpVerifyLimiter = new RateLimiter(10, 15 * 60 * 1000); // 10 attem
 export const sponsorWalletLimiter = new RateLimiter(30, 60 * 1000); // 30 per minute per wallet, per route
 export const sponsorIpLimiter = new RateLimiter(30, 60 * 1000); // 30 per minute per IP, per route
 
+export const authSignInLimiter = new RateLimiter(10, 60 * 1000); // 10 per minute per IP, per route
+export const authRefreshLimiter = new RateLimiter(30, 60 * 1000); // 30 per minute per IP, per route
+
 // Cleanup old entries every 5 minutes
 setInterval(
   () => {
@@ -85,6 +88,8 @@ setInterval(
     otpVerifyLimiter.cleanup();
     sponsorWalletLimiter.cleanup();
     sponsorIpLimiter.cleanup();
+    authSignInLimiter.cleanup();
+    authRefreshLimiter.cleanup();
   },
   5 * 60 * 1000
 ).unref();
@@ -97,6 +102,8 @@ export function resetAllRateLimiters(): void {
   otpVerifyLimiter.reset();
   sponsorWalletLimiter.reset();
   sponsorIpLimiter.reset();
+  authSignInLimiter.reset();
+  authRefreshLimiter.reset();
 }
 
 /**

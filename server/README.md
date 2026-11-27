@@ -1,6 +1,6 @@
 # Granite Lake API
 
-TypeScript/Fastify API for Granite Lake domain-scoped OTP verification. Each running Docker stack is for one configured domain and one domain admin wallet. OTP sessions and users are stored in Postgres; user add/enable/disable operations are submitted to Sui and later used by the app for photo and file attestation.
+TypeScript/Fastify API for Granite Lake: Trade3 sign-in and domain user management. Each running Docker stack is for one configured domain and one domain admin wallet. Users and sessions are stored in Postgres; user add/enable/disable operations are submitted to Sui and later used by the app for photo and file attestation.
 
 ## Deployment Model
 
@@ -28,7 +28,7 @@ Make sure these values all refer to the same on-chain domain setup:
 - `SUI_PRIVATE_KEY` is the private key for `ADMIN_WALLET`, either as a literal value or a Vault reference.
 - `SUI_PACKAGE_ID` and `SUI_REGISTRY_ID` point to the deployed Granite Lake package and registry that contain the domain.
 
-If the domain was not added first, OTP verification will fail when the server submits `add_user`.
+If the domain was not added first, sign-in will fail when the server submits `add_user`.
 
 ## Environment
 
@@ -91,6 +91,8 @@ SPONSOR_TOPUP_MAX_PER_DAY_MIST=10000000000
 
 ### OTP Delivery
 
+OTP registration is off by default (`OTP_ENABLED=false`); this applies only when it is turned back on.
+
 OTP codes are currently posted to a Google Chat incoming webhook using `GOOGLE_CHAT_WEBHOOK_URL`. This is a temporary delivery path until the paid email service is available. The API still requires `user_email` so it can validate the user belongs to the configured domain and record the verified user identity, and `user_wallet` so the OTP session is bound to the wallet that will claim it. The Chat message includes the email, wallet address, code, and expiry.
 
 ## Sponsored Attestations
@@ -107,7 +109,7 @@ Rotation: generate a new key, store it in Vault, update `SPONSOR_WALLET` / `SPON
 
 ## App Authentication
 
-`APP_API_KEY` gates `/otp/request`, `/otp/verify`, `/otp/:userId`, `/sponsor/*`, and `/utc` via an `x-app-api-key` header. It is separate from `ADMIN_API_KEY`, which protects the operator-only `/admin/*` routes. `/health` stays public and requires no credential, so deployment/uptime checks keep working.
+`APP_API_KEY` gates `/auth/*`, `/otp/*`, `/sponsor/*`, and `/utc` via an `x-app-api-key` header. `/sponsor/*` and the `/otp/:userId` routes also need a GL access token (`Authorization: Bearer ...`), see [Trade3 Sign-In](#trade3-sign-in). It is separate from `ADMIN_API_KEY`, which protects the operator-only `/admin/*` routes. `/health` stays public and requires no credential, so deployment/uptime checks keep working.
 
 Requests missing the header, or sending the wrong value, get a `401`:
 
@@ -116,6 +118,40 @@ Requests missing the header, or sending the wrong value, get a `401`:
 ```
 
 This is a Phase 1, dev/staging-appropriate control: it stops opportunistic and scripted abuse, but a static key embedded in the mobile app is extractable from a decompiled build or by proxying the app's own traffic, so it does not prove a request came from an unmodified, legitimate copy of the app. Each per-domain stack should get its own distinct `APP_API_KEY`, matching the corresponding entry in the app's build-time domain configuration. See `granite-lake-app-auth-design.md` at the repo root for the full design, including the Phase 2 (device attestation + short-lived session tokens) follow-up and why it requires Play Store distribution to provide its full guarantee.
+
+## Trade3 Sign-In
+
+Design: [`design/granite-lake-trade3-onboarding-design.md`](../design/granite-lake-trade3-onboarding-design.md). All `/auth/*` routes need `x-app-api-key`.
+
+| Endpoint               | Request                                                                           | Result                                      |
+| ---------------------- | --------------------------------------------------------------------------------- | ------------------------------------------- |
+| `POST /auth/challenge` | `{ userWallet }`                                                                  | Single-use `nonce`, valid for 5 minutes     |
+| `POST /auth/exchange`  | `Authorization: Bearer <Trade3 access token>`, `{ userWallet, nonce, signature }` | Tokens, `userCapId`, `domain` and `profile` |
+| `POST /auth/refresh`   | `{ refreshToken }`                                                                | A new token pair with the same session end  |
+| `POST /auth/logout`    | `{ refreshToken }`                                                                | `204`; the session is revoked               |
+
+The wallet signs the UTF-8 bytes of `auth:<lower-case wallet>:<nonce>` as a personal message.
+
+| Variable                  | Default                  | Purpose                                                                        |
+| ------------------------- | ------------------------ | ------------------------------------------------------------------------------ |
+| `TRADE3_API_URL`          | unset                    | Trade3 base URL. `/auth/exchange` returns `503` without it                     |
+| `GL_JWT_SECRET`           | unset                    | At least 32 characters; may be `vault://`. Required to issue tokens            |
+| `REGISTRY_DOMAIN`         | the only `DOMAINS` entry | Domain new users attest under. Required if `DOMAINS` has several               |
+| `GL_ACCESS_TOKEN_TTL`     | `900`                    | Access token lifetime, seconds                                                 |
+| `GL_REFRESH_TOKEN_TTL`    | `15552000`               | Session length from sign-in, seconds (180 days). Refreshing does not extend it |
+| `OTP_ENABLED`             | `false`                  | `true` turns `/otp/request` and `/otp/verify` back on                          |
+| `AUTH_REQUIRE_USER_TOKEN` | `true`                   | Requires a GL access token on `/sponsor/*` and the `/otp/:userId` routes       |
+
+### Upgrading from OTP registration
+
+The defaults above end support for apps that predate Trade3 sign-in: they cannot register, use sponsored gas or delete their account. While any are in use, set:
+
+```env
+OTP_ENABLED=true
+AUTH_REQUIRE_USER_TOKEN=false
+```
+
+With `AUTH_REQUIRE_USER_TOKEN=false` those routes accept the app key alone, so unlinking does not stop sponsorship. Once every user has upgraded **and linked Trade3**, remove both settings. A user who registered by OTP and has not linked has no access token.
 
 ## HashiCorp Vault Secrets
 

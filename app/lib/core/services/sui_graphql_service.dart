@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:on_chain/on_chain.dart';
 
 import '../utils/network_error_classifier.dart';
+import 'restore_service.dart' show AttestationEvent;
 
 /// Retries [request] on transient network errors only. Bounded and short by
 /// design: this runs underneath higher-level retry/backoff already in the
@@ -340,6 +341,56 @@ class SuiGraphQlService {
     }
 
     return objects;
+  }
+
+  /// Every attestation event [sender] emitted from [module], oldest first.
+  Future<List<AttestationEvent>> listAttestationEvents(
+    String url, {
+    required String module,
+    required String sender,
+  }) async {
+    final events = <AttestationEvent>[];
+    String? cursor;
+
+    do {
+      final data = await _request(
+        url,
+        query: r'''query($module:String!,$sender:SuiAddress!,$after:String){
+          events(first:50, after:$after, filter:{ module:$module, sender:$sender }){
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              transaction { digest }
+              contents { type { repr } json }
+            }
+          }
+        }''',
+        variables: {'module': module, 'sender': sender, 'after': cursor},
+      );
+      final page = _asMap(data['events']);
+      for (final raw in _asList(page['nodes'])) {
+        final node = _asMap(raw);
+        final contents = _asMap(node['contents']);
+        final json = contents['json'];
+        if (json is! Map) {
+          continue;
+        }
+        events.add(
+          AttestationEvent(
+            type: _asString(_asMap(contents['type'])['repr']),
+            txDigest: _asString(_asMap(node['transaction'])['digest']),
+            json: Map<String, dynamic>.from(json),
+          ),
+        );
+      }
+      final pageInfo = _asMap(page['pageInfo']);
+      final next = pageInfo['hasNextPage'] == true
+          ? pageInfo['endCursor'] as String?
+          : null;
+      // A cursor that does not move would loop forever.
+      cursor = next == cursor ? null : next;
+    } while (cursor != null);
+
+    return events;
   }
 
   Future<SuiGraphQlTransactionResult> getTransaction(

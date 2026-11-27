@@ -290,6 +290,83 @@ void main() {
       },
     );
 
+    test('keeps tokens when the refresh fails with a server error', () async {
+      final h = _harness((request) async {
+        if (request.url.path == '/api/auth/refresh') {
+          return _jsonResponse({'message': 'boom'}, status: 503);
+        }
+        return _jsonResponse({'message': 'Unauthorized'}, status: 401);
+      });
+      h.store.tokens = const Trade3Tokens(
+        accessToken: 'a1',
+        refreshToken: 'r1',
+      );
+
+      await expectLater(
+        h.service.syncHierarchy(),
+        throwsA(
+          isA<Trade3ApiException>().having(
+            (error) => error is Trade3UnauthenticatedException,
+            'ends the session',
+            isFalse,
+          ),
+        ),
+      );
+      expect(h.store.tokens, isNotNull);
+    });
+
+    test('reads only the shown fields from the profile', () async {
+      final h = _harness((request) async {
+        expect(request.url.path, '/api/company/me');
+        return _jsonResponse({
+          'success': true,
+          'user': {
+            'id': 1,
+            'company_id': 3007,
+            'email': 'a@b.com',
+            'name': 'User One',
+            'position': null,
+            'role': 'OWNER',
+            'company': {'name': 'Test Company'},
+            'permissions': {'can_deposit_documents': false},
+          },
+        });
+      });
+      h.store.tokens = const Trade3Tokens(
+        accessToken: 'a1',
+        refreshToken: 'r1',
+      );
+
+      final profile = await h.service.fetchProfile();
+
+      expect(profile.userId, '1');
+      expect(profile.companyName, 'Test Company');
+      expect(profile.position, '');
+      expect(profile.canDepositDocuments, isFalse);
+    });
+
+    for (final (name, permissions, expected) in <(String, Object?, bool?)>[
+      ('granted', {'can_deposit_documents': true}, true),
+      ('refused', {'can_deposit_documents': false}, false),
+      ('absent', <String, Object?>{}, null),
+      ('without a permissions object', null, null),
+      ('not a boolean', {'can_deposit_documents': 'false'}, null),
+    ]) {
+      test('reads the deposit permission when it is $name', () async {
+        final h = _harness(
+          (request) async => _jsonResponse({
+            'user': {'id': 1, 'permissions': permissions},
+          }),
+        );
+        h.store.tokens = const Trade3Tokens(
+          accessToken: 'a1',
+          refreshToken: 'r1',
+        );
+
+        expect((await h.service.fetchProfile()).canDepositDocuments, expected);
+      });
+    }
+
     test('concurrent 401s share a single refresh (single-flight)', () async {
       var refreshCalls = 0;
       final h = _harness((request) async {

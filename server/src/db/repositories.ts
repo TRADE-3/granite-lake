@@ -268,7 +268,8 @@ export async function listUsers(): Promise<UserRecord[]> {
         created_at as "createdAt",
         updated_at as "updatedAt",
         last_verified_at as "lastVerifiedAt",
-        disabled_at as "disabledAt"
+        disabled_at as "disabledAt",
+        registry_domain as "registryDomain"
       from users
       order by updated_at desc
     `
@@ -310,7 +311,8 @@ async function findUserByWallet(userWallet: string): Promise<UserRecord | null> 
         created_at as "createdAt",
         updated_at as "updatedAt",
         last_verified_at as "lastVerifiedAt",
-        disabled_at as "disabledAt"
+        disabled_at as "disabledAt",
+        registry_domain as "registryDomain"
       from users
       where user_wallet = $1
     `,
@@ -328,7 +330,7 @@ export async function disableUser(userId: string): Promise<UserRecord | null> {
   }
 
   const disableUserTxDigest = await suiService.disableUser({
-    domain: configuredDomainForEmail(existing.userEmail),
+    domain: existing.domain,
     userWallet: existing.userWallet,
   });
 
@@ -353,7 +355,8 @@ export async function disableUser(userId: string): Promise<UserRecord | null> {
         created_at as "createdAt",
         updated_at as "updatedAt",
         last_verified_at as "lastVerifiedAt",
-        disabled_at as "disabledAt"
+        disabled_at as "disabledAt",
+        registry_domain as "registryDomain"
     `,
     [userId, disableUserTxDigest]
   );
@@ -369,7 +372,7 @@ export async function enableUser(userId: string): Promise<UserRecord | null> {
   }
 
   const enableUserTxDigest = await suiService.enableUser({
-    domain: configuredDomainForEmail(existing.userEmail),
+    domain: existing.domain,
     userWallet: existing.userWallet,
   });
 
@@ -394,7 +397,8 @@ export async function enableUser(userId: string): Promise<UserRecord | null> {
         created_at as "createdAt",
         updated_at as "updatedAt",
         last_verified_at as "lastVerifiedAt",
-        disabled_at as "disabledAt"
+        disabled_at as "disabledAt",
+        registry_domain as "registryDomain"
     `,
     [userId, enableUserTxDigest]
   );
@@ -586,10 +590,19 @@ function withConfiguredOtpFields(session: Omit<OtpSessionRecord, "domain" | "adm
   };
 }
 
-function withConfiguredUserFields(user: Omit<UserRecord, "domain" | "adminWallet">): UserRecord {
+// Rows written before registry_domain existed have none; theirs is derived
+// from the email, as it was when they were registered.
+export function resolveUserDomain(registryDomain: string | null | undefined, userEmail: string): string {
+  return registryDomain ? normalizeDomain(registryDomain) : configuredDomainForEmail(userEmail);
+}
+
+function withConfiguredUserFields(
+  row: Omit<UserRecord, "domain" | "adminWallet"> & { registryDomain?: string | null }
+): UserRecord {
+  const { registryDomain, ...user } = row;
   return {
     ...user,
-    domain: configuredDomainForEmail(user.userEmail),
+    domain: resolveUserDomain(registryDomain, user.userEmail),
     adminWallet: configuredAdminWallet(),
   };
 }
@@ -609,7 +622,8 @@ async function findUser(userId: string): Promise<UserRecord | null> {
         created_at as "createdAt",
         updated_at as "updatedAt",
         last_verified_at as "lastVerifiedAt",
-        disabled_at as "disabledAt"
+        disabled_at as "disabledAt",
+        registry_domain as "registryDomain"
       from users
       where user_id = $1
     `,
@@ -634,7 +648,8 @@ async function findUserByEmail(userEmail: string): Promise<UserRecord | null> {
         created_at as "createdAt",
         updated_at as "updatedAt",
         last_verified_at as "lastVerifiedAt",
-        disabled_at as "disabledAt"
+        disabled_at as "disabledAt",
+        registry_domain as "registryDomain"
       from users
       where user_email = $1
     `,
@@ -658,9 +673,10 @@ async function upsertActiveUserFromSession(session: OtpSessionRecord, addUserRes
         status,
         user_cap_id,
         add_user_tx_digest,
-        last_verified_at
+        last_verified_at,
+        registry_domain
       )
-      values ($1, $2, $3, 'active', $4, $5, $6)
+      values ($1, $2, $3, 'active', $4, $5, $6, $7)
       on conflict (user_id)
       do update set
         user_email = excluded.user_email,
@@ -669,6 +685,7 @@ async function upsertActiveUserFromSession(session: OtpSessionRecord, addUserRes
         user_cap_id = excluded.user_cap_id,
         add_user_tx_digest = excluded.add_user_tx_digest,
         last_verified_at = excluded.last_verified_at,
+        registry_domain = excluded.registry_domain,
         disabled_at = null,
         disable_user_tx_digest = null,
         enable_user_tx_digest = null,
@@ -681,6 +698,7 @@ async function upsertActiveUserFromSession(session: OtpSessionRecord, addUserRes
       addUserResult.userCapId,
       addUserResult.txDigest,
       session.verifiedAt,
+      session.domain,
     ]
   );
 }

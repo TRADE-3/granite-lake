@@ -447,6 +447,16 @@ class _PaymentScheduleTileState extends State<_PaymentScheduleTile> {
     BuildContext context,
     GraniteLakeController controller,
   ) async {
+    if (!controller.canSelectTrade3Target) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text(GraniteLakeController.depositRightsMessage),
+          ),
+        );
+      return;
+    }
     await controller.selectTrade3Target(
       Trade3TargetSelection(
         masterContractId: widget.contract.id,

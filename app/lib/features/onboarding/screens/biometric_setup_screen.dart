@@ -110,7 +110,11 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                                   ? null
                                   : () async {
                                       if (binding != null) {
-                                        context.go(AppRoutes.registration);
+                                        context.go(
+                                          controller.mustSaveRecoveryKey
+                                              ? AppRoutes.recoveryKey
+                                              : AppRoutes.pair,
+                                        );
                                         return;
                                       }
 
@@ -134,7 +138,11 @@ class _BiometricSetupScreenState extends State<BiometricSetupScreen> {
                                       }
 
                                       setState(() => _isBinding = false);
-                                      context.go(AppRoutes.registration);
+                                      context.go(
+                                        controller.mustSaveRecoveryKey
+                                            ? AppRoutes.recoveryKey
+                                            : AppRoutes.pair,
+                                      );
                                     },
                               style: ElevatedButton.styleFrom(
                                 iconColor: AppColors.textPrimary,

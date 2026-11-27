@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../constants/app_constants.dart';
+import 'gl_session_service.dart' show Trade3Profile;
 import 'trade3_token_store.dart';
 
 String _stringId(Object? value) => value == null ? '' : value.toString().trim();
@@ -48,6 +49,8 @@ class Trade3HierarchyDocument {
     required this.documentType,
     required this.status,
     required this.isRequired,
+    this.documentHash = '',
+    this.isVerifiedByGranite = false,
   });
 
   factory Trade3HierarchyDocument.fromJson(Map<String, dynamic> json) {
@@ -57,6 +60,8 @@ class Trade3HierarchyDocument {
       documentType: (json['document_type'] as String? ?? '').trim(),
       status: (json['status'] as String? ?? '').trim(),
       isRequired: json['is_required'] == true,
+      documentHash: (json['hash'] as String? ?? '').trim(),
+      isVerifiedByGranite: json['is_verified_by_granite'] == true,
     );
   }
 
@@ -66,12 +71,18 @@ class Trade3HierarchyDocument {
   final String status;
   final bool isRequired;
 
+  /// SHA-256 of the pinned file; empty for documents not pinned by Granite.
+  final String documentHash;
+  final bool isVerifiedByGranite;
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'file_name': fileName,
     'document_type': documentType,
     'status': status,
     'is_required': isRequired,
+    'hash': documentHash,
+    'is_verified_by_granite': isVerifiedByGranite,
   };
 }
 
@@ -287,6 +298,7 @@ class Trade3ApiService {
   static const String _hierarchyPath = 'api/granite/sync/hierarchy';
   static const String _pinDocumentsPath = 'api/granite/pin/bonus';
   static const String _logoutPath = 'api/auth/logout';
+  static const String _companyMePath = 'api/company/me';
 
   /// EP-04 accepts 1-10 files per request; larger uploads are chunked.
   static const int _maxFilesPerPinRequest = 10;
@@ -376,6 +388,52 @@ class Trade3ApiService {
       throw _unexpectedResponse('hierarchy sync', error);
     } catch (error) {
       throw _networkFailure('hierarchy sync', error);
+    }
+  }
+
+  /// The signed-in user's company, role and deposit permission. Only the
+  /// fields the app shows are read out of the response.
+  Future<Trade3Profile> fetchProfile() async {
+    try {
+      final response = await _sendAuthorized(
+        (tokens) =>
+            http.Request('GET', endpointUri(_companyMePath))
+              ..headers['Authorization'] = 'Bearer ${tokens.accessToken}',
+      );
+      final payload = await _readJsonPayload(response);
+      if (!_isSuccess(response.statusCode)) {
+        throw _apiFailure(
+          payload,
+          response.statusCode,
+          "Couldn't load your Trade3 profile.",
+        );
+      }
+      final user = payload['user'];
+      if (user is! Map || user['id'] == null) {
+        throw const FormatException('Trade3 profile response has no user.');
+      }
+      final company = user['company'];
+      final permissions = user['permissions'];
+      final canDeposit = permissions is Map
+          ? permissions['can_deposit_documents']
+          : null;
+      String text(Object? value) => value == null ? '' : '$value';
+      return Trade3Profile(
+        userId: text(user['id']),
+        name: text(user['name']),
+        email: text(user['email']),
+        position: text(user['position']),
+        companyId: text(user['company_id']),
+        companyName: company is Map ? text(company['name']) : '',
+        role: text(user['role']),
+        canDepositDocuments: canDeposit is bool ? canDeposit : null,
+      );
+    } on Trade3ApiException {
+      rethrow;
+    } on FormatException catch (error) {
+      throw _unexpectedResponse('profile', error);
+    } catch (error) {
+      throw _networkFailure('profile', error);
     }
   }
 
@@ -558,12 +616,19 @@ class Trade3ApiService {
       body: jsonEncode({'refresh_token': refreshToken}),
     );
 
-    if (!_isSuccess(response.statusCode)) {
+    // A server fault is not a verdict on the session: keep the tokens.
+    if (const [400, 401, 403].contains(response.statusCode)) {
       await _tokenStore.clear();
       throw Trade3UnauthenticatedException(
         userMessage: 'Your Trade3 session has ended. Pair your account again.',
         rawMessage: 'Token refresh rejected (HTTP ${response.statusCode}).',
         statusCode: response.statusCode,
+      );
+    }
+    if (!_isSuccess(response.statusCode)) {
+      throw Trade3ApiException(
+        userMessage: "Couldn't reach the Trade3 service. Try again later.",
+        rawMessage: 'Token refresh failed (HTTP ${response.statusCode}).',
       );
     }
 

@@ -5,6 +5,7 @@ import { env } from "../config/env.js";
 import { SponsorError, SponsorService } from "../services/SponsorService.js";
 import { isTransientNetworkError } from "../services/SuiService.js";
 import { requireAppApiKey } from "../utils/auth.js";
+import { checkUserToken } from "../utils/userAuth.js";
 import { sponsorIpLimiter, sponsorWalletLimiter } from "../utils/rateLimit.js";
 
 export const sponsorService = new SponsorService(env);
@@ -77,6 +78,20 @@ export const sponsorRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", async (request, reply) => {
     if (!requireAppApiKey(request, reply)) {
       return;
+    }
+  });
+
+  app.addHook("preHandler", async (request, reply) => {
+    const rejected = await checkUserToken(request, reply);
+    if (rejected) return rejected;
+
+    const wallet = (request.body as { userWallet?: unknown } | undefined)?.userWallet;
+    if (
+      request.glUser &&
+      typeof wallet === "string" &&
+      normalizeSuiAddress(wallet.trim()) !== normalizeSuiAddress(request.glUser.userWallet)
+    ) {
+      return reply.status(403).send({ error: "forbidden", message: "This token belongs to another wallet." });
     }
   });
 

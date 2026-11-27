@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyError } from "fastify";
 import rateLimit from "@fastify/rate-limit";
+import { authRoutes } from "./routes/auth.js";
 import { adminRoutes } from "./routes/admin.js";
 import { healthRoutes } from "./routes/health.js";
 import { otpRoutes } from "./routes/otp.js";
@@ -63,6 +64,7 @@ export async function buildApp() {
   await app.register(adminRoutes);
   await app.register(otpRoutes);
   await app.register(sponsorRoutes);
+  await app.register(authRoutes);
 
   return app;
 }

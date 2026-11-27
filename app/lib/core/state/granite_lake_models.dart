@@ -8,6 +8,9 @@ class ActionResult {
 
   const ActionResult.success() : this._(isSuccess: true);
 
+  const ActionResult.successWithMessage(String message)
+    : this._(isSuccess: true, message: message);
+
   const ActionResult.failure(String message)
     : this._(isSuccess: false, message: message);
 
@@ -551,6 +554,7 @@ class AttestationRecord {
     this.trade3ErrorMessage,
     this.trade3DocumentId,
     this.trade3IpfsCid,
+    this.isRestored = false,
   });
 
   factory AttestationRecord.fromJson(Map<String, dynamic> json) {
@@ -632,6 +636,7 @@ class AttestationRecord {
       trade3ErrorMessage: json['trade3ErrorMessage'] as String?,
       trade3DocumentId: json['trade3DocumentId'] as String?,
       trade3IpfsCid: json['trade3IpfsCid'] as String?,
+      isRestored: json['isRestored'] as bool? ?? false,
     );
   }
 
@@ -710,6 +715,9 @@ class AttestationRecord {
   final String? trade3ErrorMessage;
   final String? trade3DocumentId;
   final String? trade3IpfsCid;
+
+  /// Rebuilt from the chain and Trade3 after a wallet import.
+  final bool isRestored;
 
   bool get hasTrade3Target =>
       (trade3TransactionId ?? '').trim().isNotEmpty &&
@@ -928,6 +936,7 @@ class AttestationRecord {
       'trade3ErrorMessage': trade3ErrorMessage,
       'trade3DocumentId': trade3DocumentId,
       'trade3IpfsCid': trade3IpfsCid,
+      'isRestored': isRestored,
     };
   }
 
@@ -1071,6 +1080,7 @@ class PhotoCaptureRecord {
     this.trade3ErrorMessage,
     this.trade3DocumentId,
     this.trade3IpfsCid,
+    this.isRestored = false,
   });
 
   factory PhotoCaptureRecord.fromJson(Map<String, dynamic> json) {
@@ -1130,6 +1140,7 @@ class PhotoCaptureRecord {
       trade3ErrorMessage: json['trade3ErrorMessage'] as String?,
       trade3DocumentId: json['trade3DocumentId'] as String?,
       trade3IpfsCid: json['trade3IpfsCid'] as String?,
+      isRestored: json['isRestored'] as bool? ?? false,
     );
   }
 
@@ -1172,6 +1183,7 @@ class PhotoCaptureRecord {
       trade3ErrorMessage: record.trade3ErrorMessage,
       trade3DocumentId: record.trade3DocumentId,
       trade3IpfsCid: record.trade3IpfsCid,
+      isRestored: record.isRestored,
     );
   }
 
@@ -1213,6 +1225,9 @@ class PhotoCaptureRecord {
   final String? trade3DocumentId;
   final String? trade3IpfsCid;
 
+  /// Rebuilt from the chain and Trade3 after a wallet import.
+  final bool isRestored;
+
   AttestationRecord toAttestationRecord() {
     return AttestationRecord(
       captureId: photoCaptureId,
@@ -1253,6 +1268,7 @@ class PhotoCaptureRecord {
       trade3ErrorMessage: trade3ErrorMessage,
       trade3DocumentId: trade3DocumentId,
       trade3IpfsCid: trade3IpfsCid,
+      isRestored: isRestored,
     );
   }
 
@@ -1295,6 +1311,7 @@ class PhotoCaptureRecord {
       'trade3ErrorMessage': trade3ErrorMessage,
       'trade3DocumentId': trade3DocumentId,
       'trade3IpfsCid': trade3IpfsCid,
+      'isRestored': isRestored,
     };
   }
 }
@@ -1338,6 +1355,7 @@ class UploadedFileRecord {
     this.trade3ErrorMessage,
     this.trade3DocumentId,
     this.trade3IpfsCid,
+    this.isRestored = false,
   });
 
   factory UploadedFileRecord.fromJson(Map<String, dynamic> json) {
@@ -1397,6 +1415,7 @@ class UploadedFileRecord {
       trade3ErrorMessage: json['trade3ErrorMessage'] as String?,
       trade3DocumentId: json['trade3DocumentId'] as String?,
       trade3IpfsCid: json['trade3IpfsCid'] as String?,
+      isRestored: json['isRestored'] as bool? ?? false,
     );
   }
 
@@ -1439,6 +1458,7 @@ class UploadedFileRecord {
       trade3ErrorMessage: record.trade3ErrorMessage,
       trade3DocumentId: record.trade3DocumentId,
       trade3IpfsCid: record.trade3IpfsCid,
+      isRestored: record.isRestored,
     );
   }
 
@@ -1480,6 +1500,9 @@ class UploadedFileRecord {
   final String? trade3DocumentId;
   final String? trade3IpfsCid;
 
+  /// Rebuilt from the chain and Trade3 after a wallet import.
+  final bool isRestored;
+
   AttestationRecord toAttestationRecord() {
     return AttestationRecord(
       captureId: uploadedFileId,
@@ -1520,6 +1543,7 @@ class UploadedFileRecord {
       trade3ErrorMessage: trade3ErrorMessage,
       trade3DocumentId: trade3DocumentId,
       trade3IpfsCid: trade3IpfsCid,
+      isRestored: isRestored,
     );
   }
 
@@ -1562,6 +1586,7 @@ class UploadedFileRecord {
       'trade3ErrorMessage': trade3ErrorMessage,
       'trade3DocumentId': trade3DocumentId,
       'trade3IpfsCid': trade3IpfsCid,
+      'isRestored': isRestored,
     };
   }
 }
@@ -1677,6 +1702,12 @@ class EmployeeRecord {
     required this.updatedAt,
     required this.isPlaceholder,
     required this.walletAddress,
+    this.email = '',
+    this.trade3UserId = '',
+    this.companyName = '',
+    this.position = '',
+    this.walletRestored = false,
+    this.filesRestored = false,
   });
 
   factory EmployeeRecord.fromJson(Map<String, dynamic> json) {
@@ -1691,6 +1722,12 @@ class EmployeeRecord {
       updatedAt: DateTime.parse(json['updatedAt'] as String).toUtc(),
       isPlaceholder: json['isPlaceholder'] as bool? ?? false,
       walletAddress: json['walletAddress'] as String? ?? '',
+      email: json['email'] as String? ?? '',
+      trade3UserId: json['trade3UserId'] as String? ?? '',
+      companyName: json['companyName'] as String? ?? '',
+      position: json['position'] as String? ?? '',
+      walletRestored: json['walletRestored'] as bool? ?? false,
+      filesRestored: json['filesRestored'] as bool? ?? false,
     );
   }
 
@@ -1704,6 +1741,16 @@ class EmployeeRecord {
   final DateTime updatedAt;
   final bool isPlaceholder;
   final String walletAddress;
+  final String email;
+  final String trade3UserId;
+  final String companyName;
+  final String position;
+
+  /// The wallet came from a recovery key.
+  final bool walletRestored;
+
+  /// A restore has succeeded, with or without anything to restore.
+  final bool filesRestored;
 }
 
 class DeviceRegistrationRecord {

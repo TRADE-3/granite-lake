@@ -1,5 +1,4 @@
 import { randomInt } from "node:crypto";
-import { bcs } from "@mysten/sui/bcs";
 import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
@@ -8,6 +7,7 @@ import { normalizeSuiAddress, SUI_CLOCK_OBJECT_ID, toBase64 } from "@mysten/sui/
 import { verifyTransactionSignature } from "@mysten/sui/verify";
 import type { AppEnv } from "../config/env.js";
 import { findUserBy, type UserRecord } from "../db/repositories.js";
+import { UserCapBcs } from "../utils/userCap.js";
 import {
   findSponsorTransaction,
   getSponsorLedgerSpend,
@@ -1047,12 +1047,6 @@ function toSubmitResult(row: SponsorTransactionRecord | null, digest: string): S
 
 // Field layout of photo_attestation::UserCap: UID, then domain, then
 // user_wallet (contracts/sources/granite_lake.move).
-const UserCapBcs = bcs.struct("UserCap", {
-  id: bcs.Address,
-  domain: bcs.vector(bcs.u8()),
-  user_wallet: bcs.Address,
-});
-
 function normalizeDomain(domain: string): string {
   return domain.trim().toLowerCase();
 }

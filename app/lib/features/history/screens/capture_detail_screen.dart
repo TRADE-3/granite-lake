@@ -102,7 +102,9 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
       if (record.note?.trim().isNotEmpty == true)
         'Note: ${record.note!.trim()}',
       'File Hash: ${record.contentSha256}',
-      'Local Path: ${record.localAssetPath}',
+      record.isRestored
+          ? 'Restored: file not on this device'
+          : 'Local Path: ${record.localAssetPath}',
       if (proofPayload.readString('sessionStartedAt') != null)
         'Session Started: ${proofPayload.readString('sessionStartedAt')}',
       if (proofPayload.readString('sessionExpiresAt') != null)
@@ -364,6 +366,18 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                         ],
                       ),
                     ),
+                    if (record.isRestored)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                        child: Text(
+                          'RESTORED. This record was rebuilt after a wallet '
+                          'import. The file is not on this device.',
+                          style: AppTextStyles.bodySmall.copyWith(
+                            color: AppColors.statusEncrypt,
+                            height: 1.4,
+                          ),
+                        ),
+                      ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
                       child: Column(
@@ -643,7 +657,9 @@ class _CaptureDetailScreenState extends State<CaptureDetailScreen> {
                                 ),
                                 _DetailCell(
                                   label: 'LOCAL_ASSET_PATH',
-                                  value: record.localAssetPath,
+                                  value: record.isRestored
+                                      ? 'Restored: not on this device'
+                                      : record.localAssetPath,
                                 ),
                                 if (record.isFile)
                                   _DetailCell(

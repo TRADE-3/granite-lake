@@ -23,22 +23,23 @@ See [`../granite-lake-offline-capture-design.md`](../granite-lake-offline-captur
 The current onboarding and capture flow is:
 
 1. Prepare local app data
-2. Create a wallet on-device
-3. Link the device to a user account with:
-   - company domain
-   - employee / user id
-   - OTP
-4. Protect the wallet with biometrics
+2. Create a wallet on-device, or restore one from its recovery key
+3. Protect the wallet with biometrics
+4. Link the Trade3 account (QR link or pairing code), which registers the user
 5. Start a secure session
 6. Choose a capture method: capture a photo or upload a file
 7. Save the local signed proof bundle
 8. Submit `attest_photo` or `attest_file` to Sui testnet
 9. Verify later that on-chain event data matches the local photo or file attestation
 
-Important implementation detail:
+Important implementation details:
 
-- the user does not enter `packageId` or `registryId`
-- those are bundled in the app and synced into SQLite automatically at startup
+- the user does not enter `packageId`, `registryId`, a domain or an email
+- contract values are bundled in the app and synced into SQLite automatically at startup
+- unlinking, or either the Trade3 or server session expiring, blocks capture until the next QR scan
+- saving the recovery key is required after biometrics, and it stays available from Profile; it restores the wallet and account
+- after importing a wallet, **Restore files** on History rebuilds history from the chain and Trade3, marked as restored; the files themselves are not downloaded. It disappears once it has succeeded
+- without the Trade3 deposit permission, a payment schedule cannot be selected
 
 ## Current Sui Contract Defaults
 
@@ -67,7 +68,7 @@ Config sync logic lives in:
 
 ## Backend URL Configuration
 
-The app needs to know the backend API URL and app API key to connect for OTP verification and UTC time. Each domain is deployed as its own backend stack (see `server/README.md`), and each app build targets exactly one client's domain, so the app is built with a single `{domain, url, apiKey}` object rather than a map covering several tenants. (An earlier version used a per-domain map so one build could serve multiple tenants; that was replaced because a single leaked build would then expose every tenant's key at once instead of just its own — see `granite-lake-app-auth-design.md`.)
+The app needs to know the backend API URL and app API key to connect for sign-in and UTC time. The server's `TRADE3_API_URL` must point at the same Trade3 environment as the app. Each domain is deployed as its own backend stack (see `server/README.md`), and each app build targets exactly one client's domain, so the app is built with a single `{domain, url, apiKey}` object rather than a map covering several tenants. (An earlier version used a per-domain map so one build could serve multiple tenants; that was replaced because a single leaked build would then expose every tenant's key at once instead of just its own — see `granite-lake-app-auth-design.md`.)
 
 ### Build Arguments
 
@@ -92,7 +93,7 @@ flutter build apk --dart-define=GL_OTP_BACKEND_DEV_FALLBACKS=true --dart-define=
 
 ### URL Resolution
 
-For the company domain entered at registration, the app resolves candidates in this order:
+For the domain this build is configured for, the app resolves candidates in this order:
 
 1. If the domain matches `GL_OTP_BACKEND_CONFIG`'s configured `domain`, use its `url`/`apiKey`
 2. In debug mode with `GL_OTP_BACKEND_DEV_FALLBACKS=true`, also try (paired with `GL_OTP_BACKEND_DEV_API_KEY`):
@@ -105,7 +106,7 @@ Any other domain, and any domain with no working dev fallback, is refused — th
 
 The connection is secured by TLS (HTTPS). Ensure your backend is configured with a valid TLS certificate.
 
-The app sends `apiKey` as an `x-app-api-key` header on every OTP/UTC request, gating out opportunistic/scripted callers. This is a Phase 1, dev/staging-appropriate control, not a durable production one: any value embedded in a compiled app is extractable via decompilation or by proxying the app's own traffic, so it does not prove a request came from an unmodified, legitimate copy of the app. A decompiled build still exposes its own domain's key — the single-config change above only stops one leak from exposing every tenant's key at once. See `granite-lake-app-auth-design.md` at the repo root for the full design and the Phase 2 (device attestation + short-lived session tokens) follow-up.
+The app sends `apiKey` as an `x-app-api-key` header on every server request, gating out opportunistic/scripted callers. This is a Phase 1, dev/staging-appropriate control, not a durable production one: any value embedded in a compiled app is extractable via decompilation or by proxying the app's own traffic, so it does not prove a request came from an unmodified, legitimate copy of the app. A decompiled build still exposes its own domain's key — the single-config change above only stops one leak from exposing every tenant's key at once. See `granite-lake-app-auth-design.md` at the repo root for the full design and the Phase 2 (device attestation + short-lived session tokens) follow-up.
 
 ## Release Signing
 
@@ -132,14 +133,14 @@ The app currently uses these contract entry points:
 - `attest_photo`
 - `attest_file`
 
-OTP and UserCap claim flow:
+Sign-in and UserCap claim flow:
 
-- the app calls the backend `POST /otp/request` endpoint with the company domain, user email, and the device wallet address (`user_wallet`) — the backend binds that wallet to the OTP session
-- the backend delivers the OTP (including the wallet address) through its configured delivery channel and returns `userId`, `expiresAt`, `userWallet`, and a server-issued `walletNonce`
-- the app calls `POST /otp/verify` with `userId`, `otp`, `domain`, the same device wallet address (`userWallet`), and `userWalletSignature` — a signature over the `walletNonce`; the backend rejects the request if `userWallet` differs from the wallet bound at request time
-- the backend verifies the OTP, the wallet match, and the wallet signature, then signs the contract `add_user` transaction with the configured domain-admin wallet
-- after success, the backend returns the transaction digest and `UserCap` object id
-- the app stores the successful claim record in SQLite and verifies that the `UserCap` resolves for the device wallet
+- the app pairs with Trade3 using the code from the QR link
+- it asks the server for a nonce (`POST /auth/challenge`) and signs `auth:<wallet>:<nonce>`
+- it calls `POST /auth/exchange` with the Trade3 access token, wallet address and signature
+- the server checks the user with Trade3 and, for a new user, signs `add_user` with the domain-admin wallet
+- the server returns access and refresh tokens, the `UserCap` id and the user's Trade3 profile
+- the app stores the claim and profile in SQLite, the tokens in secure storage, and verifies that the `UserCap` resolves for the device wallet
 
 Attestation flow:
 
@@ -737,8 +738,6 @@ Examples of friendly errors now handled:
 - timeout / connectivity issues
 - missing contract registry
 - missing `UserCap`
-- invalid OTP
-- OTP already used
 - contract aborts such as:
   - user disabled
   - wallet mismatch
@@ -756,8 +755,8 @@ Granite Lake currently still supports a registration verifier model in secure st
 This remains part of the secure state service, but the active onboarding flow for Sui contract integration is centered on:
 
 - wallet setup
-- employee/domain claim via backend OTP verification
 - biometric protection
+- Trade3 linking, which registers the user
 
 The successful claim record stored in SQLite contains:
 
@@ -891,12 +890,12 @@ flutter run -d <device-id> --dart-define-from-file=secrets.json
 
 ### Troubleshooting
 
-**"Could not reach OTP backend"**
+**"Couldn't reach your organisation's server"**
 
 - Ensure server is running: `docker compose ps`
 - Check server logs: `docker compose logs api`
 - Verify port 8080 is accessible
-- Verify `secrets.json` has an entry for the exact domain you typed at registration (matching is case-insensitive but must be the same domain string)
+- Verify `secrets.json` points at that server and that the server has `TRADE3_API_URL` and `GL_JWT_SECRET` set
 
 **Connection refused**
 

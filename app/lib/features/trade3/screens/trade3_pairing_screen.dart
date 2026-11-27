@@ -53,7 +53,8 @@ class _Trade3PairingScreenState extends State<Trade3PairingScreen> {
     // pending state so nothing routes back to this screen.
     final pendingCode = controller.consumePendingTrade3PairingCode();
     final routeCode = widget.routeCode?.trim() ?? '';
-    final code = routeCode.isNotEmpty ? routeCode : (pendingCode ?? '');
+    // A pending code is the newer one: it may have arrived after the route.
+    final code = pendingCode ?? routeCode;
     if (code.isEmpty) {
       return;
     }
@@ -98,6 +99,35 @@ class _Trade3PairingScreenState extends State<Trade3PairingScreen> {
     });
   }
 
+  Future<void> _useRecoveryKey(GraniteLakeController controller) async {
+    final replace = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.surfaceElevated,
+        title: const Text('Use a recovery key?'),
+        content: const Text(
+          'The secure ID just created on this phone will be removed, and '
+          'anything it holds is lost unless you saved its recovery key. Then '
+          'choose "I have a recovery key".',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('CANCEL'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('REMOVE AND CONTINUE'),
+          ),
+        ],
+      ),
+    );
+    if (replace == true) {
+      // The router moves to ID setup once there is no identity.
+      await controller.discardUnregisteredIdentity();
+    }
+  }
+
   void _continueToApp() {
     GoRouter.of(context).go(AppRoutes.dashboard);
   }
@@ -108,6 +138,10 @@ class _Trade3PairingScreenState extends State<Trade3PairingScreen> {
     final isPaired = controller.isTrade3Paired;
     final busy =
         _status == _PairingStatus.working || controller.isTrade3Pairing;
+    // A QR link can arrive while this screen is already open.
+    if (!busy && controller.pendingTrade3PairingCode != null) {
+      unawaited(Future.microtask(_takeIncomingCode));
+    }
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -119,12 +153,16 @@ class _Trade3PairingScreenState extends State<Trade3PairingScreen> {
             children: [
               Row(
                 children: [
-                  IconButton(
-                    onPressed: busy ? null : _continueToApp,
-                    icon: const Icon(Icons.close_rounded),
-                    color: AppColors.textSecondary,
-                    tooltip: 'Close',
-                  ),
+                  // Nowhere to close to until the account is registered.
+                  if (controller.hasCompletedRegistration)
+                    IconButton(
+                      onPressed: busy ? null : _continueToApp,
+                      icon: const Icon(Icons.close_rounded),
+                      color: AppColors.textSecondary,
+                      tooltip: 'Close',
+                    )
+                  else
+                    const SizedBox(height: 48),
                 ],
               ),
               Expanded(
@@ -132,9 +170,7 @@ class _Trade3PairingScreenState extends State<Trade3PairingScreen> {
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 420),
                     child: switch (_status) {
-                      _PairingStatus.success => _buildSuccessCard(
-                        isPaired: true,
-                      ),
+                      _PairingStatus.success => _buildSuccessCard(),
                       _PairingStatus.working => _buildWorkingCard(),
                       _PairingStatus.manual => _buildEntryCard(
                         controller,
@@ -182,9 +218,11 @@ class _Trade3PairingScreenState extends State<Trade3PairingScreen> {
         ),
         const SizedBox(height: 10),
         Text(
-          isPaired
-              ? 'Your account is already linked. Enter a new pairing code to switch accounts.'
-              : 'Link this device to pick a contract, transaction and payment schedule for every capture.',
+          controller.isAttestationBlocked
+              ? controller.attestationBlockedReason
+              : isPaired
+              ? 'Your account is already linked. Enter a new pairing code to renew the link.'
+              : 'Link your Trade3 account to set up this device. You will confirm with your fingerprint or face.',
           style: AppTextStyles.bodyMedium.copyWith(
             color: AppColors.textSecondary,
             height: 1.5,
@@ -274,6 +312,20 @@ class _Trade3PairingScreenState extends State<Trade3PairingScreen> {
             ),
           ),
         ),
+        if (!controller.hasCompletedRegistration)
+          Center(
+            child: TextButton(
+              onPressed: busy
+                  ? null
+                  : () => unawaited(_useRecoveryKey(controller)),
+              child: Text(
+                'USE A RECOVERY KEY INSTEAD',
+                style: AppTextStyles.buttonText.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -305,7 +357,7 @@ class _Trade3PairingScreenState extends State<Trade3PairingScreen> {
     );
   }
 
-  Widget _buildSuccessCard({required bool isPaired}) {
+  Widget _buildSuccessCard() {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [

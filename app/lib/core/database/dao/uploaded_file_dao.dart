@@ -66,6 +66,7 @@ class UploadedFileDao {
         'trade3_error_message': uploadedFile['trade3ErrorMessage'],
         'trade3_document_id': uploadedFile['trade3DocumentId'],
         'trade3_ipfs_cid': uploadedFile['trade3IpfsCid'],
+        'is_restored': (uploadedFile['isRestored'] as bool? ?? false) ? 1 : 0,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );

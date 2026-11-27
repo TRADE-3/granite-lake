@@ -8,6 +8,7 @@ import '../../../core/router/app_router.dart';
 import '../../../core/state/granite_lake_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../trade3/widgets/restore_files_button.dart';
 
 enum _VerificationFilter {
   any,
@@ -348,6 +349,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
           ),
         ),
         const SizedBox(height: 20),
+        if (controller.canRestoreFiles)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: RestoreFilesButton(),
+          ),
         Expanded(
           child: filteredCaptures.isEmpty
               ? _EmptyHistoryState(hasFilters: _hasActiveFilters)
@@ -817,6 +823,15 @@ class _HistoryRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 _VerificationBadge(status: verificationStatus),
+                if (capture.isRestored) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'RESTORED',
+                    style: AppTextStyles.labelSmall.copyWith(
+                      color: AppColors.statusEncrypt,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 6),
                 Text(
                   _formatTimestamp(capture.capturedAt),

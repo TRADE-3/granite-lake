@@ -21,7 +21,7 @@
 Top-level folders and what they contain:
 
 - `app/`: Android-focused Flutter application for local wallet creation, biometric protection, photo capture, file upload, Sui attestation, and verification.
-- `server/`: Per-domain backend API (Fastify + Postgres) for OTP registration, domain user management, and Sui writes.
+- `server/`: Per-domain backend API (Fastify + Postgres) for Trade3 sign-in, domain user management, and Sui writes.
 - `contracts/`: Sui Move package for domain registration, user capabilities, enable/disable controls, and event-only photo and file attestation.
 - `verification_portal/`: Public verification portal (Vite + React + TypeScript) for querying attested photos or uploaded files from Sui.
 - `verification_api/`: HTTP API backend for photo and file verification against on-chain attestations with DNS TXT consensus lookup.
@@ -58,9 +58,9 @@ docker compose --env-file .env up --build -d
 This starts:
 
 - API at `http://localhost:8080`
-- Postgres for OTP sessions and registered users
+- Postgres for sessions and registered users
 
-Before using OTP verification, make sure the configured domain and admin wallet already exist in the deployed Sui registry. The server can read `SUI_PRIVATE_KEY` directly from `.env`, or from HashiCorp Vault when Vault is enabled. See `server/README.md` for the required environment variables, Vault setup, and deployment model.
+Set `TRADE3_API_URL` and `GL_JWT_SECRET` so users can sign in. Before registering users, make sure the configured domain and admin wallet already exist in the deployed Sui registry. The server can read `SUI_PRIVATE_KEY` directly from `.env`, or from HashiCorp Vault when Vault is enabled. See `server/README.md` for the required environment variables, Vault setup, and deployment model.
 
 ### 3) Start Flutter app
 
@@ -223,13 +223,13 @@ At a high level:
 
    Without DNSSEC enabled, the `_attest.<domain>` TXT lookup still works, but `dnssecValidated` reports `null`/`false` instead of `true`. See `verification_api/README.md` for how `dnssecValidated` is computed.
 
-6. Run OTP registration from the app.
+6. Link a Trade3 account from the app.
 7. Capture and attest photos from an enabled wallet.
 
 See:
 
 - `contracts/README.md` for Move package behavior
-- `server/README.md` for API configuration and OTP routes
+- `server/README.md` for API configuration and sign-in routes
 - `app/README.md` for app storage, onboarding, and photo/file attestation flow
 - `verification_api/README.md` for the server-side DNS TXT consensus lookup and DNSSEC validation details
 - `verification_portal/README.md` for the client-side (in-browser) DNS TXT consensus lookup

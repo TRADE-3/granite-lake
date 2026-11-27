@@ -59,6 +59,7 @@ class PhotoCaptureDataController {
       'trade3ErrorMessage': row['trade3_error_message'],
       'trade3DocumentId': row['trade3_document_id'],
       'trade3IpfsCid': row['trade3_ipfs_cid'],
+      'isRestored': _readBool(row['is_restored']),
     };
   }
 

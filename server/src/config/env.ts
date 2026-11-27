@@ -125,14 +125,39 @@ const envSchema = z.object({
   SPONSOR_COIN_SWEEP_MIN_MIST: z.coerce.bigint().positive().default(100_000_000n),
   // Daily ceiling on admin-wallet -> sponsor top-ups via POST /admin/sponsor/top-up.
   SPONSOR_TOPUP_MAX_PER_DAY_MIST: z.coerce.bigint().nonnegative().default(10_000_000_000n),
+  // Trade3 sign-in; see design/granite-lake-trade3-onboarding-design.md.
+  // /auth/exchange answers 503 until TRADE3_API_URL and GL_JWT_SECRET are set.
+  TRADE3_API_URL: optionalUrlFromEnv,
+  // Domain new Trade3 users attest under. Defaults to DOMAINS when it has one entry.
+  REGISTRY_DOMAIN: optionalStringFromEnv,
+  // At least 32 characters; may be a vault:// reference.
+  GL_JWT_SECRET: optionalStringFromEnv,
+  GL_ACCESS_TOKEN_TTL: z.coerce.number().int().positive().default(900),
+  // Seconds from the QR scan; refreshing does not extend it. 180 days.
+  GL_REFRESH_TOKEN_TTL: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(180 * 24 * 60 * 60),
+  // Cutover to Trade3 sign-in. For apps installed before it, set OTP_ENABLED=true
+  // and AUTH_REQUIRE_USER_TOKEN=false until they are upgraded.
+  OTP_ENABLED: z.preprocess(blankStringToUndefined, booleanFromEnv.default(false)),
+  AUTH_REQUIRE_USER_TOKEN: z.preprocess(blankStringToUndefined, booleanFromEnv.default(true)),
 });
 
 const parsedEnv = envSchema.parse(process.env);
 const postgresDb =
   parsedEnv.POSTGRES_DB ?? `${parsedEnv.NODE_ENV}_${toIdentifierPart(parsedEnv.CLIENT_ID)}_granite_lake`;
 
+const registryDomain = parsedEnv.REGISTRY_DOMAIN ?? (parsedEnv.DOMAINS.length === 1 ? parsedEnv.DOMAINS[0] : undefined);
+
+if (registryDomain && !parsedEnv.DOMAINS.some((d) => d.toLowerCase() === registryDomain.trim().toLowerCase())) {
+  throw new Error("REGISTRY_DOMAIN must be one of DOMAINS.");
+}
+
 export const env = {
   ...parsedEnv,
+  REGISTRY_DOMAIN: registryDomain,
   POSTGRES_DB: postgresDb,
   DATABASE_URL: `postgres://${encodeURIComponent(parsedEnv.POSTGRES_USER)}:${encodeURIComponent(parsedEnv.POSTGRES_PASSWORD)}@${parsedEnv.POSTGRES_HOST}:${parsedEnv.POSTGRES_PORT}/${postgresDb}`,
 };

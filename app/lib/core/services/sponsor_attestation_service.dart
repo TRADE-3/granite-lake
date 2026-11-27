@@ -5,6 +5,7 @@ import 'package:on_chain/on_chain.dart';
 
 import '../utils/utils.dart';
 import 'attestation_transaction_builder.dart';
+import 'gl_session_service.dart';
 
 /// What the domain backend reports at `GET /sponsor/status`.
 class SponsorStatus {
@@ -459,9 +460,16 @@ class SponsorAttestationService {
       'Content-Type': 'application/json; charset=utf-8',
       AppUtils.appApiKeyHeader: backendConfig.apiKey,
     };
-    final response = body == null
-        ? await _httpClient.get(uri, headers: headers)
-        : await _httpClient.post(uri, headers: headers, body: jsonEncode(body));
+    final response = await GlSessionService.shared.send(
+      domain: domain,
+      request: (auth) => body == null
+          ? _httpClient.get(uri, headers: {...headers, ...auth})
+          : _httpClient.post(
+              uri,
+              headers: {...headers, ...auth},
+              body: jsonEncode(body),
+            ),
+    );
 
     Map<String, dynamic> payload;
     try {
@@ -486,6 +494,8 @@ class SponsorAttestationService {
   // Plain-language copy for field crews - no chain jargon.
   static String _userMessageFor(int statusCode, String code) {
     switch (code) {
+      case 'invalid_token':
+        return 'Scan the Trade3 QR code to continue. This capture is saved.';
       case 'quota_exceeded':
         return "You've reached today's submission limit. This capture is saved and will be submitted automatically later.";
       case 'rate_limit_exceeded':

@@ -6,7 +6,7 @@ import 'migrations.dart';
 
 class GraniteLakeDatabaseService {
   static const String databaseName = 'granite_lake.db';
-  static const int databaseVersion = 14;
+  static const int databaseVersion = 17;
 
   static const String employeesTable = 'employees';
   static const String projectsTable = 'projects';
@@ -18,6 +18,7 @@ class GraniteLakeDatabaseService {
   static const String selectedProjectConfigKey = 'selected_project_id';
   static const String trade3HierarchyConfigKey = 'trade3_hierarchy_cache';
   static const String trade3TargetConfigKey = 'trade3_selected_target';
+  static const String trade3CanDepositConfigKey = 'trade3_can_deposit';
   static const String photoAttestationContractConfigKey =
       'photo_attestation_contract_config';
   static const String photoAttestationClaimConfigKey =

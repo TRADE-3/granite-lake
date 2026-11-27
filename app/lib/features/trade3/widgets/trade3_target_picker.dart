@@ -20,7 +20,9 @@ class Trade3TargetField extends StatelessWidget {
     final target = controller.selectedTrade3Target;
 
     return InkWell(
-      onTap: () => unawaited(showTrade3TargetPicker(context, controller)),
+      onTap: controller.canSelectTrade3Target
+          ? () => unawaited(showTrade3TargetPicker(context, controller))
+          : null,
       borderRadius: BorderRadius.circular(14),
       child: Container(
         width: double.infinity,
@@ -60,13 +62,15 @@ class Trade3TargetField extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    target?.displayLabel ?? 'Required to capture',
+                    !controller.canSelectTrade3Target
+                        ? GraniteLakeController.depositRightsMessage
+                        : target?.displayLabel ?? 'Required to capture',
                     style: AppTextStyles.bodyMedium.copyWith(
                       color: target == null
                           ? AppColors.textMuted
                           : AppColors.textPrimary,
                     ),
-                    maxLines: 1,
+                    maxLines: controller.canSelectTrade3Target ? 1 : 2,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ],
